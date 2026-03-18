@@ -71,11 +71,11 @@ _mqttc: mqtt.Client | None = None   # set after connect
 
 
 def _kill_current():
-    """Terminate any in-progress espeak+sox processes."""
+    """Kill any in-progress espeak+sox processes immediately."""
     with _proc_lock:
         for p in _current_procs:
             if p.poll() is None:
-                p.terminate()
+                p.kill()   # SIGKILL — exits immediately, no graceful drain
         _current_procs.clear()
 
 
@@ -109,9 +109,11 @@ def _speak_worker():
                 _current_procs.extend([espeak, sox])
             sox.wait()
             espeak.wait()
+            was_killed = sox.returncode not in (0, None)
             with _proc_lock:
                 _current_procs.clear()
-            time.sleep(DONE_TAIL_S)
+            if not was_killed:
+                time.sleep(DONE_TAIL_S)
             if _mqttc:
                 try:
                     _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}))

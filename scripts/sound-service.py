@@ -127,16 +127,18 @@ def _make_bigjet(duration_ms: int) -> np.ndarray:
 # ── player ──────────────────────────────────────────────────────────────────
 
 class SoundPlayer:
-    """Plays one audio buffer at a time in a background thread.
-    Calling play() while audio is already running interrupts and restarts."""
+    """Synthesises and plays one sound at a time in a background thread.
+    Calling play() while audio is already running interrupts and restarts.
+    Synthesis happens inside the thread so on_message returns immediately."""
 
-    def __init__(self, name: str):
-        self.name  = name
-        self._stop = threading.Event()
-        self._lock = threading.Lock()
+    def __init__(self, name: str, make_fn):
+        self.name    = name
+        self._make   = make_fn
+        self._stop   = threading.Event()
+        self._lock   = threading.Lock()
         self._t: threading.Thread | None = None
 
-    def play(self, audio: np.ndarray):
+    def play(self, duration_ms: int):
         with self._lock:
             self._stop.set()
             if self._t and self._t.is_alive():
@@ -144,12 +146,13 @@ class SoundPlayer:
             self._stop = threading.Event()
             stop = self._stop
             self._t = threading.Thread(
-                target=self._run, args=(audio, stop), daemon=True
+                target=self._run, args=(duration_ms, stop), daemon=True
             )
             self._t.start()
 
-    def _run(self, audio: np.ndarray, stop: threading.Event):
+    def _run(self, duration_ms: int, stop: threading.Event):
         try:
+            audio = self._make(duration_ms)   # synthesise off the MQTT thread
             with sd.OutputStream(samplerate=SR, channels=1, dtype="float32",
                                   blocksize=512) as stream:
                 pos        = 0
@@ -162,8 +165,8 @@ class SoundPlayer:
             log(f"[{self.name}] playback error: {e}")
 
 
-flare_player  = SoundPlayer("flare")
-bigjet_player = SoundPlayer("bigjet")
+flare_player  = SoundPlayer("flare",  _make_flare)
+bigjet_player = SoundPlayer("bigjet", _make_bigjet)
 
 
 # ── MQTT ────────────────────────────────────────────────────────────────────
@@ -182,10 +185,10 @@ def on_message(client, userdata, msg):
             return
         if msg.topic == TOPIC_FLARE:
             log(f"Flare {ms} ms")
-            flare_player.play(_make_flare(ms))
+            flare_player.play(ms)
         elif msg.topic == TOPIC_BIGJET:
             log(f"BigJet {ms} ms")
-            bigjet_player.play(_make_bigjet(ms))
+            bigjet_player.play(ms)
     except Exception as e:
         log(f"Message error: {e}")
 
