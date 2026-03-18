@@ -23,6 +23,10 @@ AFFECTS_DIR = "/mnt/c/Users/EB/t2v/templates/affects"
 T2V_PORT = 8765
 T2V_URL = f"http://localhost:{T2V_PORT}/query"
 
+CHROMA_BIN = "/mnt/c/Users/EB/t2v-chroma/.venv/bin/chroma"
+CHROMA_PATH = "/mnt/c/Users/EB/t2v-chroma/chromadb"
+CHROMA_URL = "http://localhost:8000/api/v2/heartbeat"
+
 SENTIMENT_DIR = "/mnt/c/Users/EB/bbsentimentqq"
 SENTIMENT_PYTHON = "/home/ubuntu/bbsentimentqq-venv/bin/python3"
 SENTIMENT_SCRIPT = os.path.join(SENTIMENT_DIR, "bbsentimentqq.py")
@@ -33,9 +37,11 @@ def log(msg: str):
     print(f"[stt_t2v] {msg}", flush=True)
 
 
-def wait_for_http(url: str, name: str, timeout: int = 120):
+def wait_for_http(url: str, name: str, timeout: int = 120, proc: subprocess.Popen = None):
     log(f"Waiting for {name} to be ready at {url}...")
     for i in range(timeout):
+        if proc and proc.poll() is not None:
+            raise RuntimeError(f"{name} process exited early with code {proc.returncode}")
         try:
             urllib.request.urlopen(url, timeout=1)
             log(f"{name} ready (took ~{i}s)")
@@ -45,16 +51,35 @@ def wait_for_http(url: str, name: str, timeout: int = 120):
     raise RuntimeError(f"{name} did not start within {timeout} seconds")
 
 
+def start_chroma() -> subprocess.Popen:
+    # If already running, don't start another
+    try:
+        urllib.request.urlopen(CHROMA_URL, timeout=1)
+        log("ChromaDB already running.")
+        return None
+    except (urllib.error.URLError, OSError):
+        pass
+    log("Starting ChromaDB...")
+    proc = subprocess.Popen(
+        [CHROMA_BIN, "run", "--path", CHROMA_PATH],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    log(f"ChromaDB PID {proc.pid}")
+    wait_for_http(CHROMA_URL, "ChromaDB", proc=proc)
+    return proc
+
+
 def start_t2v_server() -> subprocess.Popen:
     log(f"Starting text-to-verse server on port {T2V_PORT}...")
     proc = subprocess.Popen(
         [T2V_BIN, "--affects-dir", AFFECTS_DIR, "serve", "--port", str(T2V_PORT),
          "--disable-rerank", "--disable-registry", "--collections", "verse_embeddings"],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
     log(f"text-to-verse PID {proc.pid}")
-    wait_for_http(f"http://localhost:{T2V_PORT}/health", "text-to-verse")
+    wait_for_http(f"http://localhost:{T2V_PORT}/health", "text-to-verse", proc=proc)
     # Pin embedding model in Ollama memory
     log("Pinning embedding model in Ollama memory...")
     urllib.request.urlopen(
@@ -121,6 +146,7 @@ def main():
     log(f"t2v URL:        {T2V_URL}")
     log(f"Sentiment URL:  {SENTIMENT_URL}")
 
+    chroma = start_chroma()
     t2v = start_t2v_server()
     sentiment = start_sentiment_server()
 
@@ -180,6 +206,8 @@ def main():
         stt.terminate()
         t2v.terminate()
         sentiment.terminate()
+        if chroma:
+            chroma.terminate()
         log("Done.")
 
 
