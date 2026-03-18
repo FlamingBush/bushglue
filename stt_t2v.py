@@ -12,6 +12,7 @@ import time
 import urllib.request
 import urllib.error
 import json
+import paho.mqtt.client as mqtt
 
 STT_DIR = os.path.expanduser("~/speech-to-text")
 if not os.path.exists(STT_DIR):
@@ -31,6 +32,21 @@ SENTIMENT_DIR = "/mnt/c/Users/EB/bbsentimentqq"
 SENTIMENT_PYTHON = "/home/ubuntu/bbsentimentqq-venv/bin/python3"
 SENTIMENT_SCRIPT = os.path.join(SENTIMENT_DIR, "bbsentimentqq.py")
 SENTIMENT_URL = "http://localhost:8585/"
+
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+TOPIC_FLARE = "bush/flame/flare/pulse"
+TOPIC_BIGJET = "bush/flame/bigjet/pulse"
+
+# Base flare and bigjet pulse values per emotion (scaled by confidence score)
+EMOTION_MAP = {
+    "joy":      {"flare": 2000, "bigjet": 0},
+    "love":     {"flare": 1500, "bigjet": 0},
+    "surprise": {"flare": 2500, "bigjet": 600},
+    "anger":    {"flare": 3000, "bigjet": 1000},
+    "fear":     {"flare": 400,  "bigjet": 0},
+    "sadness":  {"flare": 200,  "bigjet": 0},
+}
 
 
 def log(msg: str):
@@ -141,10 +157,35 @@ def format_sentiment(scores: list) -> str:
     return "  ".join(f"{e['label']}: {e['score']:.2f}" for e in top[:3])
 
 
+def fire_mqtt(scores: list, mqtt_client: mqtt.Client):
+    if not scores:
+        return
+    top = sorted(scores, key=lambda x: x["score"], reverse=True)[0]
+    label = top["label"]
+    score = top["score"]
+    mapping = EMOTION_MAP.get(label)
+    if not mapping:
+        log(f"No MQTT mapping for emotion '{label}'")
+        return
+    flare = int(mapping["flare"] * score)
+    bigjet = int(mapping["bigjet"] * score)
+    log(f"MQTT fire: emotion={label} score={score:.2f} flare={flare} bigjet={bigjet}")
+    if flare:
+        mqtt_client.publish(TOPIC_FLARE, flare)
+    if bigjet:
+        mqtt_client.publish(TOPIC_BIGJET, bigjet)
+
+
 def main():
     log(f"STT dir:        {STT_DIR}")
     log(f"t2v URL:        {T2V_URL}")
     log(f"Sentiment URL:  {SENTIMENT_URL}")
+
+    log(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}...")
+    mqtt_client = mqtt.Client()
+    mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    mqtt_client.loop_start()
+    log("MQTT connected.")
 
     chroma = start_chroma()
     t2v = start_t2v_server()
@@ -184,6 +225,7 @@ def main():
                 try:
                     scores = query_sentiment(verse_text)
                     print(f"Sentiment: {format_sentiment(scores)}\n", flush=True)
+                    fire_mqtt(scores, mqtt_client)
                 except Exception as e:
                     log(f"Sentiment error: {e}")
 
@@ -208,6 +250,8 @@ def main():
         sentiment.terminate()
         if chroma:
             chroma.terminate()
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
         log("Done.")
 
 
