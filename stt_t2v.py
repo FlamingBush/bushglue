@@ -33,7 +33,15 @@ SENTIMENT_PYTHON = "/home/ubuntu/bbsentimentqq-venv/bin/python3"
 SENTIMENT_SCRIPT = os.path.join(SENTIMENT_DIR, "bbsentimentqq.py")
 SENTIMENT_URL = "http://localhost:8585/"
 
-MQTT_BROKER = "localhost"
+def _windows_host_ip() -> str:
+    import subprocess
+    result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if line.startswith("default"):
+            return line.split()[2]
+    return "localhost"
+
+MQTT_BROKER = _windows_host_ip()
 MQTT_PORT = 1883
 TOPIC_FLARE = "bush/flame/flare/pulse"
 TOPIC_BIGJET = "bush/flame/bigjet/pulse"
