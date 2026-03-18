@@ -1,0 +1,17 @@
+[Unit]
+Description=Sentiment Analysis with MQTT Fire Control
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/home/ubuntu/bbsentimentqq-venv/bin/python3 /mnt/c/Users/EB/bbsentimentqq/bbsentimentqq.py
+WorkingDirectory=/mnt/c/Users/EB/bbsentimentqq
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
