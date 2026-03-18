@@ -137,12 +137,18 @@ class AudioEngine:
 
     def __init__(self):
         self._req: queue.Queue = queue.Queue()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=False)
         self._thread.start()
 
     def play(self, name: str, duration_ms: int, make_fn):
         """Queue a sound request; synthesis happens inside the audio thread."""
         self._req.put((name, duration_ms, make_fn))
+
+    def stop(self):
+        """Signal the audio thread to exit cleanly and wait for it."""
+        self._stop.set()
+        self._thread.join(timeout=2)
 
     def _run(self):
         try:
@@ -151,7 +157,7 @@ class AudioEngine:
                 log("Audio stream open — PulseAudio connected")
                 buffers: dict[str, tuple[np.ndarray, int]] = {}
                 silence = np.zeros(_CHUNK, dtype=np.float32)
-                while True:
+                while not self._stop.is_set():
                     # drain all pending requests (synthesise here, not in on_message)
                     while True:
                         try:
@@ -173,6 +179,7 @@ class AudioEngine:
                     for name in done:
                         del buffers[name]
                     stream.write(chunk.reshape(-1, 1))
+                log("Audio stream closed cleanly")
         except Exception as e:
             log(f"Audio engine error: {e}")
 
@@ -216,6 +223,7 @@ def main():
         log("Shutting down...")
         mqttc.loop_stop()
         mqttc.disconnect()
+        _engine.stop()   # let OutputStream exit its context manager cleanly
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
