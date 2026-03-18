@@ -17,44 +17,72 @@ T2V_BIN = "/home/ubuntu/.cargo/bin/text-to-verse"
 AFFECTS_DIR = "/mnt/c/Users/EB/t2v/templates/affects"
 
 
+def log(msg: str):
+    print(f"[stt_t2v] {msg}", flush=True)
+
+
 def run_t2v(text: str) -> str:
+    log(f"Sending to text-to-verse: '{text}'")
     result = subprocess.run(
         [T2V_BIN, "--affects-dir", AFFECTS_DIR, "query", text],
         capture_output=True,
         text=True,
         cwd=STT_DIR,
     )
+    if result.returncode != 0:
+        log(f"text-to-verse error (exit {result.returncode}): {result.stderr.strip()}")
     return result.stdout.strip()
 
 
 def main():
-    print("Starting speech-to-text... Speak a query. Press Ctrl+C to stop.\n")
+    log(f"STT dir: {STT_DIR}")
+    log(f"STT command: {' '.join(STT_CMD)}")
+    log(f"text-to-verse bin: {T2V_BIN}")
+    log(f"Affects dir: {AFFECTS_DIR}")
+    log("Launching STT subprocess...")
 
     stt = subprocess.Popen(
         STT_CMD,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
         cwd=STT_DIR,
     )
+    log(f"STT subprocess started (PID {stt.pid})")
+    log("Waiting for STT output... Speak a query. Press Ctrl+C to stop.\n")
 
     try:
         for line in stt.stdout:
             line = line.strip()
+            if not line:
+                continue
+            log(f"STT raw output: '{line}'")
+
             if line.startswith("Final: "):
                 text = line[len("Final: "):]
-                print(f"You said: {text}")
-                print("Querying text-to-verse...")
+                log(f"Final transcription received: '{text}'")
+                log("Calling text-to-verse...")
                 response = run_t2v(text)
-                print(f"Response: {response}\n")
+                log("text-to-verse responded.")
+                print(f"\nResponse: {response}\n")
+                log("Listening for next query...")
+
             elif line.startswith("Partial: "):
                 print(f"\r{line}", end="", flush=True)
-            elif line:
-                print(line)
+
+            elif line.startswith("Listening"):
+                log(f"STT ready: {line}")
+
+            else:
+                log(f"STT misc: {line}")
+
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\n")
+        log("Interrupted by user.")
     finally:
+        log("Terminating STT subprocess...")
         stt.terminate()
+        log("Done.")
 
 
 if __name__ == "__main__":
