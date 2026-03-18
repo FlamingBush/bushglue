@@ -32,13 +32,19 @@ DONE_TAIL_S = 0.5
 ESPEAK_CMD = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "--stdout"]
 
 # sox effects applied after espeak:
-#   gain -8      headroom before effects to prevent clipping
-#   pitch -350   shift down ~3.5 semitones for inhuman depth
-#   reverb 92 50 100 100 0 6   cavernous hall, wet gain +6 dB
+#   gain -8        headroom before effects to prevent clipping
+#   pitch -250     ~2.5 semitones down — deep but not subterranean
+#   reverb 65 12 100 100 28 3
+#     65%  reverberance  — long open tail, not dense
+#     12%  HF-damping    — stay bright; rock/sky reflect high freqs well
+#     100% room-scale    — vast open space
+#     100% stereo-depth  — wide horizon
+#     28ms pre-delay     — sound crossing distance before cliff echo returns
+#     3dB  wet-gain      — present but not drowning the voice
 SOX_CMD = ["sox", "-t", "wav", "-", "-d",
            "gain", "-8",
-           "pitch", "-350",
-           "reverb", "92", "50", "100", "100", "0", "6"]
+           "pitch", "-250",
+           "reverb", "65", "12", "100", "100", "28", "3"]
 
 # Drop queued verses beyond this depth so we never fall minutes behind
 QUEUE_MAX = 2
