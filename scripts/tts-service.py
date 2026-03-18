@@ -21,12 +21,24 @@ TOPIC_SPEAKING = "bush/pipeline/tts/speaking"
 TOPIC_DONE = "bush/pipeline/tts/done"
 MQTT_PORT = 1883
 
-# Extra silence after espeak exits before signalling done (lets room reverb clear)
-DONE_TAIL_S = 0.3
+# Extra silence after sox finishes before signalling done (reverb tail)
+DONE_TAIL_S = 0.5
 
-ESPEAK = "espeak-ng"
-# Slightly slower rate and a warmer voice for scripture-reading feel
-ESPEAK_ARGS = ["-v", "en-us", "-s", "140", "-p", "40"]
+# espeak-ng → sox pipeline for the voice of God:
+#   en-gb:  British RP — more gravitas than en-us
+#   -s 95:  slow and deliberate
+#   -p 1:   minimum pitch (espeak range 0-99)
+#   -a 200: maximum amplitude out of espeak
+ESPEAK_CMD = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "--stdout"]
+
+# sox effects applied after espeak:
+#   gain -8      headroom before effects to prevent clipping
+#   pitch -350   shift down ~3.5 semitones for inhuman depth
+#   reverb 92 50 100 100 0 6   cavernous hall, wet gain +6 dB
+SOX_CMD = ["sox", "-t", "wav", "-", "-d",
+           "gain", "-8",
+           "pitch", "-350",
+           "reverb", "92", "50", "100", "100", "0", "6"]
 
 # Drop queued verses beyond this depth so we never fall minutes behind
 QUEUE_MAX = 2
@@ -46,14 +58,23 @@ def log(msg: str):
 
 # ── speech worker ───────────────────────────────────────────────────────────
 speech_queue: queue.Queue[str | None] = queue.Queue(maxsize=QUEUE_MAX)
-_current_proc: subprocess.Popen | None = None
+# Both espeak and sox processes; killed together on interrupt
+_current_procs: list[subprocess.Popen] = []
 _proc_lock = threading.Lock()
 _mqttc: mqtt.Client | None = None   # set after connect
 
 
+def _kill_current():
+    """Terminate any in-progress espeak+sox processes."""
+    with _proc_lock:
+        for p in _current_procs:
+            if p.poll() is None:
+                p.terminate()
+        _current_procs.clear()
+
+
 def _speak_worker():
     """Runs in a background thread; pulls verses and speaks them one at a time."""
-    global _current_proc
     while True:
         text = speech_queue.get()
         if text is None:          # shutdown sentinel
@@ -65,15 +86,25 @@ def _speak_worker():
             except Exception:
                 pass
         try:
+            # espeak writes WAV to stdout; sox reads it and plays with effects
+            espeak = subprocess.Popen(
+                ESPEAK_CMD + [text],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            sox = subprocess.Popen(
+                SOX_CMD,
+                stdin=espeak.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            espeak.stdout.close()   # let sox own the pipe
             with _proc_lock:
-                _current_proc = subprocess.Popen(
-                    [ESPEAK] + ESPEAK_ARGS + [text],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            _current_proc.wait()
+                _current_procs.extend([espeak, sox])
+            sox.wait()
+            espeak.wait()
             with _proc_lock:
-                _current_proc = None
+                _current_procs.clear()
             time.sleep(DONE_TAIL_S)
             if _mqttc:
                 try:
@@ -81,7 +112,7 @@ def _speak_worker():
                 except Exception:
                     pass
         except Exception as e:
-            log(f"espeak error: {e}")
+            log(f"speak error: {e}")
         speech_queue.task_done()
 
 
@@ -104,10 +135,7 @@ def _enqueue(text: str):
 
 def _interrupt_and_enqueue(text: str):
     """Interrupt current speech and drain queue before enqueuing new verse."""
-    # Kill current playback
-    with _proc_lock:
-        if _current_proc and _current_proc.poll() is None:
-            _current_proc.terminate()
+    _kill_current()
 
     # Drain stale queue entries
     while not speech_queue.empty():
@@ -158,9 +186,7 @@ def main():
     def _shutdown(signum, frame):
         log("Shutting down...")
         speech_queue.put(None)   # stop worker
-        with _proc_lock:
-            if _current_proc and _current_proc.poll() is None:
-                _current_proc.terminate()
+        _kill_current()
         mqttc.loop_stop()
         mqttc.disconnect()
         sys.exit(0)
