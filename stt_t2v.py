@@ -133,7 +133,7 @@ def query_sentiment(text: str) -> list:
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read())
-        return data.get("classification", [[]])[0]
+        return data.get("classification", [])
 
 
 def format_sentiment(scores: list) -> str:
