@@ -52,45 +52,60 @@ LOG_MAX = 12
 BAR_WIDTH = 28
 
 # ── bush ASCII art ─────────────────────────────────────────────────────────
-# 7 chars wide, 7 rows.  Characters:
+# 11 chars wide, 7 rows.  Characters:
 #   ,  →  stems/twigs      *  →  foliage
 #   ~  →  small flame      )( →  flame curl
 #   ^  →  jet tip          \/ →  jet spread
 #   |  →  trunk or jet column
 
 _BUSH_ART = {
+    # calm green bush, dim pilot light
     "cold": [
-        "  ,*,  ",
-        " (*,*) ",
-        "(*,*,*)",
-        " (*,*) ",
-        "  ,*,  ",
-        "  |||  ",
-        "  |||  ",
+        "   ,*,   ",
+        "  (*,*)  ",
+        " (*,*,*) ",
+        "  (*,*)  ",
+        "   ,*,   ",
+        "   |||   ",
+        "   |||   ",
     ],
+    # flare valve open — fire through foliage, no jet
     "flare": [
-        " )~*~( ",
-        ")~*~*~(",
-        " ~*~*~ ",
-        ")~*~*~(",
-        " )~*~( ",
-        "  |||  ",
-        "  |||  ",
+        "  )~*~(  ",
+        " )~*~*~( ",
+        "  ~*~*~  ",
+        " )~*~*~( ",
+        "  )~*~(  ",
+        "   |||   ",
+        "   |||   ",
     ],
-    "bigjet": [
-        "   ^   ",
-        "  \\|/  ",
-        " )~|~( ",
-        ")~*|*~(",
-        " )~|~( ",
-        "  |||  ",
-        "  |||  ",
+    # bigjet valve open — vertical jet through cold (unlit) bush
+    "bigjet_cold": [
+        "    ^    ",
+        "   \\|/   ",
+        "  (,|,)  ",
+        " (,*|*,) ",
+        "  (,|,)  ",
+        "   |||   ",
+        "   |||   ",
+    ],
+    # both valves open — jet through burning bush
+    "bigjet_flare": [
+        "    ^    ",
+        "   \\|/   ",
+        "  )~|~(  ",
+        " )~*|*~( ",
+        "  )~|~(  ",
+        "   |||   ",
+        "   |||   ",
     ],
 }
 
 
 def _color_bush_line(line: str, row: int, bush_state: str) -> Text:
     """Return a richly-coloured Text for one row of bush art."""
+    on_fire  = bush_state in ("flare", "bigjet_flare")
+    has_jet  = bush_state in ("bigjet_cold", "bigjet_flare")
     t = Text()
     for ch in line:
         if ch == " ":
@@ -100,29 +115,20 @@ def _color_bush_line(line: str, row: int, bush_state: str) -> Text:
         elif ch in r"\/":
             t.append(ch, style="bold red1")
         elif ch == "~":
-            style = "orange3" if bush_state == "bigjet" else "yellow"
-            t.append(ch, style=style)
+            t.append(ch, style="orange3" if has_jet else "yellow")
         elif ch == "*":
-            if bush_state == "cold":
+            if on_fire:
+                t.append(ch, style="bold bright_yellow" if has_jet else "bold yellow")
+            else:
                 t.append(ch, style="green")
-            elif bush_state == "bigjet":
-                t.append(ch, style="bold bright_yellow")
-            else:
-                t.append(ch, style="bold yellow")
         elif ch in "()":
-            if bush_state == "cold":
-                t.append(ch, style="dark_green")
-            else:
-                t.append(ch, style="bold orange3")
+            t.append(ch, style="bold orange3" if on_fire else "dark_green")
         elif ch == ",":
             t.append(ch, style="dark_green")
         elif ch == "|":
-            if row >= 5:            # trunk rows
-                if bush_state == "cold":
-                    t.append(ch, style="dim yellow")
-                else:
-                    t.append(ch, style="bold orange3")
-            else:                   # jet column (bigjet only)
+            if row >= 5:    # trunk rows
+                t.append(ch, style="bold orange3" if on_fire else "dim yellow")
+            else:           # jet column
                 t.append(ch, style="bold bright_white")
         else:
             t.append(ch)
@@ -233,21 +239,24 @@ def build_verse_panel(s: State) -> Panel:
 def build_sentiment_panel(s: State) -> Panel:
     text = Text()
     if s.scores:
-        style = _age_style(s.sentiment_ts)
-        top3 = sorted(s.scores, key=lambda x: x["score"], reverse=True)[:3]
-        for i, item in enumerate(top3):
-            label = item["label"]
-            score = item["score"]
-            colour = EMOTION_COLOUR.get(label, "white")
-            pct = int(score * 100)
-            bar = _bar(pct, 100, 20, colour)
-            prefix = "► " if i == 0 else "  "
-            bold = "bold " if i == 0 else ""
-            text.append(f"{prefix}{label:<10}", style=f"{bold}{colour}")
-            text.append(bar)
-            text.append(f"  {pct:3d}%", style=f"{bold}{style}")
+        ts_style = _age_style(s.sentiment_ts)
+        all6 = sorted(s.scores, key=lambda x: x["score"], reverse=True)
+        for row_start in range(0, len(all6), 3):
+            row = all6[row_start:row_start + 3]
+            for col, item in enumerate(row):
+                idx    = row_start + col
+                label  = item["label"]
+                score  = item["score"]
+                colour = EMOTION_COLOUR.get(label, "white")
+                pct    = int(score * 100)
+                bold   = "bold " if idx == 0 else ""
+                prefix = "► " if idx == 0 else "  "
+                if col > 0:
+                    text.append("   ")
+                text.append(f"{prefix}{label:<9}", style=f"{bold}{colour}")
+                text.append_text(_bar(pct, 100, 10, colour))
+                text.append(f" {pct:3d}%", style=f"{bold}{ts_style}")
             text.append("\n")
-        text.append(f"{_fmt_ts(s.sentiment_ts)}", style="dim")
     else:
         text.append("waiting for verse…", style="dim")
     return Panel(text, title="[bold]SENTIMENT[/bold]  [dim]bush/pipeline/sentiment/result[/dim]",
@@ -255,11 +264,15 @@ def build_sentiment_panel(s: State) -> Panel:
 
 
 def build_bush_panel(s: State) -> Panel:
-    bigjet = _bigjet_active(s)
     flare  = _flare_active(s)
+    bigjet = _bigjet_active(s)
 
-    if bigjet:
-        bush_state   = "bigjet"
+    if bigjet and flare:
+        bush_state   = "bigjet_flare"
+        label_markup = "[bold bright_white]BIG JET[/bold bright_white] [bold orange3]+ FLARE[/bold orange3]"
+        border       = "bright_white"
+    elif bigjet:
+        bush_state   = "bigjet_cold"
         label_markup = "[bold bright_white]BIG JET[/bold bright_white]"
         border       = "bright_white"
     elif flare:
@@ -271,11 +284,11 @@ def build_bush_panel(s: State) -> Panel:
         label_markup = "[dim green]standby[/dim green]"
         border       = "dark_green"
 
-    text = Text()
+    text = Text(justify="center")
     for row, line in enumerate(_BUSH_ART[bush_state]):
         text.append_text(_color_bush_line(line, row, bush_state))
         text.append("\n")
-    text.append(" ")
+    text.append("\n")
     text.append_text(Text.from_markup(label_markup))
 
     return Panel(text, title="[bold]Bush[/bold]",
@@ -350,21 +363,20 @@ def build_header(s: State) -> Text:
 def render(s: State) -> Layout:
     layout = Layout()
     layout.split_column(
-        Layout(name="header", size=1),
-        Layout(name="top", size=5),
-        Layout(name="middle", size=8),
-        Layout(name="bottom", size=11),
+        Layout(name="header",    size=1),
+        Layout(name="top",       size=5),
+        Layout(name="sentiment", size=4),
+        Layout(name="bottom",    size=11),
         Layout(name="log"),
     )
     layout["top"].split_row(
-        Layout(build_stt_panel(s), name="stt"),
+        Layout(build_stt_panel(s),   name="stt"),
         Layout(build_verse_panel(s), name="verse"),
     )
-    layout["middle"].update(build_sentiment_panel(s))
+    layout["sentiment"].update(build_sentiment_panel(s))
     layout["bottom"].split_row(
-        Layout(build_bush_panel(s), name="bush", ratio=1),
-        Layout(build_fire_panel(s), name="fire", ratio=2),
-        Layout(build_tts_panel(s), name="tts", ratio=2),
+        Layout(build_bush_panel(s), name="bush", ratio=2),
+        Layout(build_tts_panel(s),  name="tts",  ratio=3),
     )
     layout["log"].update(build_log_panel(s))
     layout["header"].update(build_header(s))
