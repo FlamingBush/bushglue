@@ -15,6 +15,7 @@ sound plays for exactly that duration then stops.
 Both effects run in separate threads so they can overlap cleanly.
 """
 import json
+import queue
 import signal
 import subprocess
 import sys
@@ -124,49 +125,59 @@ def _make_bigjet(duration_ms: int) -> np.ndarray:
     return (sig * 0.55).astype(np.float32)
 
 
-# ── player ──────────────────────────────────────────────────────────────────
+# ── audio engine ────────────────────────────────────────────────────────────
+# One persistent OutputStream keeps PulseAudio alive at all times.
+# Silence fills the stream between effects; flare and bigjet mix additively.
+# Synthesis happens off the MQTT thread via a request queue.
 
-class SoundPlayer:
-    """Synthesises and plays one sound at a time in a background thread.
-    Calling play() while audio is already running interrupts and restarts.
-    Synthesis happens inside the thread so on_message returns immediately."""
+_CHUNK = 512
 
-    def __init__(self, name: str, make_fn):
-        self.name    = name
-        self._make   = make_fn
-        self._stop   = threading.Event()
-        self._lock   = threading.Lock()
-        self._t: threading.Thread | None = None
+class AudioEngine:
+    """Single persistent OutputStream; silence-fills gaps; effects mix."""
 
-    def play(self, duration_ms: int):
-        with self._lock:
-            self._stop.set()
-            if self._t and self._t.is_alive():
-                self._t.join(timeout=0.05)
-            self._stop = threading.Event()
-            stop = self._stop
-            self._t = threading.Thread(
-                target=self._run, args=(duration_ms, stop), daemon=True
-            )
-            self._t.start()
+    def __init__(self):
+        self._req: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-    def _run(self, duration_ms: int, stop: threading.Event):
+    def play(self, name: str, duration_ms: int, make_fn):
+        """Queue a sound request; synthesis happens inside the audio thread."""
+        self._req.put((name, duration_ms, make_fn))
+
+    def _run(self):
         try:
-            audio = self._make(duration_ms)   # synthesise off the MQTT thread
             with sd.OutputStream(samplerate=SR, channels=1, dtype="float32",
-                                  blocksize=512) as stream:
-                pos        = 0
-                chunk_size = 512
-                while pos < len(audio) and not stop.is_set():
-                    end = min(pos + chunk_size, len(audio))
-                    stream.write(audio[pos:end].reshape(-1, 1))
-                    pos = end
+                                  blocksize=_CHUNK) as stream:
+                log("Audio stream open — PulseAudio connected")
+                buffers: dict[str, tuple[np.ndarray, int]] = {}
+                silence = np.zeros(_CHUNK, dtype=np.float32)
+                while True:
+                    # drain all pending requests (synthesise here, not in on_message)
+                    while True:
+                        try:
+                            name, ms, fn = self._req.get_nowait()
+                            buffers[name] = (fn(ms), 0)
+                        except queue.Empty:
+                            break
+                    # mix active buffers
+                    chunk = silence.copy()
+                    done = []
+                    for name, (audio, pos) in buffers.items():
+                        end = min(pos + _CHUNK, len(audio))
+                        n = end - pos
+                        chunk[:n] += audio[pos:end]
+                        if end >= len(audio):
+                            done.append(name)
+                        else:
+                            buffers[name] = (audio, end)
+                    for name in done:
+                        del buffers[name]
+                    stream.write(chunk.reshape(-1, 1))
         except Exception as e:
-            log(f"[{self.name}] playback error: {e}")
+            log(f"Audio engine error: {e}")
 
 
-flare_player  = SoundPlayer("flare",  _make_flare)
-bigjet_player = SoundPlayer("bigjet", _make_bigjet)
+_engine = AudioEngine()
 
 
 # ── MQTT ────────────────────────────────────────────────────────────────────
@@ -185,10 +196,10 @@ def on_message(client, userdata, msg):
             return
         if msg.topic == TOPIC_FLARE:
             log(f"Flare {ms} ms")
-            flare_player.play(ms)
+            _engine.play("flare", ms, _make_flare)
         elif msg.topic == TOPIC_BIGJET:
             log(f"BigJet {ms} ms")
-            bigjet_player.play(ms)
+            _engine.play("bigjet", ms, _make_bigjet)
     except Exception as e:
         log(f"Message error: {e}")
 
