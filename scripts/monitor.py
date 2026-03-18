@@ -31,6 +31,7 @@ TOPICS = [
     "bush/pipeline/sentiment/result",
     "bush/flame/flare/pulse",
     "bush/flame/bigjet/pulse",
+    "bush/pipeline/tts/speaking",
 ]
 
 # ── fire hardware limits (ms valve on-time) ────────────────────────────────
@@ -76,6 +77,8 @@ class State:
         self.flare_ts: float | None = None
         self.bigjet_ms = 0
         self.bigjet_ts: float | None = None
+        self.tts_text = ""
+        self.tts_ts: float | None = None
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
         # (ts, tag, message)
 
@@ -185,6 +188,21 @@ def build_fire_panel(s: State) -> Panel:
                  box=box.ROUNDED, border_style="red")
 
 
+def build_tts_panel(s: State) -> Panel:
+    text = Text()
+    if s.tts_text:
+        style = _age_style(s.tts_ts)
+        age = time.time() - s.tts_ts if s.tts_ts else 99
+        indicator = "[bold green]▶ SPEAKING[/bold green]" if age < 8 else "[dim]last:[/dim]"
+        text.append_text(Text.from_markup(indicator))
+        text.append(f"  {s.tts_text[:120]}", style=f"{style} italic")
+        text.append(f"   {_fmt_ts(s.tts_ts)}", style="dim")
+    else:
+        text.append("waiting for verse…", style="dim")
+    return Panel(text, title="[bold]TTS[/bold]  [dim]espeak-ng[/dim]",
+                 box=box.ROUNDED, border_style="green")
+
+
 def build_log_panel(s: State) -> Panel:
     text = Text()
     entries = list(s.log)
@@ -195,6 +213,7 @@ def build_log_panel(s: State) -> Panel:
             "SENTIMENT":  "magenta",
             "FLARE":      "red",
             "BIGJET":     "dark_orange",
+            "TTS":        "green",
         }.get(tag, "white")
         text.append(f"{_fmt_ts(ts)}  ", style="dim")
         text.append(f"{tag:<12}", style=f"bold {tag_colour}")
@@ -219,7 +238,7 @@ def render(s: State) -> Layout:
         Layout(name="header", size=1),
         Layout(name="top", size=5),
         Layout(name="middle", size=8),
-        Layout(name="fire", size=5),
+        Layout(name="bottom", size=5),
         Layout(name="log"),
     )
     layout["top"].split_row(
@@ -227,7 +246,10 @@ def render(s: State) -> Layout:
         Layout(build_verse_panel(s), name="verse"),
     )
     layout["middle"].update(build_sentiment_panel(s))
-    layout["fire"].update(build_fire_panel(s))
+    layout["bottom"].split_row(
+        Layout(build_fire_panel(s), name="fire"),
+        Layout(build_tts_panel(s), name="tts"),
+    )
     layout["log"].update(build_log_panel(s))
     layout["header"].update(build_header(s))
     return layout
@@ -288,6 +310,12 @@ def on_message(client, userdata, msg):
                 state.bigjet_ms = ms
                 state.bigjet_ts = now
                 state.log.append((now, "BIGJET", f"{ms} ms"))
+
+            elif topic == "bush/pipeline/tts/speaking":
+                data = json.loads(msg.payload)
+                state.tts_text = data.get("text", "")
+                state.tts_ts = now
+                state.log.append((now, "TTS", f'"{state.tts_text[:80]}"'))
 
     except Exception as e:
         with state.lock:
