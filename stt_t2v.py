@@ -9,10 +9,12 @@ import sys
 import os
 
 STT_DIR = os.path.expanduser("~/speech-to-text")
+if not os.path.exists(STT_DIR):
+    STT_DIR = "/mnt/c/Users/EB/speech-to-text"
 STT_CMD = [sys.executable, os.path.join(STT_DIR, "main.py"), "--mic", "--model", "models/en-us"]
 
-T2V_BIN = os.path.expanduser("~/.cargo/bin/text-to-verse")
-AFFECTS_DIR = os.path.expanduser("~/t2v/templates/affects")
+T2V_BIN = "/home/ubuntu/.cargo/bin/text-to-verse"
+AFFECTS_DIR = "/mnt/c/Users/EB/t2v/templates/affects"
 
 
 def run_t2v(text: str) -> str:
