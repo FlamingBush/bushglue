@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Bush Glue service manager
+# Usage: bush start | stop | restart | status
+
+SERVICES=(chromadb bush-t2v bush-sentiment bush-stt bush-tts bush-sound)
+
+cmd="${1:-status}"
+
+case "$cmd" in
+  start|stop|restart)
+    sudo systemctl "$cmd" "${SERVICES[@]}"
+    echo ""
+    systemctl status "${SERVICES[@]}" --no-pager -n 0
+    ;;
+  status)
+    systemctl status "${SERVICES[@]}" --no-pager -n 0
+    ;;
+  *)
+    echo "Usage: $0 start | stop | restart | status" >&2
+    exit 1
+    ;;
+esac
