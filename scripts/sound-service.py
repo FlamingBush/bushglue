@@ -45,32 +45,48 @@ def log(msg: str):
 # ── synthesis ───────────────────────────────────────────────────────────────
 
 def _make_flare(duration_ms: int) -> np.ndarray:
-    """Warm low hum — rich harmonic stack + soft clip + flame flicker."""
-    n = int(SR * duration_ms / 1000)
-    t = np.linspace(0, duration_ms / 1000, n, endpoint=False)
+    """Warm low roar — harmonic stack audible on small speakers + combustion noise."""
+    n   = int(SR * duration_ms / 1000)
+    t   = np.linspace(0, duration_ms / 1000, n, endpoint=False)
+    rng = np.random.default_rng()
 
-    # Harmonic stack slightly detuned for warmth (like a gas roar)
-    sig  = 0.55 * np.sin(2 * np.pi *  80.0 * t)
-    sig += 0.28 * np.sin(2 * np.pi * 160.4 * t)
-    sig += 0.13 * np.sin(2 * np.pi * 241.0 * t)
-    sig += 0.07 * np.sin(2 * np.pi * 321.7 * t)
-    sig += 0.03 * np.sin(2 * np.pi * 403.0 * t)
+    # Harmonic stack rooted at 110 Hz (first harmonic small speakers can reproduce)
+    # Weight mid harmonics (220–440 Hz) more heavily so the sound cuts through
+    sig  = 0.30 * np.sin(2 * np.pi * 110.0 * t)
+    sig += 0.40 * np.sin(2 * np.pi * 220.4 * t)   # 2nd — boosted
+    sig += 0.25 * np.sin(2 * np.pi * 331.0 * t)   # 3rd
+    sig += 0.18 * np.sin(2 * np.pi * 441.7 * t)   # 4th
+    sig += 0.10 * np.sin(2 * np.pi * 553.0 * t)   # 5th
+    sig += 0.05 * np.sin(2 * np.pi * 663.3 * t)   # 6th
 
     # Soft clip → warm, slightly overdriven character
-    sig = np.tanh(sig * 2.0) * 0.55
+    sig = np.tanh(sig * 2.2)
 
-    # Flame flicker: slow tremolo ~6 Hz, randomised phase
-    rng     = np.random.default_rng()
+    # Combustion texture: bandpass noise around 250–700 Hz
+    # Achieved by mixing white noise with its double-differentiated version
+    # (rough bandpass without scipy)
+    noise   = rng.standard_normal(n) * 0.18
+    d1      = np.diff(noise, prepend=noise[0])
+    d2      = np.diff(d1,    prepend=d1[0])
+    texture = noise - d2 * 0.04   # emphasises mid, softens extremes
+    sig    += texture
+
+    # Flame flicker: slow tremolo ~5 Hz with randomised phase
     phase   = rng.uniform(0, 2 * np.pi)
-    flicker = 0.72 + 0.28 * np.sin(2 * np.pi * 6 * t + phase)
-    sig *= flicker
+    flicker = 0.78 + 0.22 * np.sin(2 * np.pi * 5 * t + phase)
+    sig    *= flicker
 
     # Short fade in/out (30 ms) to avoid clicks
     fade = min(int(0.03 * SR), n // 4)
     sig[:fade]  *= np.linspace(0, 1, fade)
     sig[-fade:] *= np.linspace(1, 0, fade)
 
-    return (sig * 0.45).astype(np.float32)
+    # Normalise to peak 0.80 — loud but no clipping
+    peak = np.abs(sig).max()
+    if peak > 0:
+        sig *= 0.80 / peak
+
+    return sig.astype(np.float32)
 
 
 def _make_bigjet(duration_ms: int) -> np.ndarray:
