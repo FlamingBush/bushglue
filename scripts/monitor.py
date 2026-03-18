@@ -51,6 +51,93 @@ EMOTION_COLOUR = {
 LOG_MAX = 12
 BAR_WIDTH = 28
 
+# ── bush ASCII art ─────────────────────────────────────────────────────────
+# 7 chars wide, 7 rows.  Characters:
+#   ,  →  stems/twigs      *  →  foliage
+#   ~  →  small flame      )( →  flame curl
+#   ^  →  jet tip          \/ →  jet spread
+#   |  →  trunk or jet column
+
+_BUSH_ART = {
+    "cold": [
+        "  ,*,  ",
+        " (*,*) ",
+        "(*,*,*)",
+        " (*,*) ",
+        "  ,*,  ",
+        "  |||  ",
+        "  |||  ",
+    ],
+    "flare": [
+        " )~*~( ",
+        ")~*~*~(",
+        " ~*~*~ ",
+        ")~*~*~(",
+        " )~*~( ",
+        "  |||  ",
+        "  |||  ",
+    ],
+    "bigjet": [
+        "   ^   ",
+        "  \\|/  ",
+        " )~|~( ",
+        ")~*|*~(",
+        " )~|~( ",
+        "  |||  ",
+        "  |||  ",
+    ],
+}
+
+
+def _color_bush_line(line: str, row: int, bush_state: str) -> Text:
+    """Return a richly-coloured Text for one row of bush art."""
+    t = Text()
+    for ch in line:
+        if ch == " ":
+            t.append(" ")
+        elif ch == "^":
+            t.append(ch, style="bold bright_white")
+        elif ch in r"\/":
+            t.append(ch, style="bold red1")
+        elif ch == "~":
+            style = "orange3" if bush_state == "bigjet" else "yellow"
+            t.append(ch, style=style)
+        elif ch == "*":
+            if bush_state == "cold":
+                t.append(ch, style="green")
+            elif bush_state == "bigjet":
+                t.append(ch, style="bold bright_yellow")
+            else:
+                t.append(ch, style="bold yellow")
+        elif ch in "()":
+            if bush_state == "cold":
+                t.append(ch, style="dark_green")
+            else:
+                t.append(ch, style="bold orange3")
+        elif ch == ",":
+            t.append(ch, style="dark_green")
+        elif ch == "|":
+            if row >= 5:            # trunk rows
+                if bush_state == "cold":
+                    t.append(ch, style="dim yellow")
+                else:
+                    t.append(ch, style="bold orange3")
+            else:                   # jet column (bigjet only)
+                t.append(ch, style="bold bright_white")
+        else:
+            t.append(ch)
+    return t
+
+
+def _flare_active(s: "State") -> bool:
+    return bool(s.flare_ts and s.flare_ms > 0
+                and (time.time() - s.flare_ts) * 1000 < s.flare_ms)
+
+
+def _bigjet_active(s: "State") -> bool:
+    return bool(s.bigjet_ts and s.bigjet_ms > 0
+                and (time.time() - s.bigjet_ts) * 1000 < s.bigjet_ms)
+
 
 def _windows_host_ip() -> str:
     result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
@@ -167,6 +254,34 @@ def build_sentiment_panel(s: State) -> Panel:
                  box=box.ROUNDED, border_style="magenta")
 
 
+def build_bush_panel(s: State) -> Panel:
+    bigjet = _bigjet_active(s)
+    flare  = _flare_active(s)
+
+    if bigjet:
+        bush_state   = "bigjet"
+        label_markup = "[bold bright_white]BIG JET[/bold bright_white]"
+        border       = "bright_white"
+    elif flare:
+        bush_state   = "flare"
+        label_markup = "[bold orange3]FLARE[/bold orange3]"
+        border       = "orange3"
+    else:
+        bush_state   = "cold"
+        label_markup = "[dim green]standby[/dim green]"
+        border       = "dark_green"
+
+    text = Text()
+    for row, line in enumerate(_BUSH_ART[bush_state]):
+        text.append_text(_color_bush_line(line, row, bush_state))
+        text.append("\n")
+    text.append(" ")
+    text.append_text(Text.from_markup(label_markup))
+
+    return Panel(text, title="[bold]Bush[/bold]",
+                 box=box.ROUNDED, border_style=border)
+
+
 def build_fire_panel(s: State) -> Panel:
     text = Text()
 
@@ -238,7 +353,7 @@ def render(s: State) -> Layout:
         Layout(name="header", size=1),
         Layout(name="top", size=5),
         Layout(name="middle", size=8),
-        Layout(name="bottom", size=5),
+        Layout(name="bottom", size=11),
         Layout(name="log"),
     )
     layout["top"].split_row(
@@ -247,8 +362,9 @@ def render(s: State) -> Layout:
     )
     layout["middle"].update(build_sentiment_panel(s))
     layout["bottom"].split_row(
-        Layout(build_fire_panel(s), name="fire"),
-        Layout(build_tts_panel(s), name="tts"),
+        Layout(build_bush_panel(s), name="bush", ratio=1),
+        Layout(build_fire_panel(s), name="fire", ratio=2),
+        Layout(build_tts_panel(s), name="tts", ratio=2),
     )
     layout["log"].update(build_log_panel(s))
     layout["header"].update(build_header(s))
@@ -343,10 +459,10 @@ def main():
 
     console = Console()
     try:
-        with Live(render(state), console=console, refresh_per_second=4,
+        with Live(render(state), console=console, refresh_per_second=8,
                   screen=True, vertical_overflow="visible") as live:
             while True:
-                time.sleep(0.25)
+                time.sleep(0.125)
                 with state.lock:
                     live.update(render(state))
     except KeyboardInterrupt:
