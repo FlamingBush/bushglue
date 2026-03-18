@@ -18,7 +18,11 @@ import paho.mqtt.client as mqtt
 # ── config ─────────────────────────────────────────────────────────────────
 TOPIC_VERSE = "bush/pipeline/t2v/verse"
 TOPIC_SPEAKING = "bush/pipeline/tts/speaking"
+TOPIC_DONE = "bush/pipeline/tts/done"
 MQTT_PORT = 1883
+
+# Extra silence after espeak exits before signalling done (lets room reverb clear)
+DONE_TAIL_S = 0.3
 
 ESPEAK = "espeak-ng"
 # Slightly slower rate and a warmer voice for scripture-reading feel
@@ -70,6 +74,12 @@ def _speak_worker():
             _current_proc.wait()
             with _proc_lock:
                 _current_proc = None
+            time.sleep(DONE_TAIL_S)
+            if _mqttc:
+                try:
+                    _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}))
+                except Exception:
+                    pass
         except Exception as e:
             log(f"espeak error: {e}")
         speech_queue.task_done()
