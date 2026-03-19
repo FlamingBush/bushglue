@@ -6,6 +6,7 @@ waits for it to be healthy, then subscribes to bush/pipeline/stt/transcript
 and publishes results to bush/pipeline/t2v/verse.
 """
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -16,8 +17,8 @@ import urllib.request
 import paho.mqtt.client as mqtt
 
 # ── text-to-verse subprocess config ────────────────────────────────────────
-T2V_BIN = "/home/ubuntu/.cargo/bin/text-to-verse"
-AFFECTS_DIR = "/mnt/c/Users/EB/t2v/templates/affects"
+T2V_BIN = os.environ.get("T2V_BIN", "/home/ubuntu/.cargo/bin/text-to-verse")
+AFFECTS_DIR = os.environ.get("AFFECTS_DIR", "/mnt/c/Users/EB/t2v/templates/affects")
 T2V_PORT = 8765
 T2V_HEALTH_URL = f"http://localhost:{T2V_PORT}/health"
 T2V_QUERY_URL = f"http://localhost:{T2V_PORT}/query"
@@ -75,7 +76,7 @@ def query_t2v(text: str) -> dict:
 
 
 def main():
-    broker = _windows_host_ip()
+    broker = os.environ.get("MQTT_BROKER") or _windows_host_ip()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     # Start t2v Rust binary
