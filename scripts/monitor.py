@@ -170,6 +170,7 @@ class State:
         self.bigjet_ts: float | None = None
         self.tts_text = ""
         self.tts_ts: float | None = None
+        self.tts_speaking = False
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
         # audio device selection
         self.capture_devices: list[dict] = []
@@ -323,15 +324,15 @@ def build_tts_panel(s: State) -> Panel:
     text = Text()
     if s.tts_text:
         style = _age_style(s.tts_ts)
-        age = time.time() - s.tts_ts if s.tts_ts else 99
-        indicator = "[bold green]▶ SPEAKING[/bold green]" if age < 8 else "[dim]last:[/dim]"
+        indicator = "[bold green]▶ SPEAKING[/bold green]" if s.tts_speaking else "[dim]last:[/dim]"
         text.append_text(Text.from_markup(indicator))
-        text.append(f"  {s.tts_text[:120]}", style=f"{style} italic")
+        text.append(f"  {s.tts_text}", style=f"{style} italic")
         text.append(f"   {_fmt_ts(s.tts_ts)}", style="dim")
     else:
         text.append("waiting for verse…", style="dim")
+    border = "bold bright_green" if s.tts_speaking else "green"
     return Panel(text, title="[bold]TTS[/bold]  [dim]espeak-ng[/dim]",
-                 box=box.ROUNDED, border_style="green")
+                 box=box.ROUNDED, border_style=border)
 
 
 def build_log_panel(s: State) -> Panel:
@@ -640,9 +641,11 @@ def on_message(client, userdata, msg):
                 data = json.loads(msg.payload)
                 state.tts_text = data.get("text", "")
                 state.tts_ts = now
+                state.tts_speaking = True
                 state.log.append((now, "TTS", f'"{state.tts_text[:80]}"'))
 
             elif topic == "bush/pipeline/tts/done":
+                state.tts_speaking = False
                 state.log.append((now, "TTS DONE", ""))
 
             elif topic == "bush/audio/devices":
