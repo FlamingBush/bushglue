@@ -6,6 +6,7 @@ waits for it to be healthy, then subscribes to bush/pipeline/stt/transcript
 and publishes results to bush/pipeline/t2v/verse.
 """
 import json
+import os
 import signal
 import subprocess
 import sys
