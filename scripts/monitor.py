@@ -148,7 +148,7 @@ def _bigjet_active(s: "State") -> bool:
                 and (time.time() - s.bigjet_ts) * 1000 < s.bigjet_ms)
 
 
-from bushutil import mqtt_broker as _windows_host_ip
+from bushutil import get_mqtt_broker
 
 
 # ── shared state ───────────────────────────────────────────────────────────
@@ -664,7 +664,7 @@ def on_message(client, userdata, msg):
 # ── main ───────────────────────────────────────────────────────────────────
 def main():
     global _mqttc
-    broker = _windows_host_ip()
+    broker = get_mqtt_broker()
     with state.lock:
         state.broker = broker
 

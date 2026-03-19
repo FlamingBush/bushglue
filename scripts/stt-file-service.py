@@ -17,7 +17,7 @@ import wave
 
 import paho.mqtt.client as mqtt
 
-from bushutil import mqtt_broker as _windows_host_ip
+from bushutil import get_mqtt_broker
 
 # ── paths ──────────────────────────────────────────────────────────────────
 STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
@@ -50,7 +50,7 @@ def main():
     parser.add_argument("--log", help="Append utterances as JSONL to this file")
     args = parser.parse_args()
 
-    broker = _windows_host_ip()
+    broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)

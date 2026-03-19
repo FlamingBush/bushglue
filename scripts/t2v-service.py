@@ -33,7 +33,7 @@ TOPIC_VERSE = "bush/pipeline/t2v/verse"
 MQTT_PORT = 1883
 
 
-from bushutil import mqtt_broker as _windows_host_ip
+from bushutil import get_mqtt_broker
 
 
 def log(msg: str):
@@ -71,7 +71,7 @@ def query_t2v(text: str) -> dict:
 
 
 def main():
-    broker = _windows_host_ip()
+    broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     # Start t2v Rust binary

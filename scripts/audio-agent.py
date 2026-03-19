@@ -11,7 +11,7 @@ import sys
 import paho.mqtt.client as mqtt
 import sounddevice as sd
 
-from bushutil import mqtt_broker
+from bushutil import get_mqtt_broker
 
 MQTT_PORT = 1883
 TOPIC_DISCOVER = "bush/audio/discover"
@@ -69,7 +69,7 @@ def on_message(client, userdata, msg):
 
 
 def main():
-    broker = mqtt_broker()
+    broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)

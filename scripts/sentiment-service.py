@@ -24,7 +24,7 @@ import time
 
 import paho.mqtt.client as mqtt
 
-from bushutil import mqtt_broker
+from bushutil import get_mqtt_broker
 
 # ── MQTT topics ────────────────────────────────────────────────────────────
 TOPIC_VERSE    = "bush/pipeline/t2v/verse"
@@ -133,7 +133,7 @@ def _classify_and_fire(verse_text: str, mqttc: mqtt.Client):
 
 def _start_mqtt_thread():
     """Start MQTT subscriber in a background thread."""
-    broker = mqtt_broker()
+    broker = get_mqtt_broker()
     print(f"[sentiment] Connecting to MQTT broker {broker}:{MQTT_PORT}...", flush=True)
 
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)

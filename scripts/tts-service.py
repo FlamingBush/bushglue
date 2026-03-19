@@ -51,7 +51,7 @@ SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100"
 QUEUE_MAX = 2
 
 # Current TTS output device: None → sox default (-d), str → ALSA device name
-_tts_device: str | None = None
+_tts_device: str | None = load_audio_device("tts")  # restore last saved device (or None)
 _device_lock = threading.Lock()
 
 
@@ -66,7 +66,7 @@ def _sox_cmd() -> list[str]:
     return ["sox", "-q", "-t", "wav", "-"] + output_args + SOX_EFFECTS
 
 
-from bushutil import mqtt_broker as _windows_host_ip
+from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
 
 
 def log(msg: str):
@@ -228,7 +228,7 @@ def on_message(client, userdata, msg):
 
 
 def main():
-    broker = _windows_host_ip()
+    broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     worker = threading.Thread(target=_speak_worker, daemon=True)

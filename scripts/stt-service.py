@@ -24,7 +24,10 @@ import sounddevice as sd
 STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
 MODEL_PATH = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
 _dev = os.environ.get("STT_DEVICE")
-STT_DEVICE = int(_dev) if _dev and _dev.isdigit() else _dev  # int index or string name
+if _dev:
+    STT_DEVICE = int(_dev) if _dev.isdigit() else _dev  # int index or string name
+else:
+    STT_DEVICE = load_audio_device("stt")  # restore last saved device (or None)
 SAMPLE_RATE = 16000
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
@@ -36,7 +39,7 @@ TOPIC_DEVICE_STATUS = "bush/audio/stt/device"
 MQTT_PORT = 1883
 
 
-from bushutil import mqtt_broker as _windows_host_ip
+from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
 
 
 def log(msg: str):
@@ -44,7 +47,7 @@ def log(msg: str):
 
 
 def main():
-    broker = _windows_host_ip()
+    broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     # ── mute gate ──────────────────────────────────────────────────────────
@@ -82,6 +85,7 @@ def main():
                 dev = int(raw) if str(raw).lstrip("-").isdigit() else str(raw)
                 log(f"Device change requested: {dev!r}")
                 next_device[0] = dev
+                save_audio_device("stt", dev)
                 device_change.set()
             except Exception as e:
                 log(f"set-device error: {e}")

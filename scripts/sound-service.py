@@ -30,7 +30,7 @@ TOPIC_BIGJET = "bush/flame/bigjet/pulse"
 SR = 44100  # sample rate
 
 
-from bushutil import mqtt_broker as _windows_host_ip
+from bushutil import get_mqtt_broker
 
 
 def log(msg: str):
@@ -206,7 +206,7 @@ def on_message(client, userdata, msg):
 
 
 def main():
-    broker = _windows_host_ip()
+    broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
