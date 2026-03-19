@@ -2,32 +2,40 @@
 """
 End-to-end integration test for the Bush Glue pipeline.
 
-Injects a transcript directly into MQTT and verifies that every downstream
-stage responds within its expected window:
+Default: synthesizes a phrase to WAV via inject.py (loopback → stt-service),
+testing the full audio stack. Each pipeline stage is verified in order:
 
-  transcript -> t2v/verse -> tts/speaking + sentiment/result + flame pulses -> tts/done
+  inject audio -> stt/transcript -> t2v/verse -> tts/speaking
+               -> sentiment/result -> flame pulses -> tts/done
+
+--transcript-only: skips audio injection and publishes the transcript directly
+to MQTT, bypassing STT hardware. Useful when the loopback device isn't available.
 
 Usage:
-    python3 integration-test.py [--broker HOST] [--phrase "text to inject"]
-
-Run on the Odroid after deploying, or pass --broker to test remotely.
+    python3 integration-test.py
+    python3 integration-test.py --phrase "speak of the burning bush"
+    python3 integration-test.py --transcript-only
+    python3 integration-test.py --broker 192.168.1.10
 """
 import argparse
 import json
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
-# ── timeouts (seconds) ──────────────────────────────────────────────────────
-T_VERSE     = 45   # t2v can be slow (Ollama + Rust binary)
-T_SPEAKING  =  8   # tts/speaking after verse
-T_SENTIMENT = 10   # sentiment/result after verse
-T_PULSE     = 15   # first flame pulse after verse
-T_DONE      = 90   # tts/done after verse (long verse + reverb tail)
+# ── timeouts (seconds from the start of each phase) ─────────────────────────
+T_TRANSCRIPT = 30   # audio synthesis + loopback playback + vosk processing
+T_VERSE      = 45   # t2v can be slow (Ollama + Rust binary)
+T_SPEAKING   =  8   # tts/speaking after verse arrives
+T_SENTIMENT  = 10   # sentiment/result after verse arrives
+T_PULSE      = 15   # first flame pulse after verse arrives
+T_DONE       = 90   # tts/done after verse arrives (long verse + reverb tail)
 
-# ── MQTT topics ─────────────────────────────────────────────────────────────
+# ── MQTT topics ──────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT = "bush/pipeline/stt/transcript"
 TOPIC_VERSE      = "bush/pipeline/t2v/verse"
 TOPIC_SPEAKING   = "bush/pipeline/tts/speaking"
@@ -36,34 +44,34 @@ TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
 TOPIC_FLARE      = "bush/flame/flare/pulse"
 TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
 
-SUBSCRIBE_TOPICS = [
-    TOPIC_VERSE, TOPIC_SPEAKING, TOPIC_DONE,
-    TOPIC_SENTIMENT, TOPIC_FLARE, TOPIC_BIGJET,
-]
-
 MQTT_PORT = 1883
 
-# ── result tracking ─────────────────────────────────────────────────────────
+SCRIPTS_DIR = Path(__file__).parent
+
+
 class Stage:
     def __init__(self, name, timeout):
         self.name    = name
-        self.timeout = timeout
+        self.timeout = timeout   # seconds from phase start (inject or transcript)
         self.event   = threading.Event()
         self.payload = None
-        self.elapsed = None   # seconds from inject to receipt
+        self.elapsed = None      # seconds from phase start to receipt
 
-    def receive(self, payload, inject_time):
+    def receive(self, payload, phase_start):
         self.payload = payload
-        self.elapsed = time.time() - inject_time
+        self.elapsed = time.time() - phase_start
         self.event.set()
 
-    def wait(self, deadline):
-        remaining = deadline - time.time()
-        return self.event.wait(timeout=max(0, remaining))
+    def wait_until(self, deadline):
+        return self.event.wait(timeout=max(0, deadline - time.time()))
 
 
-def run_test(broker: str, phrase: str) -> bool:
-    stages = {
+def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
+    # transcript stage only exists in inject (default) mode
+    transcript_stage = Stage("stt/transcript", T_TRANSCRIPT)
+
+    # these stages are keyed by topic; base time is set when transcript arrives
+    downstream = {
         TOPIC_VERSE:     Stage("t2v/verse",        T_VERSE),
         TOPIC_SPEAKING:  Stage("tts/speaking",     T_SPEAKING),
         TOPIC_SENTIMENT: Stage("sentiment/result", T_SENTIMENT),
@@ -72,20 +80,29 @@ def run_test(broker: str, phrase: str) -> bool:
         TOPIC_DONE:      Stage("tts/done",         T_DONE),
     }
 
-    inject_time   = [None]
-    connected     = threading.Event()
+    inject_time     = [None]
+    transcript_time = [None]
+    connected       = threading.Event()
+
+    subscribe_topics = list(downstream.keys())
+    if not transcript_only:
+        subscribe_topics.append(TOPIC_TRANSCRIPT)
 
     def on_connect(client, userdata, flags, rc, properties=None):
-        for t in SUBSCRIBE_TOPICS:
+        for t in subscribe_topics:
             client.subscribe(t)
         connected.set()
 
     def on_message(client, userdata, msg):
-        if inject_time[0] is None:
+        now = time.time()
+        if msg.topic == TOPIC_TRANSCRIPT and not transcript_only:
+            if not transcript_stage.event.is_set():
+                transcript_stage.receive(msg.payload, inject_time[0])
+                transcript_time[0] = now
             return
-        stage = stages.get(msg.topic)
-        if stage and not stage.event.is_set():
-            stage.receive(msg.payload, inject_time[0])
+        stage = downstream.get(msg.topic)
+        if stage and not stage.event.is_set() and transcript_time[0] is not None:
+            stage.receive(msg.payload, transcript_time[0])
 
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     mqttc.on_connect = on_connect
@@ -100,64 +117,74 @@ def run_test(broker: str, phrase: str) -> bool:
 
     mqttc.loop_start()
     if not connected.wait(timeout=5):
-        print("FAIL  broker connected but subscriptions timed out")
+        print("FAIL  timed out waiting for MQTT subscriptions")
         mqttc.loop_stop()
         return False
 
     # ── inject ───────────────────────────────────────────────────────────────
-    payload = json.dumps({"text": phrase, "ts": time.time()})
-    inject_time[0] = time.time()
-    mqttc.publish(TOPIC_TRANSCRIPT, payload)
-    print(f'Injected: "{phrase}"\n')
+    if transcript_only:
+        inject_time[0] = time.time()
+        transcript_time[0] = inject_time[0]
+        mqttc.publish(TOPIC_TRANSCRIPT, json.dumps({"text": phrase, "ts": inject_time[0]}))
+        print(f'Injected transcript: "{phrase}"\n')
+    else:
+        inject_time[0] = time.time()
+        print(f'Injecting audio via loopback: "{phrase}"\n')
+        inject_script = SCRIPTS_DIR / "inject.py"
+        threading.Thread(
+            target=subprocess.run,
+            args=(["python3", str(inject_script), "--phrase", phrase],),
+            kwargs={"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL},
+            daemon=True,
+        ).start()
 
-    # ── wait for each stage in pipeline order ────────────────────────────────
-    ordered = [
-        TOPIC_VERSE,
-        TOPIC_SPEAKING,
-        TOPIC_SENTIMENT,
-        TOPIC_FLARE,
-        TOPIC_BIGJET,
-        TOPIC_DONE,
-    ]
-
-    # Each stage deadline is relative to inject time, not the previous stage
+    # ── wait for each stage ──────────────────────────────────────────────────
     results = []
-    for topic in ordered:
-        stage    = stages[topic]
-        deadline = inject_time[0] + stage.timeout
-        ok       = stage.wait(deadline)
+
+    if not transcript_only:
+        deadline = inject_time[0] + T_TRANSCRIPT
+        ok = transcript_stage.wait_until(deadline)
+        results.append((transcript_stage, ok))
+        if not ok:
+            # STT never fired; no point waiting for downstream
+            mqttc.loop_stop()
+            mqttc.disconnect()
+            _print_results(results)
+            return False
+
+    # downstream timeouts are relative to when the transcript arrived
+    for topic in [TOPIC_VERSE, TOPIC_SPEAKING, TOPIC_SENTIMENT,
+                  TOPIC_FLARE, TOPIC_BIGJET, TOPIC_DONE]:
+        stage    = downstream[topic]
+        deadline = transcript_time[0] + stage.timeout
+        ok       = stage.wait_until(deadline)
         results.append((stage, ok))
 
     mqttc.loop_stop()
     mqttc.disconnect()
+    return _print_results(results)
 
-    # ── report ───────────────────────────────────────────────────────────────
+
+def _print_results(results):
     width = max(len(s.name) for s, _ in results)
     all_passed = True
     for stage, ok in results:
         if ok:
-            marker = "PASS"
             detail = f"{stage.elapsed:.1f}s"
-            # add a snippet for key stages
             if stage.payload:
                 try:
                     data = json.loads(stage.payload)
-                    if "text" in data:
+                    if isinstance(data, dict) and "text" in data:
                         snippet = data["text"][:60].replace("\n", " ")
                         detail += f'  "{snippet}"'
-                    elif isinstance(data, (int, float)):
-                        detail += f"  {data}ms"
                 except Exception:
-                    detail += f"  {stage.payload[:40]}"
+                    pass
+            print(f"  PASS  {stage.name:<{width}}  {detail}")
         else:
-            marker   = "FAIL"
-            detail   = f"no response within {stage.timeout}s"
+            print(f"  FAIL  {stage.name:<{width}}  no response within {stage.timeout}s")
             all_passed = False
 
-        print(f"  {marker}  {stage.name:<{width}}  {detail}")
-
-    total = time.time() - inject_time[0]
-    print(f"\n{'PASSED' if all_passed else 'FAILED'}  ({total:.1f}s total)")
+    print(f"\n{'PASSED' if all_passed else 'FAILED'}")
     return all_passed
 
 
@@ -166,16 +193,17 @@ def main():
     parser.add_argument("--broker", default=None,
                         help="MQTT broker host (default: auto-detect via bushutil)")
     parser.add_argument("--phrase", default="what is the meaning of fire",
-                        help="Phrase to inject as test transcript")
+                        help="Phrase to inject")
+    parser.add_argument("--transcript-only", action="store_true",
+                        help="Skip audio injection; publish transcript directly to MQTT")
     args = parser.parse_args()
 
-    if args.broker:
-        broker = args.broker
-    else:
+    broker = args.broker
+    if not broker:
         from bushutil import get_mqtt_broker
         broker = get_mqtt_broker()
 
-    ok = run_test(broker, args.phrase)
+    ok = run_test(broker, args.phrase, args.transcript_only)
     sys.exit(0 if ok else 1)
 
 
