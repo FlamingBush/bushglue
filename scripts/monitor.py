@@ -526,7 +526,7 @@ def _keyboard_thread():
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
+        tty.setcbreak(fd)
         while True:
             key = _read_key(fd)
             _handle_key(key)
