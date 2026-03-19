@@ -1,0 +1,17 @@
+[Unit]
+Description=Sentiment Analysis with MQTT Fire Control
+After=network.target
+
+[Service]
+Type=simple
+User=odroid
+ExecStart=/home/odroid/repos/bbsentimentqq/.venv/bin/python3 /home/odroid/repos/bbsentimentqq/bbsentimentqq.py
+WorkingDirectory=/home/odroid/repos/bbsentimentqq
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
