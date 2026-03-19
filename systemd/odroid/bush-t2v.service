@@ -6,7 +6,6 @@ Requires=chromadb.service ollama.service
 [Service]
 Type=simple
 User=odroid
-Environment=MQTT_BROKER=localhost
 Environment=T2V_BIN=/home/odroid/repos/t2v/target/release/text-to-verse
 Environment=AFFECTS_DIR=/home/odroid/repos/t2v/templates/affects
 ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/scripts/t2v-service.py

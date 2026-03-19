@@ -6,7 +6,6 @@ waits for it to be healthy, then subscribes to bush/pipeline/stt/transcript
 and publishes results to bush/pipeline/t2v/verse.
 """
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -34,6 +33,12 @@ MQTT_PORT = 1883
 
 
 def _windows_host_ip() -> str:
+    try:
+        with open("/proc/version") as f:
+            if "microsoft" not in f.read().lower():
+                return "localhost"
+    except OSError:
+        return "localhost"
     result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
     for line in result.stdout.splitlines():
         if line.startswith("default"):
@@ -76,7 +81,7 @@ def query_t2v(text: str) -> dict:
 
 
 def main():
-    broker = os.environ.get("MQTT_BROKER") or _windows_host_ip()
+    broker = _windows_host_ip()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     # Start t2v Rust binary
