@@ -333,6 +333,15 @@ def build_tts_panel(s: State) -> Panel:
 
 
 def build_log_panel(s: State) -> Panel:
+    # Audio device info + key hints embedded in the title
+    in_dev  = _fmt_device(s.current_input)
+    out_dev = _fmt_device(s.current_output)
+    title = (f"[bold]Log[/bold]"
+             f"  [dim]In:[/dim] [cyan]{in_dev}[/cyan]"
+             f"  [dim]Out:[/dim] [green]{out_dev}[/green]"
+             f"  [bold cyan]\\[i][/bold cyan][dim]nput[/dim]"
+             f"  [bold green]\\[o][/bold green][dim]utput[/dim]"
+             f"  [bold white]\\[q][/bold white][dim]uit[/dim]")
     text = Text()
     entries = list(s.log)
     for ts, tag, msg in reversed(entries):
@@ -347,7 +356,7 @@ def build_log_panel(s: State) -> Panel:
         text.append(f"{_fmt_ts(ts)}  ", style="dim")
         text.append(f"{tag:<12}", style=f"bold {tag_colour}")
         text.append(f"{msg}\n", style="")
-    return Panel(text, title="[bold]Log[/bold]", box=box.ROUNDED, border_style="dim")
+    return Panel(text, title=title, box=box.ROUNDED, border_style="dim")
 
 
 def _fmt_device(dev: dict | None) -> str:
@@ -360,24 +369,7 @@ def _fmt_device(dev: dict | None) -> str:
 
 
 def build_audio_panel(s: State) -> Panel:
-    """Compact one-liner in normal mode; device selector in selection modes."""
-    if s.ui_mode == "normal":
-        text = Text()
-        text.append("In: ",  style="dim")
-        text.append(_fmt_device(s.current_input),  style="cyan")
-        text.append("   Out: ", style="dim")
-        text.append(_fmt_device(s.current_output), style="green")
-        text.append("   ", style="dim")
-        text.append("[i]", style="bold cyan")
-        text.append("nput  ", style="dim")
-        text.append("[o]", style="bold green")
-        text.append("utput  ", style="dim")
-        text.append("[q]", style="bold white")
-        text.append("uit", style="dim")
-        return Panel(text, title="[bold]Audio Devices[/bold]",
-                     box=box.ROUNDED, border_style="dim")
-
-    # selection mode
+    """Device selector panel, used only in select_input / select_output modes."""
     if s.ui_mode == "select_input":
         devices = s.capture_devices
         title   = "[bold cyan]Select STT Input Device[/bold cyan]  [dim]Enter=confirm  Esc=cancel[/dim]"
@@ -415,26 +407,16 @@ def build_header(s: State) -> Text:
 def render(s: State) -> Layout:
     layout = Layout()
 
+    layout.split_column(
+        Layout(name="header",    size=1),
+        Layout(name="top",       size=5),
+        Layout(name="sentiment", size=4),
+        Layout(name="bottom",    size=11),
+        Layout(name="log"),
+    )
     if s.ui_mode in ("select_input", "select_output"):
-        # Replace log panel with expanded device selector
-        layout.split_column(
-            Layout(name="header",    size=1),
-            Layout(name="top",       size=5),
-            Layout(name="sentiment", size=4),
-            Layout(name="bottom",    size=11),
-            Layout(name="audio"),
-        )
-        layout["audio"].update(build_audio_panel(s))
+        layout["log"].update(build_audio_panel(s))
     else:
-        layout.split_column(
-            Layout(name="header",    size=1),
-            Layout(name="top",       size=5),
-            Layout(name="sentiment", size=4),
-            Layout(name="bottom",    size=11),
-            Layout(name="audio",     size=3),
-            Layout(name="log"),
-        )
-        layout["audio"].update(build_audio_panel(s))
         layout["log"].update(build_log_panel(s))
 
     layout["top"].split_row(
