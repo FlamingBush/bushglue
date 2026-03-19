@@ -17,6 +17,8 @@ import time
 
 import paho.mqtt.client as mqtt
 
+from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
+
 # ── config ─────────────────────────────────────────────────────────────────
 TOPIC_VERSE         = "bush/pipeline/t2v/verse"
 TOPIC_SPEAKING      = "bush/pipeline/tts/speaking"
@@ -64,9 +66,6 @@ def _sox_cmd() -> list[str]:
     else:
         output_args = ["-t", "alsa", dev]
     return ["sox", "-q", "-t", "wav", "-"] + output_args + SOX_EFFECTS
-
-
-from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
 
 
 def log(msg: str):
