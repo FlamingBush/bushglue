@@ -16,6 +16,7 @@ Usage:
     python3 integration-test.py --phrase "speak of the burning bush"
     python3 integration-test.py --transcript-only
     python3 integration-test.py --broker 192.168.1.10
+    python3 integration-test.py --health-only
 """
 import argparse
 import json
@@ -48,6 +49,17 @@ MQTT_PORT = 1883
 
 SCRIPTS_DIR = Path(__file__).parent
 
+# ── systemd units to check ────────────────────────────────────────────────────
+HEALTH_UNITS = [
+    "mosquitto",
+    "chromadb",
+    "bush-audio-agent",
+    "bush-stt",
+    "bush-t2v",
+    "bush-tts",
+    "bush-sentiment",
+]
+
 
 class Stage:
     def __init__(self, name, timeout):
@@ -64,6 +76,26 @@ class Stage:
 
     def wait_until(self, deadline):
         return self.event.wait(timeout=max(0, deadline - time.time()))
+
+
+def check_health() -> bool:
+    """Query systemd for each service unit and print a status table."""
+    print("Service health\n")
+    width = max(len(u) for u in HEALTH_UNITS)
+    all_active = True
+    for unit in HEALTH_UNITS:
+        result = subprocess.run(
+            ["systemctl", "is-active", unit],
+            capture_output=True, text=True,
+        )
+        state = result.stdout.strip()
+        ok = state == "active"
+        if not ok:
+            all_active = False
+        marker = "UP  " if ok else "DOWN"
+        print(f"  {marker}  {unit:<{width}}  {state}")
+    print()
+    return all_active
 
 
 def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
@@ -108,6 +140,7 @@ def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
     mqttc.on_connect = on_connect
     mqttc.on_message = on_message
 
+    check_health()
     print(f"Connecting to {broker}:{MQTT_PORT} ...")
     try:
         mqttc.connect(broker, MQTT_PORT, 60)
@@ -206,7 +239,12 @@ def main():
                         help="Phrase to inject")
     parser.add_argument("--transcript-only", action="store_true",
                         help="Skip audio injection; publish transcript directly to MQTT")
+    parser.add_argument("--health-only", action="store_true",
+                        help="Print service health and exit")
     args = parser.parse_args()
+
+    if args.health_only:
+        sys.exit(0 if check_health() else 1)
 
     broker = args.broker
     if not broker:
