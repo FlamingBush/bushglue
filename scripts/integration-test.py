@@ -43,7 +43,6 @@ TOPIC_SPEAKING   = "bush/pipeline/tts/speaking"
 TOPIC_DONE       = "bush/pipeline/tts/done"
 TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
 TOPIC_FLARE      = "bush/flame/flare/pulse"
-TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
 
 MQTT_PORT = 1883
 
@@ -108,7 +107,6 @@ def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
         TOPIC_SPEAKING:  Stage("tts/speaking",     T_SPEAKING),
         TOPIC_SENTIMENT: Stage("sentiment/result", T_SENTIMENT),
         TOPIC_FLARE:     Stage("flare pulse",      T_PULSE),
-        TOPIC_BIGJET:    Stage("bigjet pulse",      T_PULSE),
         TOPIC_DONE:      Stage("tts/done",         T_DONE),
     }
 
@@ -177,7 +175,7 @@ def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
     if not transcript_only:
         pending.append((transcript_stage, inject_time))   # base time = inject
     for topic in [TOPIC_VERSE, TOPIC_SPEAKING, TOPIC_SENTIMENT,
-                  TOPIC_FLARE, TOPIC_BIGJET, TOPIC_DONE]:
+                  TOPIC_FLARE, TOPIC_DONE]:
         pending.append((downstream[topic], transcript_time))  # base time = transcript
 
     results = []   # list of (stage, ok)  where ok is True/False/None (None = skipped)
