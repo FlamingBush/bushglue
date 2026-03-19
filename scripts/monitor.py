@@ -375,7 +375,7 @@ def build_audio_panel(s: State) -> Panel:
         text.append("[q]", style="bold white")
         text.append("uit", style="dim")
         return Panel(text, title="[bold]Audio Devices[/bold]",
-                     box=box.ROUNDED, border_style="dim", height=3)
+                     box=box.ROUNDED, border_style="dim")
 
     # selection mode
     if s.ui_mode == "select_input":
@@ -451,36 +451,29 @@ def render(s: State) -> Layout:
 
 
 # ── keyboard input ─────────────────────────────────────────────────────────
-def _read_key() -> str:
-    """Read one keypress from stdin in raw mode. Returns a string token."""
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        if ch == "\x1b":
-            # Possible escape sequence — read up to 2 more bytes non-blocking
-            try:
-                import select
-                r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if r:
-                    ch2 = sys.stdin.read(1)
-                    if ch2 == "[":
-                        r2, _, _ = select.select([sys.stdin], [], [], 0.05)
-                        if r2:
-                            ch3 = sys.stdin.read(1)
-                            if ch3 == "A":
-                                return "UP"
-                            elif ch3 == "B":
-                                return "DOWN"
-                            return f"ESC[{ch3}"
-                    return f"ESC{ch2}"
-            except Exception:
-                pass
-            return "ESC"
-        return ch
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+import os
+import select as _select
+
+
+def _read_key(fd: int) -> str:
+    """Read one keypress from an already-raw fd. Returns a string token."""
+    ch = os.read(fd, 1).decode("utf-8", errors="ignore")
+    if ch == "\x1b":
+        r, _, _ = _select.select([fd], [], [], 0.05)
+        if r:
+            ch2 = os.read(fd, 1).decode("utf-8", errors="ignore")
+            if ch2 == "[":
+                r2, _, _ = _select.select([fd], [], [], 0.05)
+                if r2:
+                    ch3 = os.read(fd, 1).decode("utf-8", errors="ignore")
+                    if ch3 == "A":
+                        return "UP"
+                    elif ch3 == "B":
+                        return "DOWN"
+                    return f"ESC[{ch3}"
+            return f"ESC{ch2}"
+        return "ESC"
+    return ch
 
 
 def _handle_key(key: str):
@@ -547,16 +540,21 @@ def _handle_key(key: str):
 
 
 def _keyboard_thread():
-    """Daemon thread reading keypresses from stdin."""
-    while True:
-        try:
-            key = _read_key()
+    """Daemon thread reading keypresses from stdin. Sets raw mode once for its lifetime."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            key = _read_key(fd)
             _handle_key(key)
             with state.lock:
                 if state.quit:
                     break
-        except Exception:
-            break
+    except Exception:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 # ── MQTT callbacks ─────────────────────────────────────────────────────────
