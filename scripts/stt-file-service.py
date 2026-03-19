@@ -10,22 +10,22 @@ Usage:
 """
 import argparse
 import json
+import os
 import sys
 import time
 import wave
 
 import paho.mqtt.client as mqtt
 
+from bushutil import mqtt_broker as _windows_host_ip
+
 # ── paths ──────────────────────────────────────────────────────────────────
-STT_DIR = "/mnt/c/Users/EB/speech-to-text"
-DEFAULT_MODEL = f"{STT_DIR}/models/en-us"
+STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
+DEFAULT_MODEL = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT = "bush/pipeline/stt/transcript"
 MQTT_PORT = 1883
-
-
-from bushutil import mqtt_broker as _windows_host_ip
 
 
 def log(msg: str):
