@@ -42,6 +42,7 @@ TOPICS = [
     "bush/flame/flare/pulse",
     "bush/flame/bigjet/pulse",
     "bush/pipeline/tts/speaking",
+    "bush/pipeline/tts/done",
     "bush/audio/devices",
     "bush/audio/stt/device",
     "bush/audio/tts/device",
@@ -354,6 +355,7 @@ def build_log_panel(s: State) -> Panel:
             "FLARE":      "red",
             "BIGJET":     "dark_orange",
             "TTS":        "green",
+            "TTS DONE":   "dim green",
         }.get(tag, "white")
         text.append(f"{_fmt_ts(ts)}  ", style="dim")
         text.append(f"{tag:<12}", style=f"bold {tag_colour}")
@@ -639,6 +641,9 @@ def on_message(client, userdata, msg):
                 state.tts_text = data.get("text", "")
                 state.tts_ts = now
                 state.log.append((now, "TTS", f'"{state.tts_text[:80]}"'))
+
+            elif topic == "bush/pipeline/tts/done":
+                state.log.append((now, "TTS DONE", ""))
 
             elif topic == "bush/audio/devices":
                 data = json.loads(msg.payload)
