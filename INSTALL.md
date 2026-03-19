@@ -179,6 +179,74 @@ python3 /mnt/c/Users/EB/bushglue/scripts/monitor.py
 Shows live STT transcripts, verses, emotion bars, ASCII bush (standby / flare /
 bigjet / both), TTS status, and event log. Quit with Ctrl-C.
 
+## Tuning / Replay
+
+Feed the same input repeatedly to compare results as you adjust t2v config, affect
+selection, ChromaDB collections, and other parameters.
+
+### Level 1 — Full pipeline replay (audio → STT → MQTT)
+
+Requires a mono, 16-bit PCM WAV file (16 kHz recommended):
+
+```bash
+python3 scripts/stt-file-service.py --file recording.wav --delay 3 --log runs/run1.jsonl
+```
+
+`--delay` pauses between utterances so you can watch `monitor.py` update in real time.
+`--log` appends one JSONL line per utterance for side-by-side comparison across runs.
+
+### Level 2 — Bypass STT (inject text directly)
+
+```bash
+# Single utterance
+python3 -c "
+import paho.mqtt.client as mqtt, json, time
+c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+c.connect('172.26.160.1', 1883)
+c.publish('bush/pipeline/stt/transcript', json.dumps({'text': 'what is the meaning of fire', 'ts': time.time()}))
+c.disconnect()
+"
+
+# Feed a text file line-by-line (one utterance per line)
+while IFS= read -r line; do
+    python3 -c "
+import paho.mqtt.client as mqtt, json, time
+c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+c.connect('172.26.160.1', 1883)
+c.publish('bush/pipeline/stt/transcript', json.dumps({'text': '$line', 'ts': time.time()}))
+c.disconnect()
+"
+    sleep 3
+done < prompts.txt
+```
+
+### Level 3 — Bypass STT + t2v (inject verse directly)
+
+```bash
+python3 -c "
+import paho.mqtt.client as mqtt, json, time
+c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+c.connect('172.26.160.1', 1883)
+c.publish('bush/pipeline/t2v/verse', json.dumps({'verse': 'And the fire of the Lord fell', 'ts': time.time()}))
+c.disconnect()
+"
+```
+
+### Capturing pipeline output for comparison
+
+```bash
+mosquitto_sub -h 172.26.160.1 -t 'bush/pipeline/#' -v | tee runs/run1.log
+```
+
+Run the same input again after changing a parameter, save to `runs/run2.log`, then diff.
+
+### Determinism notes
+
+- **Vosk STT**, **Ollama embeddings**, **ChromaDB**, and **DistilBERT** are deterministic
+  for identical inputs — same WAV file produces identical transcripts and verses.
+- **`bbsentimentqq` fire patterns** use `random.random()` for jitter, so fire timing
+  will vary between runs even with the same input.
+
 ## Troubleshooting
 
 | Symptom | Check |
