@@ -1,0 +1,18 @@
+[Unit]
+Description=Speech-to-Text MQTT Publisher
+After=network-online.target
+
+[Service]
+Type=simple
+User=odroid
+Environment=STT_DIR=/home/odroid/repos/speech-to-text
+Environment=STT_MODEL=/home/odroid/repos/speech-to-text/models/en-us
+Environment=STT_DEVICE=4
+ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/scripts/stt-service.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

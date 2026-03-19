@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
 Synthesize a phrase to WAV (or use an existing WAV) and inject it into the
-Bush pipeline via stt-file-service.py.
+Bush pipeline by playing it into the ALSA loopback device that stt-service.py
+is capturing from.
 
 Generated WAVs are saved to WAVS_DIR (default: ~/wavs/) for future replay.
 
 Usage:
     inject.py --phrase "what is the meaning of fire"
     inject.py --file ~/wavs/what_is_the_meaning_of_fire.wav
-    inject.py --phrase "consuming flame" --delay 2 --log runs/run1.jsonl
+
+Environment:
+    WAVS_DIR        where to save generated WAVs  (default: ~/wavs)
+    LOOPBACK_DEVICE ALSA playback device to write into  (default: hw:3,0)
 """
 import argparse
 import os
@@ -18,9 +22,7 @@ import sys
 from pathlib import Path
 
 WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
-STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
-STT_MODEL = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
-SCRIPTS_DIR = Path(__file__).parent
+LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "hw:3,0")
 
 
 def phrase_to_filename(phrase: str) -> str:
@@ -45,14 +47,11 @@ def synthesize(phrase: str, out_path: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Synthesize or load a WAV and inject into the Bush pipeline."
+        description="Synthesize or load a WAV and play it into the loopback mic device."
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--phrase", help="Text to synthesize and inject")
     group.add_argument("--file", help="Path to existing WAV file")
-    parser.add_argument("--delay", type=float, default=0.0,
-                        help="Pause between utterances (passed to stt-file-service)")
-    parser.add_argument("--log", help="Append utterances as JSONL to this file")
     args = parser.parse_args()
 
     if args.phrase:
@@ -69,17 +68,11 @@ def main():
             print(f"[inject] File not found: {wav}", file=sys.stderr)
             sys.exit(1)
 
-    cmd = [sys.executable, str(SCRIPTS_DIR / "stt-file-service.py"), "--file", str(wav)]
-    if args.delay:
-        cmd += ["--delay", str(args.delay)]
-    if args.log:
-        cmd += ["--log", args.log]
-
-    env = os.environ.copy()
-    env.setdefault("STT_DIR", STT_DIR)
-    env.setdefault("STT_MODEL", STT_MODEL)
-
-    subprocess.run(cmd, env=env)
+    print(f"[inject] Playing into {LOOPBACK_DEVICE}")
+    subprocess.run(
+        ["sox", str(wav), "-t", "alsa", LOOPBACK_DEVICE],
+        check=True,
+    )
 
 
 if __name__ == "__main__":

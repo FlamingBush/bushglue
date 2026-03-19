@@ -9,6 +9,7 @@ unmutes on bush/pipeline/tts/done, resetting the Vosk recognizer so
 any partial state from hearing TTS speech is discarded.
 """
 import json
+import os
 import queue
 import sys
 import threading
@@ -17,9 +18,11 @@ import time
 import paho.mqtt.client as mqtt
 import sounddevice as sd
 
-# ── paths ──────────────────────────────────────────────────────────────────
-STT_DIR = "/mnt/c/Users/EB/speech-to-text"
-MODEL_PATH = f"{STT_DIR}/models/en-us"
+# ── paths / device ─────────────────────────────────────────────────────────
+STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
+MODEL_PATH = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
+_dev = os.environ.get("STT_DEVICE")
+STT_DEVICE = int(_dev) if _dev and _dev.isdigit() else _dev  # int index or string name
 SAMPLE_RATE = 16000
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
@@ -87,13 +90,14 @@ def main():
             log(f"sounddevice status: {status}")
         audio_queue.put(bytes(indata))
 
-    log(f"Opening microphone at {SAMPLE_RATE} Hz...")
+    log(f"Opening microphone at {SAMPLE_RATE} Hz (device={STT_DEVICE!r})...")
     try:
         with sd.RawInputStream(
             samplerate=SAMPLE_RATE,
             blocksize=8000,
             dtype="int16",
             channels=1,
+            device=STT_DEVICE,
             callback=callback,
         ):
             log("Listening. Speak a query...")
