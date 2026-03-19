@@ -17,7 +17,6 @@ Both effects run in separate threads so they can overlap cleanly.
 import json
 import queue
 import signal
-import subprocess
 import sys
 import threading
 
@@ -31,18 +30,7 @@ TOPIC_BIGJET = "bush/flame/bigjet/pulse"
 SR = 44100  # sample rate
 
 
-def _windows_host_ip() -> str:
-    try:
-        with open("/proc/version") as f:
-            if "microsoft" not in f.read().lower():
-                return "localhost"
-    except OSError:
-        return "localhost"
-    result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("default"):
-            return line.split()[2]
-    return "localhost"
+from bushutil import mqtt_broker as _windows_host_ip
 
 
 def log(msg: str):

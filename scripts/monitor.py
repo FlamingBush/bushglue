@@ -6,7 +6,6 @@ Subscribes to all MQTT topics and renders them as a live TUI.
 Usage: python3 monitor.py
 """
 import json
-import subprocess
 import sys
 import threading
 import time
@@ -145,18 +144,7 @@ def _bigjet_active(s: "State") -> bool:
                 and (time.time() - s.bigjet_ts) * 1000 < s.bigjet_ms)
 
 
-def _windows_host_ip() -> str:
-    try:
-        with open("/proc/version") as f:
-            if "microsoft" not in f.read().lower():
-                return "localhost"
-    except OSError:
-        return "localhost"
-    result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("default"):
-            return line.split()[2]
-    return "localhost"
+from bushutil import mqtt_broker as _windows_host_ip
 
 
 # ── shared state (written by MQTT thread, read by render thread) ───────────

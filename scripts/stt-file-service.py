@@ -10,7 +10,6 @@ Usage:
 """
 import argparse
 import json
-import subprocess
 import sys
 import time
 import wave
@@ -26,18 +25,7 @@ TOPIC_TRANSCRIPT = "bush/pipeline/stt/transcript"
 MQTT_PORT = 1883
 
 
-def _windows_host_ip() -> str:
-    try:
-        with open("/proc/version") as f:
-            if "microsoft" not in f.read().lower():
-                return "localhost"
-    except OSError:
-        return "localhost"
-    result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("default"):
-            return line.split()[2]
-    return "localhost"
+from bushutil import mqtt_broker as _windows_host_ip
 
 
 def log(msg: str):
