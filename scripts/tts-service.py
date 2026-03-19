@@ -63,7 +63,7 @@ def _sox_cmd() -> list[str]:
         output_args = ["-d"]
     else:
         output_args = ["-t", "alsa", dev]
-    return ["sox", "-t", "wav", "-"] + output_args + SOX_EFFECTS
+    return ["sox", "-q", "-t", "wav", "-"] + output_args + SOX_EFFECTS
 
 
 from bushutil import mqtt_broker as _windows_host_ip
