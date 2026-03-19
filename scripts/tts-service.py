@@ -138,7 +138,7 @@ def _speak_worker():
             sox_rc = sox.returncode
             sox_err = (sox.stderr.read().decode(errors="replace").strip()
                        if sox.stderr else "")
-            if sox_err:
+            if sox_err and "can't encode 0-bit" not in sox_err:
                 log(f"sox stderr (rc={sox_rc}): {sox_err}")
             # rc=-9: killed via _kill_current (SIGKILL) — interrupt, still publish done
             # rc=other non-zero: sox device/format error — skip done to avoid false gate clear
