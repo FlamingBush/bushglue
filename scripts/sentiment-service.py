@@ -56,6 +56,8 @@ EMOTION_PATTERNS = {
 
 # ── fire pattern runner ────────────────────────────────────────────────────
 
+FIRE_MAX_SECONDS = 30  # safety cutoff if tts/done is never received
+
 def _fire_loop(pattern: dict, score: float, mqttc: mqtt.Client, stop: threading.Event):
     """Publish pulsed fire commands until stop is set (i.e. TTS finishes)."""
     flare_ms    = int(pattern["flare_ms"]  * score)
@@ -64,8 +66,9 @@ def _fire_loop(pattern: dict, score: float, mqttc: mqtt.Client, stop: threading.
     bigjet_period = pattern["bigjet_period"]
     jitter       = pattern["jitter"]
     last_bigjet  = 0.0
+    deadline     = time.monotonic() + FIRE_MAX_SECONDS
 
-    while not stop.is_set():
+    while not stop.is_set() and time.monotonic() < deadline:
         # flare pulse
         if flare_ms > 0:
             v = flare_ms * (1 + jitter * (random.random() * 2 - 1))
@@ -82,6 +85,9 @@ def _fire_loop(pattern: dict, score: float, mqttc: mqtt.Client, stop: threading.
         # wait for next flare period (with jitter), or until stopped
         p = flare_period * (1 + jitter * (random.random() * 2 - 1))
         stop.wait(p / 1000)
+
+    if not stop.is_set():
+        print(f"[sentiment] fire pattern timed out after {FIRE_MAX_SECONDS}s (no tts/done received)", flush=True)
 
 
 _fire_stop: threading.Event | None = None
