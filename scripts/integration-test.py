@@ -139,26 +139,33 @@ def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
         ).start()
 
     # ── wait for each stage ──────────────────────────────────────────────────
-    results = []
-
+    # Build the full ordered list up front so Ctrl+C can show remaining as skipped.
+    pending = []
     if not transcript_only:
-        deadline = inject_time[0] + T_TRANSCRIPT
-        ok = transcript_stage.wait_until(deadline)
-        results.append((transcript_stage, ok))
-        if not ok:
-            # STT never fired; no point waiting for downstream
-            mqttc.loop_stop()
-            mqttc.disconnect()
-            _print_results(results)
-            return False
-
-    # downstream timeouts are relative to when the transcript arrived
+        pending.append((transcript_stage, inject_time))   # base time = inject
     for topic in [TOPIC_VERSE, TOPIC_SPEAKING, TOPIC_SENTIMENT,
                   TOPIC_FLARE, TOPIC_BIGJET, TOPIC_DONE]:
-        stage    = downstream[topic]
-        deadline = transcript_time[0] + stage.timeout
-        ok       = stage.wait_until(deadline)
-        results.append((stage, ok))
+        pending.append((downstream[topic], transcript_time))  # base time = transcript
+
+    results = []   # list of (stage, ok)  where ok is True/False/None (None = skipped)
+    try:
+        for stage, base_ref in pending:
+            if base_ref[0] is None:
+                # base time not yet known (transcript never arrived) — skip rest
+                results.append((stage, None))
+                continue
+            deadline = base_ref[0] + stage.timeout
+            ok = stage.wait_until(deadline)
+            results.append((stage, ok))
+            if not ok and stage is transcript_stage:
+                # STT never fired; mark rest as skipped
+                for s, _ in pending[len(results):]:
+                    results.append((s, None))
+                break
+    except KeyboardInterrupt:
+        print()
+        for s, _ in pending[len(results):]:
+            results.append((s, None))
 
     mqttc.loop_stop()
     mqttc.disconnect()
@@ -169,7 +176,7 @@ def _print_results(results):
     width = max(len(s.name) for s, _ in results)
     all_passed = True
     for stage, ok in results:
-        if ok:
+        if ok is True:
             detail = f"{stage.elapsed:.1f}s"
             if stage.payload:
                 try:
@@ -180,8 +187,11 @@ def _print_results(results):
                 except Exception:
                     pass
             print(f"  PASS  {stage.name:<{width}}  {detail}")
-        else:
+        elif ok is False:
             print(f"  FAIL  {stage.name:<{width}}  no response within {stage.timeout}s")
+            all_passed = False
+        else:
+            print(f"  skip  {stage.name:<{width}}")
             all_passed = False
 
     print(f"\n{'PASSED' if all_passed else 'FAILED'}")
