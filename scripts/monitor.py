@@ -4,17 +4,28 @@ Real-time pipeline monitor for Bush Glue.
 Subscribes to all MQTT topics and renders them as a live TUI.
 
 Usage: python3 monitor.py
+
+Keys:
+  i        — select STT input device
+  o        — select TTS output device
+  j/↓      — move cursor down
+  k/↑      — move cursor up
+  Enter    — confirm selection
+  Esc      — cancel
+  0-9      — jump to device index
+  q        — quit
 """
 import json
 import sys
+import termios
 import threading
 import time
+import tty
 from collections import deque
 from datetime import datetime
 
 import paho.mqtt.client as mqtt
 from rich import box
-from rich.columns import Columns
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -31,6 +42,9 @@ TOPICS = [
     "bush/flame/flare/pulse",
     "bush/flame/bigjet/pulse",
     "bush/pipeline/tts/speaking",
+    "bush/audio/devices",
+    "bush/audio/stt/device",
+    "bush/audio/tts/device",
 ]
 
 # ── fire hardware limits (ms valve on-time) ────────────────────────────────
@@ -51,14 +65,7 @@ LOG_MAX = 12
 BAR_WIDTH = 28
 
 # ── bush ASCII art ─────────────────────────────────────────────────────────
-# 11 chars wide, 7 rows.  Characters:
-#   ,  →  stems/twigs      *  →  foliage
-#   ~  →  small flame      )( →  flame curl
-#   ^  →  jet tip          \/ →  jet spread
-#   |  →  trunk or jet column
-
 _BUSH_ART = {
-    # calm green bush, dim pilot light
     "cold": [
         "   ,*,   ",
         "  (*,*)  ",
@@ -68,7 +75,6 @@ _BUSH_ART = {
         "   |||   ",
         "   |||   ",
     ],
-    # flare valve open — fire through foliage, no jet
     "flare": [
         "  )~*~(  ",
         " )~*~*~( ",
@@ -78,7 +84,6 @@ _BUSH_ART = {
         "   |||   ",
         "   |||   ",
     ],
-    # bigjet valve open — vertical jet through cold (unlit) bush
     "bigjet_cold": [
         "    ^    ",
         "   \\|/   ",
@@ -88,7 +93,6 @@ _BUSH_ART = {
         "   |||   ",
         "   |||   ",
     ],
-    # both valves open — jet through burning bush
     "bigjet_flare": [
         "    ^    ",
         "   \\|/   ",
@@ -102,7 +106,6 @@ _BUSH_ART = {
 
 
 def _color_bush_line(line: str, row: int, bush_state: str) -> Text:
-    """Return a richly-coloured Text for one row of bush art."""
     on_fire  = bush_state in ("flare", "bigjet_flare")
     has_jet  = bush_state in ("bigjet_cold", "bigjet_flare")
     t = Text()
@@ -125,9 +128,9 @@ def _color_bush_line(line: str, row: int, bush_state: str) -> Text:
         elif ch == ",":
             t.append(ch, style="dark_green")
         elif ch == "|":
-            if row >= 5:    # trunk rows
+            if row >= 5:
                 t.append(ch, style="bold orange3" if on_fire else "dim yellow")
-            else:           # jet column
+            else:
                 t.append(ch, style="bold bright_white")
         else:
             t.append(ch)
@@ -147,7 +150,7 @@ def _bigjet_active(s: "State") -> bool:
 from bushutil import mqtt_broker as _windows_host_ip
 
 
-# ── shared state (written by MQTT thread, read by render thread) ───────────
+# ── shared state ───────────────────────────────────────────────────────────
 class State:
     def __init__(self):
         self.lock = threading.Lock()
@@ -158,7 +161,7 @@ class State:
         self.verse_query = ""
         self.verse_text = ""
         self.verse_ts: float | None = None
-        self.scores: list[dict] = []          # [{label, score}, ...]
+        self.scores: list[dict] = []
         self.sentiment_ts: float | None = None
         self.flare_ms = 0
         self.flare_ts: float | None = None
@@ -167,15 +170,22 @@ class State:
         self.tts_text = ""
         self.tts_ts: float | None = None
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
-        # (ts, tag, message)
+        # audio device selection
+        self.capture_devices: list[dict] = []
+        self.playback_devices: list[dict] = []
+        self.current_input: dict | None = None
+        self.current_output: dict | None = None
+        self.ui_mode = "normal"        # "normal" | "select_input" | "select_output"
+        self.selected_index = 0
+        self.quit = False
 
 
 state = State()
+_mqttc: mqtt.Client | None = None
 
 
 # ── bar helpers ────────────────────────────────────────────────────────────
 def _bar(value: int, maximum: int, width: int, colour: str) -> Text:
-    """Render a filled progress bar as a rich Text object."""
     filled = int(width * min(value, maximum) / maximum) if maximum else 0
     empty = width - filled
     t = Text()
@@ -185,7 +195,6 @@ def _bar(value: int, maximum: int, width: int, colour: str) -> Text:
 
 
 def _age_style(ts: float | None) -> str:
-    """Dim text if the last update was more than 5 s ago."""
     if ts is None:
         return "dim"
     age = time.time() - ts
@@ -292,14 +301,12 @@ def build_bush_panel(s: State) -> Panel:
 def build_fire_panel(s: State) -> Panel:
     text = Text()
 
-    # Flare
     flare_style = _age_style(s.flare_ts)
     text.append("Flare   ", style="bold red")
     text.append(_bar(s.flare_ms, FLARE_MAX, BAR_WIDTH, "red"))
     text.append(f"  {s.flare_ms:>5} ms", style=f"bold red {flare_style}")
     text.append(f"   max {FLARE_MAX} ms\n", style="dim")
 
-    # Big Jet
     bigjet_style = _age_style(s.bigjet_ts)
     text.append("Big Jet ", style="bold dark_orange")
     text.append(_bar(s.bigjet_ms, BIGJET_MAX, BAR_WIDTH, "dark_orange"))
@@ -343,6 +350,57 @@ def build_log_panel(s: State) -> Panel:
     return Panel(text, title="[bold]Log[/bold]", box=box.ROUNDED, border_style="dim")
 
 
+def _fmt_device(dev: dict | None) -> str:
+    if dev is None:
+        return "unknown"
+    d = dev.get("device")
+    if d is None:
+        return "default"
+    return str(d)
+
+
+def build_audio_panel(s: State) -> Panel:
+    """Compact one-liner in normal mode; device selector in selection modes."""
+    if s.ui_mode == "normal":
+        text = Text()
+        text.append("In: ",  style="dim")
+        text.append(_fmt_device(s.current_input),  style="cyan")
+        text.append("   Out: ", style="dim")
+        text.append(_fmt_device(s.current_output), style="green")
+        text.append("   ", style="dim")
+        text.append("[i]", style="bold cyan")
+        text.append("nput  ", style="dim")
+        text.append("[o]", style="bold green")
+        text.append("utput  ", style="dim")
+        text.append("[q]", style="bold white")
+        text.append("uit", style="dim")
+        return Panel(text, title="[bold]Audio Devices[/bold]",
+                     box=box.ROUNDED, border_style="dim", height=3)
+
+    # selection mode
+    if s.ui_mode == "select_input":
+        devices = s.capture_devices
+        title   = "[bold cyan]Select STT Input Device[/bold cyan]  [dim]Enter=confirm  Esc=cancel[/dim]"
+        border  = "cyan"
+    else:
+        devices = s.playback_devices
+        title   = "[bold green]Select TTS Output Device[/bold green]  [dim]Enter=confirm  Esc=cancel[/dim]"
+        border  = "green"
+
+    text = Text()
+    if not devices:
+        text.append("No devices found — is audio-agent running?", style="dim")
+    else:
+        for i, dev in enumerate(devices):
+            cursor = "► " if i == s.selected_index else "  "
+            style  = "bold reverse" if i == s.selected_index else ""
+            text.append(cursor, style="bold yellow" if i == s.selected_index else "dim")
+            text.append(f"[{dev['index']:2d}]  {dev['name']}", style=style)
+            text.append(f"  {int(dev['sr'])} Hz  {dev['channels']}ch\n",
+                        style="dim" if i != s.selected_index else "dim reverse")
+    return Panel(text, title=title, box=box.ROUNDED, border_style=border)
+
+
 def build_header(s: State) -> Text:
     t = Text()
     status = "[bold green]● CONNECTED[/bold green]" if s.connected else "[bold red]● DISCONNECTED[/bold red]"
@@ -356,13 +414,29 @@ def build_header(s: State) -> Text:
 
 def render(s: State) -> Layout:
     layout = Layout()
-    layout.split_column(
-        Layout(name="header",    size=1),
-        Layout(name="top",       size=5),
-        Layout(name="sentiment", size=4),
-        Layout(name="bottom",    size=11),
-        Layout(name="log"),
-    )
+
+    if s.ui_mode in ("select_input", "select_output"):
+        # Replace log panel with expanded device selector
+        layout.split_column(
+            Layout(name="header",    size=1),
+            Layout(name="top",       size=5),
+            Layout(name="sentiment", size=4),
+            Layout(name="bottom",    size=11),
+            Layout(name="audio"),
+        )
+        layout["audio"].update(build_audio_panel(s))
+    else:
+        layout.split_column(
+            Layout(name="header",    size=1),
+            Layout(name="top",       size=5),
+            Layout(name="sentiment", size=4),
+            Layout(name="bottom",    size=11),
+            Layout(name="audio",     size=3),
+            Layout(name="log"),
+        )
+        layout["audio"].update(build_audio_panel(s))
+        layout["log"].update(build_log_panel(s))
+
     layout["top"].split_row(
         Layout(build_stt_panel(s),   name="stt"),
         Layout(build_verse_panel(s), name="verse"),
@@ -372,9 +446,117 @@ def render(s: State) -> Layout:
         Layout(build_bush_panel(s), name="bush", ratio=2),
         Layout(build_tts_panel(s),  name="tts",  ratio=3),
     )
-    layout["log"].update(build_log_panel(s))
     layout["header"].update(build_header(s))
     return layout
+
+
+# ── keyboard input ─────────────────────────────────────────────────────────
+def _read_key() -> str:
+    """Read one keypress from stdin in raw mode. Returns a string token."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            # Possible escape sequence — read up to 2 more bytes non-blocking
+            try:
+                import select
+                r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if r:
+                    ch2 = sys.stdin.read(1)
+                    if ch2 == "[":
+                        r2, _, _ = select.select([sys.stdin], [], [], 0.05)
+                        if r2:
+                            ch3 = sys.stdin.read(1)
+                            if ch3 == "A":
+                                return "UP"
+                            elif ch3 == "B":
+                                return "DOWN"
+                            return f"ESC[{ch3}"
+                    return f"ESC{ch2}"
+            except Exception:
+                pass
+            return "ESC"
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _handle_key(key: str):
+    global _mqttc
+    with state.lock:
+        mode = state.ui_mode
+
+    if mode == "normal":
+        if key == "i":
+            with state.lock:
+                state.ui_mode = "select_input"
+                state.selected_index = 0
+            if _mqttc:
+                _mqttc.publish("bush/audio/discover", "{}")
+        elif key == "o":
+            with state.lock:
+                state.ui_mode = "select_output"
+                state.selected_index = 0
+            if _mqttc:
+                _mqttc.publish("bush/audio/discover", "{}")
+        elif key in ("q", "Q", "\x03"):   # q or Ctrl-C
+            with state.lock:
+                state.quit = True
+
+    elif mode in ("select_input", "select_output"):
+        with state.lock:
+            if mode == "select_input":
+                devices = state.capture_devices
+            else:
+                devices = state.playback_devices
+            n = len(devices)
+
+        if key in ("j", "DOWN") and n > 0:
+            with state.lock:
+                state.selected_index = (state.selected_index + 1) % n
+        elif key in ("k", "UP") and n > 0:
+            with state.lock:
+                state.selected_index = (state.selected_index - 1) % n
+        elif key.isdigit():
+            with state.lock:
+                idx = int(key)
+                if 0 <= idx < n:
+                    state.selected_index = idx
+        elif key in ("\r", "\n"):    # Enter — confirm
+            with state.lock:
+                sel = state.selected_index
+                if mode == "select_input":
+                    devices = state.capture_devices
+                    topic   = "bush/audio/stt/set-device"
+                else:
+                    devices = state.playback_devices
+                    topic   = "bush/audio/tts/set-device"
+                state.ui_mode = "normal"
+            if _mqttc and devices and sel < len(devices):
+                dev = devices[sel]
+                if mode == "select_input":
+                    payload = json.dumps({"device": dev["index"]})
+                else:
+                    payload = json.dumps({"device": dev["name"]})
+                _mqttc.publish(topic, payload)
+        elif key == "ESC":
+            with state.lock:
+                state.ui_mode = "normal"
+
+
+def _keyboard_thread():
+    """Daemon thread reading keypresses from stdin."""
+    while True:
+        try:
+            key = _read_key()
+            _handle_key(key)
+            with state.lock:
+                if state.quit:
+                    break
+        except Exception:
+            break
 
 
 # ── MQTT callbacks ─────────────────────────────────────────────────────────
@@ -383,6 +565,8 @@ def on_connect(client, userdata, flags, reason_code, properties):
         state.connected = (str(reason_code) == "Success")
     for topic in TOPICS:
         client.subscribe(topic)
+    # Request fresh device list
+    client.publish("bush/audio/discover", "{}")
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
@@ -439,6 +623,17 @@ def on_message(client, userdata, msg):
                 state.tts_ts = now
                 state.log.append((now, "TTS", f'"{state.tts_text[:80]}"'))
 
+            elif topic == "bush/audio/devices":
+                data = json.loads(msg.payload)
+                state.capture_devices  = data.get("capture", [])
+                state.playback_devices = data.get("playback", [])
+
+            elif topic == "bush/audio/stt/device":
+                state.current_input = json.loads(msg.payload)
+
+            elif topic == "bush/audio/tts/device":
+                state.current_output = json.loads(msg.payload)
+
     except Exception as e:
         with state.lock:
             state.log.append((now, "ERROR", str(e)))
@@ -446,6 +641,7 @@ def on_message(client, userdata, msg):
 
 # ── main ───────────────────────────────────────────────────────────────────
 def main():
+    global _mqttc
     broker = _windows_host_ip()
     with state.lock:
         state.broker = broker
@@ -454,6 +650,7 @@ def main():
     mqttc.on_connect = on_connect
     mqttc.on_disconnect = on_disconnect
     mqttc.on_message = on_message
+    _mqttc = mqttc
 
     try:
         mqttc.connect(broker, MQTT_PORT, 60)
@@ -463,12 +660,21 @@ def main():
 
     mqttc.loop_start()
 
+    # Start keyboard input thread (only if stdin is a tty)
+    if sys.stdin.isatty():
+        kb = threading.Thread(target=_keyboard_thread, daemon=True)
+        kb.start()
+
     console = Console()
     try:
         with Live(render(state), console=console, refresh_per_second=8,
                   screen=True, vertical_overflow="visible") as live:
             while True:
                 time.sleep(0.125)
+                with state.lock:
+                    should_quit = state.quit
+                if should_quit:
+                    break
                 with state.lock:
                     live.update(render(state))
     except KeyboardInterrupt:

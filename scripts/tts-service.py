@@ -4,6 +4,8 @@ Text-to-speech service for Bush Glue.
 Subscribes to bush/pipeline/t2v/verse and speaks each verse aloud via espeak-ng.
 Queues verses so rapid-fire messages don't overlap; drops stale items if the
 queue backs up so playback stays roughly in sync with the pipeline.
+
+Accepts runtime output device changes via bush/audio/tts/set-device {"device": <str|null>}.
 """
 import json
 import queue
@@ -16,9 +18,11 @@ import time
 import paho.mqtt.client as mqtt
 
 # ── config ─────────────────────────────────────────────────────────────────
-TOPIC_VERSE = "bush/pipeline/t2v/verse"
-TOPIC_SPEAKING = "bush/pipeline/tts/speaking"
-TOPIC_DONE = "bush/pipeline/tts/done"
+TOPIC_VERSE         = "bush/pipeline/t2v/verse"
+TOPIC_SPEAKING      = "bush/pipeline/tts/speaking"
+TOPIC_DONE          = "bush/pipeline/tts/done"
+TOPIC_SET_DEVICE    = "bush/audio/tts/set-device"
+TOPIC_DEVICE_STATUS = "bush/audio/tts/device"
 MQTT_PORT = 1883
 
 # Extra silence after sox finishes before signalling done (reverb tail)
@@ -41,13 +45,25 @@ ESPEAK_CMD = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "-
 #     100% stereo-depth  — wide horizon
 #     28ms pre-delay     — sound crossing distance before cliff echo returns
 #     3dB  wet-gain      — present but not drowning the voice
-SOX_CMD = ["sox", "-t", "wav", "-", "-d",
-           "gain", "-8",
-           "pitch", "-250",
-           "reverb", "65", "12", "100", "100", "28", "3"]
+SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
 
 # Drop queued verses beyond this depth so we never fall minutes behind
 QUEUE_MAX = 2
+
+# Current TTS output device: None → sox default (-d), str → ALSA device name
+_tts_device: str | None = None
+_device_lock = threading.Lock()
+
+
+def _sox_cmd() -> list[str]:
+    """Build the sox command using the current output device."""
+    with _device_lock:
+        dev = _tts_device
+    if dev is None:
+        output_args = ["-d"]
+    else:
+        output_args = ["-t", "alsa", dev]
+    return ["sox", "-t", "wav", "-"] + output_args + SOX_EFFECTS
 
 
 from bushutil import mqtt_broker as _windows_host_ip
@@ -59,7 +75,6 @@ def log(msg: str):
 
 # ── speech worker ───────────────────────────────────────────────────────────
 speech_queue: queue.Queue[str | None] = queue.Queue(maxsize=QUEUE_MAX)
-# Both espeak and sox processes; killed together on interrupt
 _current_procs: list[subprocess.Popen] = []
 _proc_lock = threading.Lock()
 _mqttc: mqtt.Client | None = None   # set after connect
@@ -70,7 +85,7 @@ def _kill_current():
     with _proc_lock:
         for p in _current_procs:
             if p.poll() is None:
-                p.kill()   # SIGKILL — exits immediately, no graceful drain
+                p.kill()
         _current_procs.clear()
 
 
@@ -78,7 +93,6 @@ def _pa_keepalive():
     """Play silence every 4 s through sox to keep PulseAudio awake.
     Without this, WSLg's PA sink sleeps after a few seconds of silence and
     the first real sox invocation stalls for several seconds while it wakes."""
-    # warm up immediately on startup
     time.sleep(0.5)
     while True:
         try:
@@ -96,7 +110,7 @@ def _speak_worker():
     """Runs in a background thread; pulls verses and speaks them one at a time."""
     while True:
         text = speech_queue.get()
-        if text is None:          # shutdown sentinel
+        if text is None:
             break
         log(f"Speaking: {text[:80]!r}")
         if _mqttc:
@@ -105,19 +119,18 @@ def _speak_worker():
             except Exception:
                 pass
         try:
-            # espeak writes WAV to stdout; sox reads it and plays with effects
             espeak = subprocess.Popen(
                 ESPEAK_CMD + [text],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
             sox = subprocess.Popen(
-                SOX_CMD,
+                _sox_cmd(),
                 stdin=espeak.stdout,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            espeak.stdout.close()   # let sox own the pipe
+            espeak.stdout.close()
             with _proc_lock:
                 _current_procs.extend([espeak, sox])
             sox.wait()
@@ -157,15 +170,12 @@ def _enqueue(text: str):
 def _interrupt_and_enqueue(text: str):
     """Interrupt current speech and drain queue before enqueuing new verse."""
     _kill_current()
-
-    # Drain stale queue entries
     while not speech_queue.empty():
         try:
             speech_queue.get_nowait()
             speech_queue.task_done()
         except queue.Empty:
             break
-
     _enqueue(text)
 
 
@@ -173,22 +183,38 @@ def _interrupt_and_enqueue(text: str):
 def on_connect(client, userdata, flags, reason_code, properties):
     log(f"MQTT connected (rc={reason_code})")
     client.subscribe(TOPIC_VERSE)
+    client.subscribe(TOPIC_SET_DEVICE)
     log(f"Subscribed to {TOPIC_VERSE}")
+    with _device_lock:
+        dev = _tts_device
+    client.publish(TOPIC_DEVICE_STATUS, json.dumps({"device": dev}), retain=True)
 
 
 def on_message(client, userdata, msg):
-    try:
-        data = json.loads(msg.payload)
-        text = data.get("text", "").strip()
-        if not text:
-            return
-        # Flatten multi-line verse — remove annotation lines (indented or after \n\n)
-        # Keep only the first paragraph (the verse itself, not footnotes)
-        first_para = text.split("\n\n")[0]
-        clean = " ".join(line.strip() for line in first_para.splitlines() if line.strip())
-        _interrupt_and_enqueue(clean)
-    except Exception as e:
-        log(f"Message error: {e}")
+    global _tts_device
+    if msg.topic == TOPIC_VERSE:
+        try:
+            data = json.loads(msg.payload)
+            text = data.get("text", "").strip()
+            if not text:
+                return
+            first_para = text.split("\n\n")[0]
+            clean = " ".join(line.strip() for line in first_para.splitlines() if line.strip())
+            _interrupt_and_enqueue(clean)
+        except Exception as e:
+            log(f"Message error: {e}")
+    elif msg.topic == TOPIC_SET_DEVICE:
+        try:
+            data = json.loads(msg.payload)
+            raw = data.get("device")   # None or str
+            dev = str(raw) if raw is not None else None
+            with _device_lock:
+                _tts_device = dev
+            log(f"Output device set to: {dev!r}")
+            client.publish(TOPIC_DEVICE_STATUS,
+                           json.dumps({"device": dev, "status": "ok"}), retain=True)
+        except Exception as e:
+            log(f"set-device error: {e}")
 
 
 def main():
@@ -209,7 +235,7 @@ def main():
 
     def _shutdown(signum, frame):
         log("Shutting down...")
-        speech_queue.put(None)   # stop worker
+        speech_queue.put(None)
         _kill_current()
         mqttc.loop_stop()
         mqttc.disconnect()

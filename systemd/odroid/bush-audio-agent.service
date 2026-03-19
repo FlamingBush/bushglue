@@ -1,0 +1,15 @@
+[Unit]
+Description=Audio device discovery agent
+After=network-online.target
+
+[Service]
+Type=simple
+User=odroid
+ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/scripts/audio-agent.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
