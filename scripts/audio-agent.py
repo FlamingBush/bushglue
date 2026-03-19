@@ -23,7 +23,14 @@ def log(msg: str):
 
 
 def _device_list():
-    """Return {capture: [...], playback: [...]} from sounddevice."""
+    """Return {capture: [...], playback: [...]} from sounddevice.
+
+    Re-initialises PortAudio each time so hot-plugged USB devices are picked up
+    (PortAudio caches the device list at initialisation and won't see devices
+    that were connected after the process started otherwise).
+    """
+    sd._terminate()
+    sd._initialize()
     capture = []
     playback = []
     for dev in sd.query_devices():
