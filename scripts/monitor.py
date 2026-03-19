@@ -175,8 +175,9 @@ class State:
         self.playback_devices: list[dict] = []
         self.current_input: dict | None = None
         self.current_output: dict | None = None
-        self.ui_mode = "normal"        # "normal" | "select_input" | "select_output"
+        self.ui_mode = "normal"        # "normal" | "select_input" | "select_output" | "input_text"
         self.selected_index = 0
+        self.input_text = ""
         self.quit = False
 
 
@@ -341,6 +342,7 @@ def build_log_panel(s: State) -> Panel:
              f"  [dim]Out:[/dim] [green]{out_dev}[/green]"
              f"  [bold cyan]\\[i][/bold cyan][dim]nput[/dim]"
              f"  [bold green]\\[o][/bold green][dim]utput[/dim]"
+             f"  [bold yellow]\\[t][/bold yellow][dim]ranscript[/dim]"
              f"  [bold white]\\[q][/bold white][dim]uit[/dim]")
     text = Text()
     entries = list(s.log)
@@ -357,6 +359,16 @@ def build_log_panel(s: State) -> Panel:
         text.append(f"{tag:<12}", style=f"bold {tag_colour}")
         text.append(f"{msg}\n", style="")
     return Panel(text, title=title, box=box.ROUNDED, border_style="dim")
+
+
+def build_input_panel(s: State) -> Panel:
+    text = Text()
+    text.append(s.input_text, style="bold white")
+    text.append("█", style="blink white")   # block cursor
+    return Panel(text,
+                 title="[bold yellow]Inject Transcript[/bold yellow]"
+                       "  [dim]Enter=send  Esc=cancel[/dim]",
+                 box=box.ROUNDED, border_style="yellow")
 
 
 def _fmt_device(dev: dict | None) -> str:
@@ -416,6 +428,8 @@ def render(s: State) -> Layout:
     )
     if s.ui_mode in ("select_input", "select_output"):
         layout["log"].update(build_audio_panel(s))
+    elif s.ui_mode == "input_text":
+        layout["log"].update(build_input_panel(s))
     else:
         layout["log"].update(build_log_panel(s))
 
@@ -476,9 +490,32 @@ def _handle_key(key: str):
                 state.selected_index = 0
             if _mqttc:
                 _mqttc.publish("bush/audio/discover", "{}")
+        elif key == "t":
+            with state.lock:
+                state.ui_mode = "input_text"
+                state.input_text = ""
         elif key in ("q", "Q", "\x03"):   # q or Ctrl-C
             with state.lock:
                 state.quit = True
+
+    elif mode == "input_text":
+        if key == "ESC":
+            with state.lock:
+                state.ui_mode = "normal"
+        elif key in ("\r", "\n"):   # Enter — send
+            with state.lock:
+                text = state.input_text.strip()
+                state.ui_mode = "normal"
+                state.input_text = ""
+            if text and _mqttc:
+                _mqttc.publish("bush/pipeline/stt/transcript",
+                               json.dumps({"text": text, "ts": time.time()}))
+        elif key in ("\x7f", "\x08"):   # Backspace / Delete
+            with state.lock:
+                state.input_text = state.input_text[:-1]
+        elif len(key) == 1 and key.isprintable():
+            with state.lock:
+                state.input_text += key
 
     elif mode in ("select_input", "select_output"):
         with state.lock:
