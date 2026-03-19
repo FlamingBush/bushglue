@@ -128,19 +128,29 @@ def _speak_worker():
                 _sox_cmd(),
                 stdin=espeak.stdout,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             espeak.stdout.close()
             with _proc_lock:
                 _current_procs.extend([espeak, sox])
             sox.wait()
             espeak.wait()
-            was_killed = sox.returncode not in (0, None)
+            sox_rc = sox.returncode
+            sox_err = (sox.stderr.read().decode(errors="replace").strip()
+                       if sox.stderr else "")
+            if sox_err:
+                log(f"sox stderr (rc={sox_rc}): {sox_err}")
+            # rc=-9: killed via _kill_current (SIGKILL) — interrupt, still publish done
+            # rc=other non-zero: sox device/format error — skip done to avoid false gate clear
+            was_killed = sox_rc == -9
+            sox_failed = sox_rc not in (0, None) and not was_killed
+            if sox_failed:
+                log(f"sox failed (rc={sox_rc}) — skipping done signal")
             with _proc_lock:
                 _current_procs.clear()
-            if not was_killed:
+            if not was_killed and not sox_failed:
                 time.sleep(DONE_TAIL_S)
-            if _mqttc:
+            if _mqttc and not sox_failed:
                 try:
                     _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}))
                 except Exception:
