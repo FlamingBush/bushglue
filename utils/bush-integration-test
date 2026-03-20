@@ -273,6 +273,11 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
                 (s, (f"tts/done only {gap:.1f}s after speaking (want ≥2s)" if s is done_stage else ok))
                 for s, ok in raw_results
             ]
+        elif gap >= 29.5:
+            raw_results = [
+                (s, (f"tts/done at {gap:.1f}s — hit the 30s TTS failsafe ceiling" if s is done_stage else ok))
+                for s, ok in raw_results
+            ]
 
     # ── build structured result ───────────────────────────────────────────────
     stage_results = []
