@@ -32,7 +32,7 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
 
 5. **Restart the local monitor** (if it's running, it will reload with the new code):
    ```
-   mosquitto_pub -h localhost -t bush/monitor/restart -m '{}'
+   ssh odroid-cmd 'mosquitto_pub -h localhost -t bush/monitor/restart -m "{}"'
    ```
 
 6. **Run the integration test**:
