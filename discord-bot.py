@@ -586,6 +586,9 @@ def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
 
 class BushBot(discord.Client):
 
+    AUTO_JOIN_CHANNEL = "General"
+    IDLE_LEAVE_S      = 300   # 5 minutes
+
     def __init__(self, guild_id: Optional[int], bridge: MQTTBridge):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -600,6 +603,7 @@ class BushBot(discord.Client):
         self._voice_client:   Optional[discord.VoiceClient] = None
         self._tts_source:     Optional[DiscordTTSSource]    = None
         self._loopback_writer: Optional[LoopbackWriter]     = None
+        self._idle_task:      Optional[asyncio.Task]        = None
 
         @self.tree.command(name="pray", description="Run the Bush pipeline with a phrase")
         @app_commands.describe(phrase="The phrase to inject into the pipeline")
@@ -640,6 +644,58 @@ class BushBot(discord.Client):
 
     async def on_ready(self):
         print(f"[bot] Logged in as {self.user} (id={self.user.id})", flush=True)
+
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
+        if member.bot:
+            return
+
+        joined_channel = after.channel
+        left_channel   = before.channel
+
+        # Auto-join: user entered the auto-join channel and bot isn't there yet
+        if (joined_channel and joined_channel.name == self.AUTO_JOIN_CHANNEL
+                and (not self._voice_client or not self._voice_client.is_connected())):
+            try:
+                await self._join_voice(joined_channel)
+                print(f"[bot] Auto-joined {joined_channel.name} (user {member} arrived)", flush=True)
+            except Exception as e:
+                print(f"[bot] Auto-join failed: {e}", flush=True)
+
+        # Cancel idle timer if someone joined the bot's channel
+        vc = self._voice_client
+        if vc and joined_channel and joined_channel == vc.channel:
+            self._cancel_idle_timer()
+
+        # Start idle timer if the bot's channel is now empty
+        if vc and vc.is_connected() and left_channel and left_channel == vc.channel:
+            non_bots = [m for m in left_channel.members if not m.bot]
+            if not non_bots:
+                self._start_idle_timer()
+
+    def _start_idle_timer(self):
+        self._cancel_idle_timer()
+        self._idle_task = asyncio.ensure_future(self._idle_leave())
+        print(f"[bot] Channel empty — leaving in {self.IDLE_LEAVE_S}s if nobody joins", flush=True)
+
+    def _cancel_idle_timer(self):
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+            self._idle_task = None
+
+    async def _idle_leave(self):
+        try:
+            await asyncio.sleep(self.IDLE_LEAVE_S)
+            if self._voice_client and self._voice_client.is_connected():
+                print("[bot] Auto-leaving VC after idle timeout", flush=True)
+                await self._leave_voice()
+        except asyncio.CancelledError:
+            pass
+
 
     async def on_message(self, message: discord.Message):
         print(f"[bot] on_message: author={message.author} bot={message.author.bot} channel={message.channel} content={message.content!r:.60}", flush=True)
@@ -868,6 +924,7 @@ class BushBot(discord.Client):
 
     async def _leave_voice(self):
         """Disconnect from VC and clean up all voice resources."""
+        self._cancel_idle_timer()
         vc = self._voice_client
         if vc:
             if vc.is_playing():
