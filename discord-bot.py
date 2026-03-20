@@ -40,7 +40,7 @@ import paho.mqtt.client as mqtt
 
 # Phase 2: discord-ext-voice-recv (optional — graceful degradation if absent)
 try:
-    import voice_recv
+    from discord.ext import voice_recv
     HAS_VOICE_RECV = True
 except ImportError:
     HAS_VOICE_RECV = False
