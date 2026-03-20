@@ -37,7 +37,7 @@ T_VERSE      = 45   # t2v can be slow (Ollama + Rust binary)
 T_SPEAKING   =  8   # tts/speaking after verse arrives
 T_SENTIMENT  = 10   # sentiment/result after verse arrives
 T_PULSE      = 15   # first flame pulse after verse arrives
-T_DONE       = 90   # tts/done after verse arrives (long verse + reverb tail)
+T_DONE       = 35   # tts/done after verse arrives — covers 30s TTS failsafe + margin
 
 # ── MQTT topics ──────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT = "bush/pipeline/stt/transcript"
