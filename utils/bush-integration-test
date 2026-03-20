@@ -37,7 +37,7 @@ T_VERSE      = 45   # t2v can be slow (Ollama + Rust binary)
 T_SPEAKING   =  8   # tts/speaking after verse arrives
 T_SENTIMENT  = 10   # sentiment/result after verse arrives
 T_PULSE      = 15   # first flame pulse after verse arrives
-T_DONE       = 40   # tts/done after verse arrives — covers 30s TTS failsafe + margin
+T_DONE       = 30   # tts/done after verse arrives (sox exits naturally when espeak finishes)
 
 # ── MQTT topics ──────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT = "bush/pipeline/stt/transcript"
@@ -273,9 +273,9 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
                 (s, (f"tts/done only {gap:.1f}s after speaking (want ≥2s)" if s is done_stage else ok))
                 for s, ok in raw_results
             ]
-        elif gap >= 29.5:
+        elif gap >= 59.5:
             raw_results = [
-                (s, (f"tts/done at {gap:.1f}s — hit the 30s TTS failsafe ceiling" if s is done_stage else ok))
+                (s, (f"tts/done at {gap:.1f}s — hit the 60s TTS failsafe ceiling" if s is done_stage else ok))
                 for s, ok in raw_results
             ]
 

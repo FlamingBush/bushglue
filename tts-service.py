@@ -31,7 +31,7 @@ MQTT_PORT = 1883
 DONE_TAIL_S = 0.5
 
 # Failsafe: kill sox if it hasn't finished within this many seconds
-TTS_TIMEOUT_S = 30
+TTS_TIMEOUT_S = 60
 
 # espeak-ng → sox pipeline for the voice of God:
 #   en-gb:  British RP — more gravitas than en-us
@@ -50,11 +50,7 @@ ESPEAK_CMD = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "-
 #     100% stereo-depth  — wide horizon
 #     28ms pre-delay     — sound crossing distance before cliff echo returns
 #     3dB  wet-gain      — present but not drowning the voice
-#   fade t 0 <TTS_TIMEOUT_S> 3
-#     hard ceiling at TTS_TIMEOUT_S seconds; last 3s fade to silence
-#     short verses end naturally before this point — no effect on normal speech
-SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3",
-               "fade", "t", "0", str(TTS_TIMEOUT_S), "3"]
+SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
 
 # Drop queued verses beyond this depth so we never fall minutes behind
 QUEUE_MAX = 2
