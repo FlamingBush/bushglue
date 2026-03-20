@@ -68,6 +68,7 @@ BAR_WIDTH = 10
 @dataclass
 class PipelineResult:
     verse: Optional[str]
+    transcript: Optional[str]
     sentiment: Optional[dict]       # raw classification list from MQTT payload
     stages: list                    # list of (name, status, elapsed_s, timeout_s)
     flare_count: int
@@ -343,6 +344,7 @@ class PipelineSession:
 
         return PipelineResult(
             verse=self._verse_text,
+            transcript=self._transcript_text,
             sentiment=self._sentiment_raw,
             stages=stages,
             flare_count=self._flare_count,
@@ -372,10 +374,14 @@ def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
             top_emotion = max(scores, key=scores.get)
             color = EMOTION_COLORS.get(top_emotion, color)
 
-    verse_line = f"> *\"{' '.join(result.verse.split())}\"*" if result.verse else ""
+    desc_parts = [f"**said** {phrase}"]
+    if result.transcript:
+        desc_parts.append(f"**heard** {result.transcript}")
+    if result.verse:
+        desc_parts.append(f"> *\"{' '.join(result.verse.split())}\"*")
     embed = discord.Embed(
-        title=f"/pray {phrase}",
-        description=verse_line,
+        title=f"/pray",
+        description="\n".join(desc_parts),
         color=color,
     )
 
