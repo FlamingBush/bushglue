@@ -23,12 +23,17 @@ Environment variables:
 import asyncio
 import io
 import json
+import logging
 import os
 import queue
 import subprocess
 import sys
 import threading
 import time
+
+logging.basicConfig(level=logging.WARNING, format="[%(name)s] %(levelname)s %(message)s")
+logging.getLogger("discord.ext.voice_recv").setLevel(logging.DEBUG)
+logging.getLogger("discord.voice_client").setLevel(logging.DEBUG)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -798,7 +803,11 @@ class BushBot(discord.Client):
                     print(f"[voice-recv] packet #{_audio_packet_count[0]} user={user} pcm_len={len(data.pcm) if data.pcm else 0}", flush=True)
                 loopback.push(data.pcm)
 
-            vc.listen(voice_recv.BasicSink(on_audio))
+            def on_listen_end(error):
+                if error:
+                    print(f"[voice-recv] reader stopped with error: {error}", flush=True)
+
+            vc.listen(voice_recv.BasicSink(on_audio), after=on_listen_end)
             print(f"[bot] Voice receive active → loopback", flush=True)
 
             # echo mute gate: mute loopback while TTS is speaking
