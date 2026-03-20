@@ -68,9 +68,14 @@ def build_sox_effects(clarity: int = 0) -> list:
       reverberance  65 → 25   (shorter tail, less consonant masking)
       wet-gain      +3 → -6 dB (dry signal dominates)
       pre-delay     28 → 40 ms (more temporal separation)
+      room-scale   100 → 60%  (smaller virtual room, less inter-word smear)
 
     Fixed (preserve desert character):
-      gain -8, pitch -250, HF-damping 12%, room-scale 100%, stereo-depth 100%
+      gain -8, pitch -250, HF-damping 12%, stereo-depth 100%
+
+    Always appended:
+      compand 0.01,0.05 -70,-70,-30,-15,0,-6 3
+        raises quiet consonants relative to loud vowels
     """
     # Original dramatic settings:
     # gain -8  pitch -250  reverb 65 12 100 100 28 3
@@ -78,10 +83,12 @@ def build_sox_effects(clarity: int = 0) -> list:
     reverberance = round(65 + t * (25 - 65))   # 65 → 25
     wet_gain     = round(3  + t * (-6 - 3))     # 3 → -6
     pre_delay    = round(28 + t * (40 - 28))    # 28 → 40
+    room_scale   = round(100 + t * (60 - 100))  # 100 → 60
     return [
         "gain", "-8",
         "pitch", "-250",
-        "reverb", str(reverberance), "12", "100", "100", str(pre_delay), str(wet_gain),
+        "reverb", str(reverberance), "12", str(room_scale), "100", str(pre_delay), str(wet_gain),
+        "compand", "0.01,0.05", "-70,-70,-30,-15,0,-6", "3",
     ]
 
 
