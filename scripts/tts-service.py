@@ -30,6 +30,9 @@ MQTT_PORT = 1883
 # Extra silence after sox finishes before signalling done (reverb tail)
 DONE_TAIL_S = 0.5
 
+# Failsafe: kill sox if it hasn't finished within this many seconds
+TTS_TIMEOUT_S = 30
+
 # espeak-ng → sox pipeline for the voice of God:
 #   en-gb:  British RP — more gravitas than en-us
 #   -s 95:  slow and deliberate
@@ -132,22 +135,36 @@ def _speak_worker():
             espeak.stdout.close()
             with _proc_lock:
                 _current_procs.extend([espeak, sox])
-            sox.wait()
-            espeak.wait()
+            timed_out = False
+            try:
+                sox.wait(timeout=TTS_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                log(f"sox timed out after {TTS_TIMEOUT_S}s — killing")
+                timed_out = True
+                sox.kill()
+                sox.wait()
+            try:
+                espeak.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                log("espeak timed out — killing")
+                espeak.kill()
+                espeak.wait()
             sox_rc = sox.returncode
             sox_err = (sox.stderr.read().decode(errors="replace").strip()
                        if sox.stderr else "")
             if sox_err and "can't encode 0-bit" not in sox_err:
                 log(f"sox stderr (rc={sox_rc}): {sox_err}")
-            # rc=-9: killed via _kill_current (SIGKILL) — interrupt, still publish done
+            # rc=-9: killed via _kill_current (SIGKILL) or timeout — still publish done
             # rc=other non-zero: sox device/format error — skip done to avoid false gate clear
-            was_killed = sox_rc == -9
-            sox_failed = sox_rc not in (0, None) and not was_killed
-            if sox_failed:
+            was_killed = sox_rc == -9 and not timed_out
+            sox_failed = sox_rc not in (0, None) and not was_killed and not timed_out
+            if timed_out:
+                log(f"sox timed out (rc={sox_rc}) — publishing done to unblock pipeline")
+            elif sox_failed:
                 log(f"sox failed (rc={sox_rc}) — skipping done signal")
             with _proc_lock:
                 _current_procs.clear()
-            if not was_killed and not sox_failed:
+            if not was_killed and not timed_out and not sox_failed:
                 time.sleep(DONE_TAIL_S)
             if _mqttc and not sox_failed:
                 try:
