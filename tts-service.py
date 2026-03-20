@@ -17,7 +17,8 @@ import time
 
 import paho.mqtt.client as mqtt
 
-from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
+from bushutil import (get_mqtt_broker, load_audio_device, save_audio_device,
+                      load_setting, save_setting, build_sox_effects)
 
 # ── config ─────────────────────────────────────────────────────────────────
 TOPIC_VERSE         = "bush/pipeline/t2v/verse"
@@ -25,6 +26,8 @@ TOPIC_SPEAKING      = "bush/pipeline/tts/speaking"
 TOPIC_DONE          = "bush/pipeline/tts/done"
 TOPIC_SET_DEVICE    = "bush/audio/tts/set-device"
 TOPIC_DEVICE_STATUS = "bush/audio/tts/device"
+TOPIC_SET_CLARITY   = "bush/audio/tts/set-clarity"
+TOPIC_CLARITY       = "bush/audio/tts/clarity"
 MQTT_PORT = 1883
 
 # Extra silence after sox finishes before signalling done (reverb tail)
@@ -40,7 +43,7 @@ TTS_TIMEOUT_S = 60
 #   -a 200: maximum amplitude out of espeak
 ESPEAK_CMD = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "--stdout"]
 
-# sox effects applied after espeak:
+# sox effects applied after espeak (clarity=0 defaults):
 #   gain -8        headroom before effects to prevent clipping
 #   pitch -250     ~2.5 semitones down — deep but not subterranean
 #   reverb 65 12 100 100 28 3
@@ -50,7 +53,8 @@ ESPEAK_CMD = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "-
 #     100% stereo-depth  — wide horizon
 #     28ms pre-delay     — sound crossing distance before cliff echo returns
 #     3dB  wet-gain      — present but not drowning the voice
-SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
+# SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
+# (now generated dynamically via build_sox_effects(_tts_clarity))
 
 # Drop queued verses beyond this depth so we never fall minutes behind
 QUEUE_MAX = 2
@@ -59,16 +63,22 @@ QUEUE_MAX = 2
 _tts_device: str | None = load_audio_device("tts")  # restore last saved device (or None)
 _device_lock = threading.Lock()
 
+# Current clarity level (0 = dramatic/default, 100 = most intelligible)
+_tts_clarity: int = load_setting("tts_clarity", 0)
+_clarity_lock = threading.Lock()
+
 
 def _sox_cmd() -> list[str]:
-    """Build the sox command using the current output device."""
+    """Build the sox command using the current output device and clarity."""
     with _device_lock:
         dev = _tts_device
+    with _clarity_lock:
+        clarity = _tts_clarity
     if dev is None:
         output_args = ["-d"]
     else:
         output_args = ["-t", "alsa", dev]
-    return ["sox", "-q", "-t", "wav", "-"] + output_args + SOX_EFFECTS
+    return ["sox", "-q", "-t", "wav", "-"] + output_args + build_sox_effects(clarity)
 
 
 def log(msg: str):
@@ -210,14 +220,18 @@ def on_connect(client, userdata, flags, reason_code, properties):
     log(f"MQTT connected (rc={reason_code})")
     client.subscribe(TOPIC_VERSE)
     client.subscribe(TOPIC_SET_DEVICE)
+    client.subscribe(TOPIC_SET_CLARITY)
     log(f"Subscribed to {TOPIC_VERSE}")
     with _device_lock:
         dev = _tts_device
     client.publish(TOPIC_DEVICE_STATUS, json.dumps({"device": dev}), retain=True)
+    with _clarity_lock:
+        clarity = _tts_clarity
+    client.publish(TOPIC_CLARITY, json.dumps({"clarity": clarity}), retain=True)
 
 
 def on_message(client, userdata, msg):
-    global _tts_device
+    global _tts_device, _tts_clarity
     if msg.topic == TOPIC_VERSE:
         try:
             data = json.loads(msg.payload)
@@ -242,6 +256,19 @@ def on_message(client, userdata, msg):
                            json.dumps({"device": dev, "status": "ok"}), retain=True)
         except Exception as e:
             log(f"set-device error: {e}")
+    elif msg.topic == TOPIC_SET_CLARITY:
+        try:
+            data = json.loads(msg.payload)
+            raw = int(data.get("clarity", 0))
+            clamped = max(0, min(100, raw))
+            with _clarity_lock:
+                _tts_clarity = clamped
+            save_setting("tts_clarity", clamped)
+            log(f"Clarity set to: {clamped}")
+            client.publish(TOPIC_CLARITY,
+                           json.dumps({"clarity": clamped, "status": "ok"}), retain=True)
+        except Exception as e:
+            log(f"set-clarity error: {e}")
 
 
 def main():

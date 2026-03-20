@@ -48,6 +48,7 @@ TOPICS = [
     "bush/audio/devices",
     "bush/audio/stt/device",
     "bush/audio/tts/device",
+    "bush/audio/tts/clarity",
     "bush/monitor/restart",
 ]
 
@@ -180,6 +181,7 @@ class State:
         self.tts_text = ""
         self.tts_ts: float | None = None
         self.tts_speaking = False
+        self.tts_clarity: int = 0
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
         # audio device selection
         self.capture_devices: list[dict] = []
@@ -345,6 +347,10 @@ def build_tts_panel(s: State) -> Panel:
         text.append(f"   {_fmt_ts(s.tts_ts)}", style="dim")
     else:
         text.append("waiting for verse…", style="dim")
+    text.append("\n")
+    text.append("Clarity ", style="dim")
+    text.append_text(_bar(s.tts_clarity, 100, BAR_WIDTH, "cyan"))
+    text.append(f"  {s.tts_clarity:3d}%", style="cyan")
     border = "bold bright_green" if s.tts_speaking else "green"
     return Panel(text, title="[bold]TTS[/bold]  [dim]espeak-ng[/dim]",
                  box=box.ROUNDED, border_style=border)
@@ -360,6 +366,7 @@ def build_log_panel(s: State) -> Panel:
              f"  [bold cyan]\\[i][/bold cyan][dim]nput[/dim]"
              f"  [bold green]\\[o][/bold green][dim]utput[/dim]"
              f"  [bold yellow]\\[t][/bold yellow][dim]ranscript[/dim]"
+             f"  [bold cyan]\\[]/][/bold cyan][dim]clarity[/dim]"
              f"  [bold white]\\[q][/bold white][dim]uit[/dim]")
     try:
         term_h = os.get_terminal_size().lines
@@ -519,6 +526,20 @@ def _handle_key(key: str):
             with state.lock:
                 state.ui_mode = "input_text"
                 state.input_text = ""
+        elif key == "[":
+            with state.lock:
+                new_clarity = max(0, state.tts_clarity - 10)
+                state.tts_clarity = new_clarity
+            if _mqttc:
+                _mqttc.publish("bush/audio/tts/set-clarity",
+                               json.dumps({"clarity": new_clarity}))
+        elif key == "]":
+            with state.lock:
+                new_clarity = min(100, state.tts_clarity + 10)
+                state.tts_clarity = new_clarity
+            if _mqttc:
+                _mqttc.publish("bush/audio/tts/set-clarity",
+                               json.dumps({"clarity": new_clarity}))
         elif key in ("q", "Q", "\x03"):   # q or Ctrl-C
             with state.lock:
                 state.quit = True
@@ -687,6 +708,10 @@ def on_message(client, userdata, msg):
 
             elif topic == "bush/audio/tts/device":
                 state.current_output = json.loads(msg.payload)
+
+            elif topic == "bush/audio/tts/clarity":
+                data = json.loads(msg.payload)
+                state.tts_clarity = int(data.get("clarity", 0))
 
             elif topic == "bush/monitor/restart":
                 state.log.append((now, "RESTART", "restarting monitor…"))

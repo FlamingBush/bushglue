@@ -70,6 +70,10 @@ TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
 MQTT_PORT   = 1883
 REPO_DIR = Path(__file__).parent
 
+import sys as _sys
+_sys.path.insert(0, str(REPO_DIR))
+from bushutil import build_sox_effects as _build_sox_effects
+
 # ── pipeline timeouts (seconds) ───────────────────────────────────────────────
 T_TRANSCRIPT = 30
 T_VERSE      = 45
@@ -89,7 +93,11 @@ BAR_WIDTH = 10
 
 # ── TTS synthesis params (mirrors tts-service.py) ────────────────────────────
 ESPEAK_CMD  = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "--stdout"]
-SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
+# SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
+# (now generated dynamically via _build_sox_effects(_discord_clarity))
+
+# Synced from bush/audio/tts/clarity retained topic on connect
+_discord_clarity: int = 0
 
 
 # ── data class ────────────────────────────────────────────────────────────────
@@ -163,7 +171,7 @@ class DiscordTTSSource(discord.AudioSource):
                     "sox", "-q", "-t", "wav", "-",
                     "-t", "raw", "-r", "48000", "-c", "2",
                     "-e", "signed-integer", "-b", "16", "-",
-                ] + SOX_EFFECTS,
+                ] + _build_sox_effects(_discord_clarity),
                 stdin=espeak.stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -1063,6 +1071,17 @@ def main():
     print(f"[bot] MQTT connected.", flush=True)
 
     bot = BushBot(guild_id=guild_id, bridge=bridge)
+
+    # Sync clarity from tts-service retained topic
+    async def _on_clarity(topic: str, payload: bytes):
+        global _discord_clarity
+        try:
+            data = json.loads(payload)
+            _discord_clarity = max(0, min(100, int(data.get("clarity", 0))))
+        except Exception as e:
+            print(f"[bot] clarity sync error: {e}", flush=True)
+
+    bridge.add_handler("bush/audio/tts/clarity", _on_clarity)
 
     async def _run():
         try:
