@@ -529,15 +529,17 @@ def _handle_key(key: str):
         elif key == "[":
             with state.lock:
                 new_clarity = max(0, state.tts_clarity - 10)
+                changed = new_clarity != state.tts_clarity
                 state.tts_clarity = new_clarity
-            if _mqttc:
+            if changed and _mqttc:
                 _mqttc.publish("bush/audio/tts/set-clarity",
                                json.dumps({"clarity": new_clarity}))
         elif key == "]":
             with state.lock:
                 new_clarity = min(100, state.tts_clarity + 10)
+                changed = new_clarity != state.tts_clarity
                 state.tts_clarity = new_clarity
-            if _mqttc:
+            if changed and _mqttc:
                 _mqttc.publish("bush/audio/tts/set-clarity",
                                json.dumps({"clarity": new_clarity}))
         elif key in ("q", "Q", "\x03"):   # q or Ctrl-C
