@@ -219,6 +219,7 @@ def on_message(client, userdata, msg):
             dev = str(raw) if raw is not None else None
             with _device_lock:
                 _tts_device = dev
+            save_audio_device("tts", dev)
             log(f"Output device set to: {dev!r}")
             client.publish(TOPIC_DEVICE_STATUS,
                            json.dumps({"device": dev, "status": "ok"}), retain=True)
