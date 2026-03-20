@@ -28,8 +28,9 @@ OLLAMA_EMBEDDINGS_URL = "http://localhost:11434/api/embeddings"
 EMBED_MODEL = "qwen3-embedding:0.6b"
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
-TOPIC_TRANSCRIPT = "bush/pipeline/stt/transcript"
-TOPIC_VERSE = "bush/pipeline/t2v/verse"
+TOPIC_TRANSCRIPT  = "bush/pipeline/stt/transcript"
+TOPIC_PROCESSING  = "bush/pipeline/t2v/processing"
+TOPIC_VERSE       = "bush/pipeline/t2v/verse"
 MQTT_PORT = 1883
 
 
@@ -131,6 +132,7 @@ def main():
             if not text:
                 return
             log(f"Received transcript: {text!r}")
+            client.publish(TOPIC_PROCESSING, json.dumps({"text": text, "ts": time.time()}))
             try:
                 result = query_t2v(text)
                 verse_text = result.get("text", "")

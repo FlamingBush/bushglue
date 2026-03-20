@@ -16,6 +16,7 @@ Keys:
   q        — quit
 """
 import json
+import os
 import sys
 import termios
 import threading
@@ -37,6 +38,7 @@ from rich.text import Text
 MQTT_PORT = 1883
 TOPICS = [
     "bush/pipeline/stt/transcript",
+    "bush/pipeline/t2v/processing",
     "bush/pipeline/t2v/verse",
     "bush/pipeline/sentiment/result",
     "bush/flame/flare/pulse",
@@ -46,6 +48,7 @@ TOPICS = [
     "bush/audio/devices",
     "bush/audio/stt/device",
     "bush/audio/tts/device",
+    "bush/monitor/restart",
 ]
 
 # ── fire hardware limits (ms valve on-time) ────────────────────────────────
@@ -169,6 +172,7 @@ class State:
         self.bigjet_ms = 0
         self.bigjet_ts: float | None = None
         self.t2v_processing = False
+        self.t2v_query = ""
         self.tts_text = ""
         self.tts_ts: float | None = None
         self.tts_speaking = False
@@ -230,7 +234,11 @@ def build_stt_panel(s: State) -> Panel:
 
 def build_verse_panel(s: State) -> Panel:
     text = Text()
-    if s.verse_text:
+    if s.t2v_processing:
+        text.append(f'Query:  ', style="dim")
+        text.append(f'"{s.t2v_query}"\n', style="bold italic")
+        text.append("processing…", style="dim")
+    elif s.verse_text:
         style = _age_style(s.verse_ts)
         text.append(f'Query:  ', style="dim")
         text.append(f'"{s.verse_query}"\n', style=f"{style} italic")
@@ -353,6 +361,7 @@ def build_log_panel(s: State) -> Panel:
     for ts, tag, msg in reversed(entries):
         tag_colour = {
             "TRANSCRIPT": "cyan",
+            "T2V":        "bold yellow",
             "VERSE":      "yellow",
             "SENTIMENT":  "magenta",
             "FLARE":      "red",
@@ -452,7 +461,6 @@ def render(s: State) -> Layout:
 
 
 # ── keyboard input ─────────────────────────────────────────────────────────
-import os
 import select as _select
 
 
@@ -605,8 +613,13 @@ def on_message(client, userdata, msg):
                 data = json.loads(msg.payload)
                 state.stt_text = data.get("text", "")
                 state.stt_ts = now
-                state.t2v_processing = True
                 state.log.append((now, "TRANSCRIPT", f'"{state.stt_text[:80]}"'))
+
+            elif topic == "bush/pipeline/t2v/processing":
+                data = json.loads(msg.payload)
+                state.t2v_query = data.get("text", "")
+                state.t2v_processing = True
+                state.log.append((now, "T2V", f'"{state.t2v_query[:80]}"'))
 
             elif topic == "bush/pipeline/t2v/verse":
                 data = json.loads(msg.payload)
@@ -662,6 +675,10 @@ def on_message(client, userdata, msg):
 
             elif topic == "bush/audio/tts/device":
                 state.current_output = json.loads(msg.payload)
+
+            elif topic == "bush/monitor/restart":
+                state.log.append((now, "RESTART", "restarting monitor…"))
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
     except Exception as e:
         with state.lock:
