@@ -311,8 +311,9 @@ def build_bush_panel(s: State) -> Panel:
     text.append("\n")
     text.append_text(Text.from_markup(label_markup))
 
+    top_pad = 0 if bigjet else 2
     return Panel(text, title="[bold]Bush[/bold]",
-                 box=box.ROUNDED, border_style=border)
+                 box=box.ROUNDED, border_style=border, padding=(top_pad, 0, 0, 0))
 
 
 def build_fire_panel(s: State) -> Panel:
