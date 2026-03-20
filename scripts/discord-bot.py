@@ -400,10 +400,20 @@ def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
             bars.append(f"`{bar}` {emotion} {score:.0%}{marker}")
         embed.add_field(name="Sentiment", value="\n".join(bars), inline=False)
 
-    # fire pulses
+    # fire pulses — compute duty cycle using tts/done window
+    window_ms = next(
+        (elapsed * 1000 for name, status, elapsed, _ in result.stages
+         if name == "tts/done" and status == "pass" and elapsed),
+        None,
+    )
+    def _duty(on_ms: int) -> str:
+        if window_ms and window_ms > 0:
+            return f"{on_ms / window_ms:.0%}"
+        return "n/a"
+
     pulse_lines = [
-        f"flare:  {result.flare_count}× — {result.flare_total_ms} ms total",
-        f"bigjet: {result.bigjet_count}× — {result.bigjet_total_ms} ms total",
+        f"flare:  {result.flare_count}× — {result.flare_total_ms} ms on — {_duty(result.flare_total_ms)} duty",
+        f"bigjet: {result.bigjet_count}× — {result.bigjet_total_ms} ms on — {_duty(result.bigjet_total_ms)} duty",
     ]
     embed.add_field(name="Fire Pulses", value="\n".join(pulse_lines), inline=True)
 
