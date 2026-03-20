@@ -35,11 +35,11 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
    ssh odroid-cmd 'mosquitto_pub -h localhost -t bush/monitor/restart -m "{}"'
    ```
 
-6. **Run the integration test**:
+6. **Run the integration test** with a 40-second timeout:
    ```
-   ssh odroid-cmd 'bush-integration-test'
+   ssh odroid-cmd 'timeout 40 bush-integration-test'
    ```
-   The test has a long timeout (up to ~3 minutes for the full pipeline). Let it run to completion.
+   If it exits with code 124, the test timed out — treat that as a failure and diagnose accordingly.
 
 ## Pass/fail
 
