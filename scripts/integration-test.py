@@ -17,6 +17,7 @@ Usage:
     python3 integration-test.py --transcript-only
     python3 integration-test.py --broker 192.168.1.10
     python3 integration-test.py --health-only
+    python3 integration-test.py --summarize
 """
 import argparse
 import json
@@ -24,7 +25,9 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Optional
 
 import paho.mqtt.client as mqtt
 
@@ -43,6 +46,7 @@ TOPIC_SPEAKING   = "bush/pipeline/tts/speaking"
 TOPIC_DONE       = "bush/pipeline/tts/done"
 TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
 TOPIC_FLARE      = "bush/flame/flare/pulse"
+TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
 
 MQTT_PORT = 1883
 
@@ -58,6 +62,29 @@ HEALTH_UNITS = [
     "bush-tts",
     "bush-sentiment",
 ]
+
+
+# ── data classes ─────────────────────────────────────────────────────────────
+
+@dataclass
+class StageResult:
+    name: str
+    status: str             # "pass" | "fail" | "skip"
+    elapsed_s: Optional[float]
+    timeout_s: int
+    snippet: Optional[str]
+    failure_reason: Optional[str]
+
+
+@dataclass
+class PipelineResult:
+    stages: list            # list[StageResult]
+    flare_count: int
+    flare_total_ms: int
+    bigjet_count: int
+    bigjet_total_ms: int
+    total_elapsed_s: float
+    passed: bool
 
 
 class Stage:
@@ -97,7 +124,8 @@ def check_health() -> bool:
     return all_active
 
 
-def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool = False) -> bool:
+def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineResult:
+    """Run the pipeline and return a structured PipelineResult."""
     # transcript stage only exists in inject (default) mode
     transcript_stage = Stage("stt/transcript", T_TRANSCRIPT)
 
@@ -114,7 +142,13 @@ def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool 
     transcript_time = [None]
     connected       = threading.Event()
 
-    subscribe_topics = list(downstream.keys())
+    # pulse counters (window: transcript → tts/done)
+    flare_count     = [0]
+    flare_total_ms  = [0]
+    bigjet_count    = [0]
+    bigjet_total_ms = [0]
+
+    subscribe_topics = list(downstream.keys()) + [TOPIC_BIGJET]
     if not transcript_only:
         subscribe_topics.append(TOPIC_TRANSCRIPT)
 
@@ -130,6 +164,22 @@ def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool 
                 transcript_stage.receive(msg.payload, inject_time[0])
                 transcript_time[0] = now
             return
+
+        # pulse counting (outside the Stage mechanism)
+        window_open = transcript_time[0] is not None and not downstream[TOPIC_DONE].event.is_set()
+        if msg.topic == TOPIC_FLARE and window_open:
+            try:
+                flare_count[0]    += 1
+                flare_total_ms[0] += int(msg.payload)
+            except (ValueError, TypeError):
+                pass
+        elif msg.topic == TOPIC_BIGJET and window_open:
+            try:
+                bigjet_count[0]    += 1
+                bigjet_total_ms[0] += int(msg.payload)
+            except (ValueError, TypeError):
+                pass
+
         stage = downstream.get(msg.topic)
         if stage and not stage.event.is_set() and transcript_time[0] is not None:
             stage.receive(msg.payload, transcript_time[0])
@@ -138,21 +188,29 @@ def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool 
     mqttc.on_connect = on_connect
     mqttc.on_message = on_message
 
-    if not skip_health and not check_health():
-        print("Aborting: one or more services are down.")
-        return False
     print(f"Connecting to {broker}:{MQTT_PORT} ...")
     try:
         mqttc.connect(broker, MQTT_PORT, 60)
     except Exception as e:
         print(f"FAIL  cannot connect to broker: {e}")
-        return False
+        # return a failed result with no stages
+        return PipelineResult(
+            stages=[], flare_count=0, flare_total_ms=0,
+            bigjet_count=0, bigjet_total_ms=0,
+            total_elapsed_s=0.0, passed=False,
+        )
 
     mqttc.loop_start()
     if not connected.wait(timeout=5):
         print("FAIL  timed out waiting for MQTT subscriptions")
         mqttc.loop_stop()
-        return False
+        return PipelineResult(
+            stages=[], flare_count=0, flare_total_ms=0,
+            bigjet_count=0, bigjet_total_ms=0,
+            total_elapsed_s=0.0, passed=False,
+        )
+
+    pipeline_start = time.time()
 
     # ── inject ───────────────────────────────────────────────────────────────
     if transcript_only:
@@ -180,28 +238,30 @@ def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool 
                   TOPIC_FLARE, TOPIC_DONE]:
         pending.append((downstream[topic], transcript_time))  # base time = transcript
 
-    results = []   # list of (stage, ok)  where ok is True/False/None (None = skipped)
+    raw_results = []   # list of (stage, ok)  where ok is True/False/None/str
     try:
         for stage, base_ref in pending:
             if base_ref[0] is None:
                 # base time not yet known (transcript never arrived) — skip rest
-                results.append((stage, None))
+                raw_results.append((stage, None))
                 continue
             deadline = base_ref[0] + stage.timeout
             ok = stage.wait_until(deadline)
-            results.append((stage, ok))
+            raw_results.append((stage, ok))
             if not ok and stage is transcript_stage:
                 # STT never fired; mark rest as skipped
-                for s, _ in pending[len(results):]:
-                    results.append((s, None))
+                for s, _ in pending[len(raw_results):]:
+                    raw_results.append((s, None))
                 break
     except KeyboardInterrupt:
         print()
-        for s, _ in pending[len(results):]:
-            results.append((s, None))
+        for s, _ in pending[len(raw_results):]:
+            raw_results.append((s, None))
 
     mqttc.loop_stop()
     mqttc.disconnect()
+
+    total_elapsed = time.time() - pipeline_start
 
     # ── post-checks ──────────────────────────────────────────────────────────
     speaking_stage = downstream[TOPIC_SPEAKING]
@@ -209,40 +269,86 @@ def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool 
     if speaking_stage.event.is_set() and done_stage.event.is_set():
         gap = done_stage.elapsed - speaking_stage.elapsed
         if gap < 2.0:
-            # replace done's result with a failure
-            results = [(s, (f"tts/done only {gap:.1f}s after speaking (want ≥2s)" if s is done_stage else ok))
-                       for s, ok in results]
+            raw_results = [
+                (s, (f"tts/done only {gap:.1f}s after speaking (want ≥2s)" if s is done_stage else ok))
+                for s, ok in raw_results
+            ]
 
-    return _print_results(results)
-
-
-def _print_results(results):
-    width = max(len(s.name) for s, _ in results)
+    # ── build structured result ───────────────────────────────────────────────
+    stage_results = []
     all_passed = True
-    for stage, ok in results:
+    for stage, ok in raw_results:
+        snippet = None
+        if ok is True and stage.payload:
+            try:
+                data = json.loads(stage.payload)
+                if isinstance(data, dict) and "text" in data:
+                    snippet = data["text"][:80].replace("\n", " ")
+            except Exception:
+                pass
         if ok is True:
-            detail = f"{stage.elapsed:.1f}s"
-            if stage.payload:
-                try:
-                    data = json.loads(stage.payload)
-                    if isinstance(data, dict) and "text" in data:
-                        snippet = data["text"][:60].replace("\n", " ")
-                        detail += f'  "{snippet}"'
-                except Exception:
-                    pass
-            print(f"  PASS  {stage.name:<{width}}  {detail}")
+            sr = StageResult(name=stage.name, status="pass",
+                             elapsed_s=stage.elapsed, timeout_s=stage.timeout,
+                             snippet=snippet, failure_reason=None)
         elif ok is False:
-            print(f"  FAIL  {stage.name:<{width}}  no response within {stage.timeout}s")
+            sr = StageResult(name=stage.name, status="fail",
+                             elapsed_s=None, timeout_s=stage.timeout,
+                             snippet=None, failure_reason=f"no response within {stage.timeout}s")
             all_passed = False
         elif isinstance(ok, str):
-            print(f"  FAIL  {stage.name:<{width}}  {ok}")
+            sr = StageResult(name=stage.name, status="fail",
+                             elapsed_s=stage.elapsed, timeout_s=stage.timeout,
+                             snippet=snippet, failure_reason=ok)
             all_passed = False
         else:
-            print(f"  skip  {stage.name:<{width}}")
+            sr = StageResult(name=stage.name, status="skip",
+                             elapsed_s=None, timeout_s=stage.timeout,
+                             snippet=None, failure_reason=None)
             all_passed = False
+        stage_results.append(sr)
 
-    print(f"\n{'PASSED' if all_passed else 'FAILED'}")
-    return all_passed
+    return PipelineResult(
+        stages=stage_results,
+        flare_count=flare_count[0],
+        flare_total_ms=flare_total_ms[0],
+        bigjet_count=bigjet_count[0],
+        bigjet_total_ms=bigjet_total_ms[0],
+        total_elapsed_s=total_elapsed,
+        passed=all_passed,
+    )
+
+
+def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool = False) -> bool:
+    if not skip_health and not check_health():
+        print("Aborting: one or more services are down.")
+        return False
+    result = run_pipeline(broker, phrase, transcript_only)
+    return _print_results(result)
+
+
+def _print_results(result: PipelineResult) -> bool:
+    if not result.stages:
+        print("FAILED  (no stages completed)")
+        return False
+
+    width = max(len(s.name) for s in result.stages)
+    for sr in result.stages:
+        if sr.status == "pass":
+            detail = f"{sr.elapsed_s:.1f}s"
+            if sr.snippet:
+                detail += f'  "{sr.snippet}"'
+            print(f"  PASS  {sr.name:<{width}}  {detail}")
+        elif sr.status == "fail":
+            print(f"  FAIL  {sr.name:<{width}}  {sr.failure_reason}")
+        else:
+            print(f"  skip  {sr.name:<{width}}")
+
+    if result.flare_count or result.bigjet_count:
+        print(f"\n  flare:  {result.flare_count} pulses  {result.flare_total_ms}ms total")
+        print(f"  bigjet: {result.bigjet_count} pulses  {result.bigjet_total_ms}ms total")
+
+    print(f"\n{'PASSED' if result.passed else 'FAILED'}  ({result.total_elapsed_s:.1f}s)")
+    return result.passed
 
 
 def main():
@@ -258,6 +364,8 @@ def main():
                              "no local system access. Defaults broker to localhost.")
     parser.add_argument("--health-only", action="store_true",
                         help="Print service health and exit")
+    parser.add_argument("--summarize", action="store_true",
+                        help="Output PipelineResult as JSON instead of human-readable text")
     args = parser.parse_args()
 
     if args.health_only:
@@ -265,6 +373,10 @@ def main():
 
     if args.mqtt_only:
         broker = args.broker or "localhost"
+        if args.summarize:
+            result = run_pipeline(broker, args.phrase, transcript_only=True)
+            print(json.dumps(asdict(result), indent=2))
+            sys.exit(0 if result.passed else 1)
         ok = run_test(broker, args.phrase, transcript_only=True, skip_health=True)
         sys.exit(0 if ok else 1)
 
@@ -272,6 +384,11 @@ def main():
     if not broker:
         from bushutil import get_mqtt_broker
         broker = get_mqtt_broker()
+
+    if args.summarize:
+        result = run_pipeline(broker, args.phrase, args.transcript_only)
+        print(json.dumps(asdict(result), indent=2))
+        sys.exit(0 if result.passed else 1)
 
     ok = run_test(broker, args.phrase, args.transcript_only)
     sys.exit(0 if ok else 1)

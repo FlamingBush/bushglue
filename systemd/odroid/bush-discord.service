@@ -1,0 +1,19 @@
+[Unit]
+Description=Discord Bot for Bush Glue Pipeline (/pray command)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odroid
+EnvironmentFile=/home/odroid/.config/bush/discord-token.env
+ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/scripts/discord-bot.py
+WorkingDirectory=/home/odroid/repos/bushglue/scripts
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
