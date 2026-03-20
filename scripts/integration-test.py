@@ -200,6 +200,17 @@ def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
 
     mqttc.loop_stop()
     mqttc.disconnect()
+
+    # ── post-checks ──────────────────────────────────────────────────────────
+    speaking_stage = downstream[TOPIC_SPEAKING]
+    done_stage     = downstream[TOPIC_DONE]
+    if speaking_stage.event.is_set() and done_stage.event.is_set():
+        gap = done_stage.elapsed - speaking_stage.elapsed
+        if gap < 2.0:
+            # replace done's result with a failure
+            results = [(s, (f"tts/done only {gap:.1f}s after speaking (want ≥2s)" if s is done_stage else ok))
+                       for s, ok in results]
+
     return _print_results(results)
 
 
@@ -220,6 +231,9 @@ def _print_results(results):
             print(f"  PASS  {stage.name:<{width}}  {detail}")
         elif ok is False:
             print(f"  FAIL  {stage.name:<{width}}  no response within {stage.timeout}s")
+            all_passed = False
+        elif isinstance(ok, str):
+            print(f"  FAIL  {stage.name:<{width}}  {ok}")
             all_passed = False
         else:
             print(f"  skip  {stage.name:<{width}}")
