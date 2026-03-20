@@ -380,7 +380,7 @@ def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
     if result.verse:
         desc_parts.append(f"> *\"{' '.join(result.verse.split())}\"*")
     embed = discord.Embed(
-        title=f"/pray",
+        title=None,
         description="\n".join(desc_parts),
         color=color,
     )
