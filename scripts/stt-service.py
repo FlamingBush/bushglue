@@ -51,22 +51,33 @@ def main():
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     # ── mute gate ──────────────────────────────────────────────────────────
+    MUTE_TIMEOUT_S = 30
     muted = threading.Event()
     reset_recognizer = threading.Event()
+    _mute_timer: list[threading.Timer | None] = [None]
 
     # ── device change ──────────────────────────────────────────────────────
     device_change = threading.Event()
     next_device = [STT_DEVICE]   # list so inner functions can mutate it
 
+    def on_tts_done():
+        if _mute_timer[0] is not None:
+            _mute_timer[0].cancel()
+            _mute_timer[0] = None
+        muted.clear()
+        reset_recognizer.set()
+        log("Unmuting STT (TTS done)")
+
     def on_tts_speaking():
         if not muted.is_set():
             log("Muting STT (TTS speaking)")
         muted.set()
-
-    def on_tts_done():
-        muted.clear()
-        reset_recognizer.set()
-        log("Unmuting STT (TTS done)")
+        if _mute_timer[0] is not None:
+            _mute_timer[0].cancel()
+        t = threading.Timer(MUTE_TIMEOUT_S, on_tts_done)
+        t.daemon = True
+        t.start()
+        _mute_timer[0] = t
 
     # ── MQTT setup ─────────────────────────────────────────────────────────
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
