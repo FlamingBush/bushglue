@@ -676,7 +676,13 @@ class BushBot(discord.Client):
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
             session = PipelineSession(self._bridge, phrase)
-            result  = await session.run(on_verse=on_verse)
+            if self._loopback_writer:
+                self._loopback_writer.muted = True
+            try:
+                result = await session.run(on_verse=on_verse)
+            finally:
+                if self._loopback_writer:
+                    self._loopback_writer.muted = False
 
             if not verse_sent and result.verse:
                 await message.channel.send(f"> *\"{result.verse}\"*")
@@ -720,7 +726,13 @@ class BushBot(discord.Client):
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
             session = PipelineSession(self._bridge, phrase)
-            result  = await session.run(on_verse=on_verse)
+            if self._loopback_writer:
+                self._loopback_writer.muted = True
+            try:
+                result = await session.run(on_verse=on_verse)
+            finally:
+                if self._loopback_writer:
+                    self._loopback_writer.muted = False
 
             if not verse_sent and result.verse:
                 try:
