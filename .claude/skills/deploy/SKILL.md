@@ -16,23 +16,23 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
 
 2. **Pull on odroid**:
    ```
-   ssh odroid 'cd ~/repos/bushglue && git pull'
+   ssh odroid-cmd 'cd ~/repos/bushglue && git pull'
    ```
 
 3. **Check if any systemd service files changed** in the most recent push. If any `systemd/odroid/*.service` files were modified, deploy them:
    ```
-   ssh odroid 'sudo cp ~/repos/bushglue/systemd/odroid/*.service /etc/systemd/system/ && sudo systemctl daemon-reload'
+   ssh odroid-cmd 'sudo cp ~/repos/bushglue/systemd/odroid/*.service /etc/systemd/system/ && sudo systemctl daemon-reload'
    ```
 
 4. **Restart affected services.** Restart whichever services had their script or service file changed. If unsure, restart all pipeline services:
    ```
-   ssh odroid 'sudo systemctl restart bush-stt bush-tts bush-t2v bush-sentiment bush-audio-agent'
+   ssh odroid-cmd 'sudo systemctl restart bush-stt bush-tts bush-t2v bush-sentiment bush-audio-agent'
    ```
    Wait a few seconds for services to settle before running the test.
 
 5. **Run the integration test**:
    ```
-   ssh odroid 'python3 ~/repos/bushglue/scripts/integration-test.py'
+   ssh odroid-cmd 'python3 ~/repos/bushglue/scripts/integration-test.py'
    ```
    The test has a long timeout (up to ~3 minutes for the full pipeline). Let it run to completion.
 
