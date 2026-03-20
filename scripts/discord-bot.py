@@ -169,6 +169,7 @@ class PipelineSession:
         self._done_ev       = asyncio.Event()
 
         self._inject_start:    Optional[float] = None
+        self._inject_end:      Optional[float] = None
         self._transcript_time: Optional[float] = None
 
         self._verse_text:    Optional[str]  = None
@@ -259,13 +260,18 @@ class PipelineSession:
         try:
             self._inject_start = time.monotonic()
 
-            # run inject.py asynchronously
+            # run inject.py asynchronously; track when playback finishes
             inject_script = SCRIPTS_DIR / "inject.py"
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, str(inject_script), "--phrase", self._phrase,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+
+            async def _record_inject_end():
+                await proc.wait()
+                self._inject_end = time.monotonic()
+            asyncio.ensure_future(_record_inject_end())
 
             # wait for STT transcript
             try:
@@ -307,17 +313,27 @@ class PipelineSession:
                 self._bridge.remove_handler(topic, self._handle)
 
     def _build_result(self, inject_elapsed: float = 0.0) -> PipelineResult:
-        stage_order = [
-            ("stt/transcript", T_TRANSCRIPT),
-            ("t2v/verse",      T_VERSE),
-            ("tts/speaking",   8),
-            ("sentiment/result", 10),
-            ("flare pulse",    15),
-            ("tts/done",       T_DONE),
-        ]
         stages = []
         all_passed = True
-        for name, timeout in stage_order:
+
+        # split stt/transcript into audio playback + stt recognition
+        if self._inject_end is not None and self._transcript_time is not None:
+            stages.append(("audio playback",  "pass", self._inject_end - self._inject_start,    T_TRANSCRIPT))
+            stages.append(("stt recognition", "pass", self._transcript_time - self._inject_end, T_TRANSCRIPT))
+        elif self._elapsed.get("stt/transcript") is not None:
+            # inject_end not recorded (e.g. timeout path) — fall back to total
+            stages.append(("stt/transcript", "pass", self._elapsed["stt/transcript"], T_TRANSCRIPT))
+        else:
+            stages.append(("stt/transcript", "fail", None, T_TRANSCRIPT))
+            all_passed = False
+
+        for name, timeout in [
+            ("t2v/verse",        T_VERSE),
+            ("tts/speaking",     8),
+            ("sentiment/result", 10),
+            ("flare pulse",      15),
+            ("tts/done",         T_DONE),
+        ]:
             elapsed = self._elapsed.get(name)
             if elapsed is not None:
                 stages.append((name, "pass", elapsed, timeout))
