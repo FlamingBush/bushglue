@@ -153,7 +153,7 @@ Available utilities:
 | Command | Purpose |
 |---------|---------|
 | `bush-monitor` | Real-time pipeline TUI |
-| `bush-inject` | Inject a phrase or WAV into the loopback |
+| `bush-pray` | Inject a phrase or WAV into the loopback |
 | `bush-stt-file` | Replay a WAV file through the STT stage |
 | `bush-integration-test` | End-to-end pipeline test |
 | `bush-wait-for-http` | Poll a URL until it responds |

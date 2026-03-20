@@ -7,8 +7,8 @@ is capturing from.
 Generated WAVs are saved to WAVS_DIR (default: ~/wavs/) for future replay.
 
 Usage:
-    inject.py --phrase "what is the meaning of fire"
-    inject.py --file ~/wavs/what_is_the_meaning_of_fire.wav
+    bush-pray --phrase "what is the meaning of fire"
+    bush-pray --file ~/wavs/what_is_the_meaning_of_fire.wav
 
 Environment:
     WAVS_DIR        where to save generated WAVs  (default: ~/wavs)
@@ -58,17 +58,17 @@ def main():
         WAVS_DIR.mkdir(parents=True, exist_ok=True)
         wav = WAVS_DIR / phrase_to_filename(args.phrase)
         if not wav.exists():
-            print(f"[inject] Synthesizing → {wav}")
+            print(f"[bush-pray] Synthesizing → {wav}")
             synthesize(args.phrase, wav)
         else:
-            print(f"[inject] Using cached  → {wav}")
+            print(f"[bush-pray] Using cached  → {wav}")
     else:
         wav = Path(args.file).expanduser()
         if not wav.exists():
-            print(f"[inject] File not found: {wav}", file=sys.stderr)
+            print(f"[bush-pray] File not found: {wav}", file=sys.stderr)
             sys.exit(1)
 
-    print(f"[inject] Playing into {LOOPBACK_DEVICE}")
+    print(f"[bush-pray] Playing into {LOOPBACK_DEVICE}")
     subprocess.run(
         ["sox", str(wav), "-t", "alsa", LOOPBACK_DEVICE],
         check=True,
