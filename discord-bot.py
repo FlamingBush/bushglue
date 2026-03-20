@@ -798,22 +798,35 @@ class BushBot(discord.Client):
             import davey as _davey
 
 
+            _dbg = [0]
             def on_audio(user, data: voice_recv.VoiceData):
                 raw = data.opus  # RTP-decrypted, DAVE-encrypted Opus bytes
                 if not raw:
                     return
+                _dbg[0] += 1
+                if _dbg[0] == 1:
+                    dave_ready = dave.ready if dave else None
+                    print(f"[voice-recv] first packet: user={user} dave={dave} dave_ready={dave_ready} raw_len={len(raw)}", flush=True)
                 # DAVE layer: decrypt if session exists and user is known
                 if dave and user:
                     try:
                         raw = dave.decrypt(user.id, _davey.MediaType.audio, raw)
                     except Exception as e:
-                        print(f"[voice-recv] DAVE decrypt error: {e}", flush=True)
+                        if _dbg[0] <= 3:
+                            print(f"[voice-recv] DAVE decrypt error: {e}", flush=True)
                         return
+                elif not dave:
+                    pass  # no DAVE, raw is plain Opus
+                else:
+                    if _dbg[0] <= 3:
+                        print(f"[voice-recv] skipping DAVE: user={user}", flush=True)
+                    return  # user unknown, can't decrypt
                 # Opus → PCM
                 try:
                     pcm = opus_dec.decode(raw, fec=False)
                 except Exception as e:
-                    print(f"[voice-recv] opus decode error: {e}", flush=True)
+                    if _dbg[0] <= 3:
+                        print(f"[voice-recv] opus decode error: {e}", flush=True)
                     return
                 loopback.push(pcm)
 
