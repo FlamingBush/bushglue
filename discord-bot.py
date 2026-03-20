@@ -372,8 +372,10 @@ def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
             top_emotion = max(scores, key=scores.get)
             color = EMOTION_COLORS.get(top_emotion, color)
 
+    verse_line = f"> *\"{' '.join(result.verse.split())}\"*" if result.verse else ""
     embed = discord.Embed(
         title=f"/pray {phrase}",
+        description=verse_line,
         color=color,
     )
 
