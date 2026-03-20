@@ -125,19 +125,21 @@ class DiscordTTSSource(discord.AudioSource):
                 self._buf     = b""
                 self._buf_pos = 0
                 return frame + b'\x00' * (self.FRAME_SIZE - len(frame))
-        return b'\x00' * self.FRAME_SIZE
+        return b""  # empty → signals discord.py to stop play(), bot shows as quiet
 
     def is_opus(self) -> bool:
         return False
 
-    async def synthesize(self, text: str):
-        """Synthesize verse text to raw PCM and queue it for playback."""
+    def load(self, pcm: bytes):
+        """Load synthesized PCM into the buffer for playback."""
+        with self._lock:
+            self._buf     = pcm
+            self._buf_pos = 0
+
+    async def synthesize(self, text: str) -> bytes:
+        """Synthesize verse text to raw PCM bytes (does not start playback)."""
         loop = asyncio.get_event_loop()
-        pcm = await loop.run_in_executor(None, self._run_synth, text)
-        if pcm:
-            with self._lock:
-                self._buf     = pcm
-                self._buf_pos = 0
+        return await loop.run_in_executor(None, self._run_synth, text)
 
     def _run_synth(self, text: str) -> bytes:
         try:
@@ -776,10 +778,7 @@ class BushBot(discord.Client):
 
         self._voice_client = vc
         self._tts_source   = DiscordTTSSource()
-
-        # Start the persistent silent source so play() never stops
-        vc.play(self._tts_source, after=self._on_vc_play_end)
-        print(f"[bot] Joined VC {channel.name}, TTS source running", flush=True)
+        print(f"[bot] Joined VC {channel.name}, TTS source ready", flush=True)
 
         # Global verse handler: synthesize to VC for ALL pipeline runs (text or voice triggered)
         self._bridge.add_handler(TOPIC_VERSE, self._on_verse_global)
@@ -853,19 +852,12 @@ class BushBot(discord.Client):
     def _on_vc_play_end(self, error: Optional[Exception]):
         if error:
             print(f"[bot] VC play error: {error}", flush=True)
-        # Restart the silent TTS source if still connected (play() stops if source ends or errors)
-        vc  = self._voice_client
-        src = self._tts_source
-        if vc and src and vc.is_connected() and not vc.is_playing():
-            try:
-                vc.play(src, after=self._on_vc_play_end)
-                print("[bot] VC play restarted", flush=True)
-            except Exception as e:
-                print(f"[bot] VC play restart error: {e}", flush=True)
 
     async def _on_verse_global(self, topic: str, payload: bytes):
         """Global TOPIC_VERSE handler: synthesize verse to VC whenever bot is joined."""
-        if not self._tts_source:
+        vc  = self._voice_client
+        src = self._tts_source
+        if not vc or not src or not vc.is_connected():
             return
         try:
             data = json.loads(payload)
@@ -874,7 +866,14 @@ class BushBot(discord.Client):
                 return
             first_para = text.split("\n\n")[0]
             clean = " ".join(line.strip() for line in first_para.splitlines() if line.strip())
-            asyncio.ensure_future(self._tts_source.synthesize(clean))
+            pcm = await src.synthesize(clean)
+            if not pcm:
+                return
+            # Stop any in-progress playback, load new audio, start playing
+            if vc.is_playing():
+                vc.stop()
+            src.load(pcm)
+            vc.play(src, after=self._on_vc_play_end)
         except Exception as e:
             print(f"[bot] verse-to-vc error: {e}", flush=True)
 
