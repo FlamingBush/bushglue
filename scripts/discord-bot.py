@@ -473,8 +473,9 @@ class BushBot(discord.Client):
             async def on_verse(text: str, heard: Optional[str]):
                 nonlocal verse_sent
                 try:
+                    verse = " ".join(text.split())
                     header = f"{message.author.display_name} said \"{phrase}\" and I heard \"{heard}\"\n" if heard else ""
-                    await message.channel.send(f"{header}> *\"{text}\"*")
+                    await message.channel.send(f"{header}> *\"{verse}\"*")
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
@@ -510,8 +511,9 @@ class BushBot(discord.Client):
             async def on_verse(text: str, heard: Optional[str]):
                 nonlocal verse_sent
                 try:
+                    verse = " ".join(text.split())
                     header = f"{interaction.user.display_name} said \"{phrase}\" and I heard \"{heard}\"\n" if heard else ""
-                    await interaction.followup.send(f"{header}> *\"{text}\"*")
+                    await interaction.followup.send(f"{header}> *\"{verse}\"*")
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
