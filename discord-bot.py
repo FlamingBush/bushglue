@@ -45,6 +45,16 @@ import paho.mqtt.client as mqtt
 try:
     from discord.ext import voice_recv
     HAS_VOICE_RECV = True
+    # Patch _remove_ssrc to guard against the race where a SPEAKING event
+    # arrives between channel.connect() and vc.listen(), leaving _reader
+    # as MISSING and crashing the voice websocket poller task.
+    _orig_remove_ssrc = voice_recv.VoiceRecvClient._remove_ssrc
+    def _safe_remove_ssrc(self, *args, **kwargs):
+        try:
+            _orig_remove_ssrc(self, *args, **kwargs)
+        except AttributeError:
+            pass
+    voice_recv.VoiceRecvClient._remove_ssrc = _safe_remove_ssrc
 except ImportError:
     HAS_VOICE_RECV = False
 
@@ -632,6 +642,7 @@ class BushBot(discord.Client):
         self._tts_source:     Optional[DiscordTTSSource]    = None
         self._loopback_writer: Optional[LoopbackWriter]     = None
         self._idle_task:      Optional[asyncio.Task]        = None
+        self._watchdog_task:  Optional[asyncio.Task]        = None
 
         @self.tree.command(name="pray", description="Run the Bush pipeline with a phrase")
         @app_commands.describe(phrase="The phrase to inject into the pipeline")
@@ -721,6 +732,25 @@ class BushBot(discord.Client):
             if self._voice_client and self._voice_client.is_connected():
                 print("[bot] Auto-leaving VC after idle timeout", flush=True)
                 await self._leave_voice()
+        except asyncio.CancelledError:
+            pass
+
+    async def _voice_watchdog(self):
+        """Periodically check the voice connection; rejoin if it has dropped."""
+        try:
+            while True:
+                await asyncio.sleep(30)
+                vc = self._voice_client
+                if not vc:
+                    break
+                if not vc.is_connected():
+                    channel = vc.channel
+                    print(f"[bot] Watchdog: voice connection lost, rejoining {channel.name}", flush=True)
+                    try:
+                        await self._leave_voice()
+                        await self._join_voice(channel)
+                    except Exception as e:
+                        print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
         except asyncio.CancelledError:
             pass
 
@@ -885,6 +915,7 @@ class BushBot(discord.Client):
 
         self._voice_client = vc
         self._tts_source   = DiscordTTSSource()
+        self._watchdog_task = asyncio.ensure_future(self._voice_watchdog())
         print(f"[bot] Joined VC {channel.name}, TTS source ready", flush=True)
 
         # Global verse handler: synthesize to VC for ALL pipeline runs (text or voice triggered)
@@ -938,6 +969,9 @@ class BushBot(discord.Client):
     async def _leave_voice(self):
         """Disconnect from VC and clean up all voice resources."""
         self._cancel_idle_timer()
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+        self._watchdog_task = None
         vc = self._voice_client
         if vc:
             if vc.is_playing():
