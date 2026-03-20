@@ -678,18 +678,26 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
-            # Text stomps on voice: stop current VC playback and mute voice input
+            # Text stomps on voice: cut VC playback and stop the loopback writer
+            # so bush-pray can get exclusive ALSA access to hw:Loopback,0
             if self._voice_client and self._voice_client.is_playing():
                 self._voice_client.stop()
-            if self._loopback_writer:
-                self._loopback_writer.muted = True
+            writer = self._loopback_writer
+            if writer:
+                await asyncio.get_event_loop().run_in_executor(None, writer.stop)
 
             session = PipelineSession(self._bridge, phrase)
             try:
                 result = await session.run(on_verse=on_verse)
             finally:
-                if self._loopback_writer:
-                    self._loopback_writer.muted = False
+                if writer:
+                    # drain stale VC audio queued while writer was stopped
+                    while not writer._queue.empty():
+                        try:
+                            writer._queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    writer.start()
 
             if not verse_sent and result.verse:
                 await message.channel.send(f"> *\"{result.verse}\"*")
@@ -732,18 +740,25 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
-            # Text stomps on voice: stop current VC playback and mute voice input
+            # Text stomps on voice: cut VC playback and stop the loopback writer
+            # so bush-pray can get exclusive ALSA access to hw:Loopback,0
             if self._voice_client and self._voice_client.is_playing():
                 self._voice_client.stop()
-            if self._loopback_writer:
-                self._loopback_writer.muted = True
+            writer = self._loopback_writer
+            if writer:
+                await asyncio.get_event_loop().run_in_executor(None, writer.stop)
 
             session = PipelineSession(self._bridge, phrase)
             try:
                 result = await session.run(on_verse=on_verse)
             finally:
-                if self._loopback_writer:
-                    self._loopback_writer.muted = False
+                if writer:
+                    while not writer._queue.empty():
+                        try:
+                            writer._queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    writer.start()
 
             if not verse_sent and result.verse:
                 try:
