@@ -160,7 +160,8 @@ class PipelineSession:
         self._bridge = bridge
         self._phrase = phrase
 
-        self._transcript_ev = asyncio.Event()
+        self._transcript_ev   = asyncio.Event()
+        self._transcript_text: Optional[str] = None
         self._verse_ev      = asyncio.Event()
         self._speaking_ev   = asyncio.Event()
         self._sentiment_ev  = asyncio.Event()
@@ -189,6 +190,10 @@ class PipelineSession:
             if not self._transcript_ev.is_set():
                 self._transcript_time = now
                 self._elapsed["stt/transcript"] = now - self._inject_start
+                try:
+                    self._transcript_text = json.loads(payload).get("text", "").strip()
+                except Exception:
+                    self._transcript_text = payload.decode(errors="replace").strip()
                 self._transcript_ev.set()
             return
 
@@ -282,7 +287,7 @@ class PipelineSession:
 
             if self._verse_ev.is_set() and on_verse and self._verse_text:
                 try:
-                    await on_verse(self._verse_text)
+                    await on_verse(self._verse_text, self._transcript_text)
                 except Exception as e:
                     print(f"[session] on_verse callback error: {e}", flush=True)
 
@@ -465,10 +470,11 @@ class BushBot(discord.Client):
 
             verse_sent = False
 
-            async def on_verse(text: str):
+            async def on_verse(text: str, heard: Optional[str]):
                 nonlocal verse_sent
                 try:
-                    await message.channel.send(f"> *\"{text}\"*")
+                    header = f"{message.author.display_name} said \"{phrase}\" and I heard \"{heard}\"\n" if heard else ""
+                    await message.channel.send(f"{header}> *\"{text}\"*")
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
@@ -501,10 +507,11 @@ class BushBot(discord.Client):
 
             verse_sent = False
 
-            async def on_verse(text: str):
+            async def on_verse(text: str, heard: Optional[str]):
                 nonlocal verse_sent
                 try:
-                    await interaction.followup.send(f"> *\"{text}\"*")
+                    header = f"{interaction.user.display_name} said \"{phrase}\" and I heard \"{heard}\"\n" if heard else ""
+                    await interaction.followup.send(f"{header}> *\"{text}\"*")
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
