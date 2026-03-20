@@ -438,13 +438,20 @@ class BushBot(discord.Client):
         print(f"[bot] Logged in as {self.user} (id={self.user.id})", flush=True)
 
     async def on_message(self, message: discord.Message):
-        # only handle plain DMs, ignore bots and empty messages
+        # ignore bots and empty messages
         if message.author.bot:
-            return
-        if not isinstance(message.channel, discord.DMChannel):
             return
         phrase = message.content.strip()
         if not phrase:
+            return
+
+        # accept DMs and messages in #bush-irl
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        is_bush_irl = (
+            isinstance(message.channel, discord.TextChannel)
+            and message.channel.name == "bush-irl"
+        )
+        if not is_dm and not is_bush_irl:
             return
 
         if self._lock.locked():
@@ -453,7 +460,7 @@ class BushBot(discord.Client):
             )
 
         async with self._lock:
-            print(f"[bot] DM '{phrase}' from {message.author}", flush=True)
+            print(f"[bot] message '{phrase}' from {message.author} in {message.channel}", flush=True)
 
             verse_sent = False
 
