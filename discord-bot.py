@@ -169,7 +169,7 @@ class LoopbackWriter:
     Receives 48kHz stereo s16le PCM from Discord, downsamples to 16kHz mono,
     and writes it to the ALSA loopback device for the existing stt-service.
     """
-    LOOPBACK_DEVICE = "hw:Loopback,0"
+    LOOPBACK_DEVICE = 4  # Loopback: PCM (hw:7,0) — playback side; stt-service reads from hw:7,1
 
     def __init__(self):
         self._queue: queue.Queue[bytes] = queue.Queue(maxsize=50)
