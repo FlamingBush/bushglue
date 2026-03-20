@@ -43,7 +43,7 @@ TOPIC_FLARE      = "bush/flame/flare/pulse"
 TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
 
 MQTT_PORT   = 1883
-SCRIPTS_DIR = Path(__file__).parent
+REPO_DIR = Path(__file__).parent
 
 # ── pipeline timeouts (seconds) ───────────────────────────────────────────────
 T_TRANSCRIPT = 30
@@ -260,8 +260,8 @@ class PipelineSession:
         try:
             self._inject_start = time.monotonic()
 
-            # run inject.py asynchronously; track when playback finishes
-            inject_script = SCRIPTS_DIR / "inject.py"
+            # run bush-pray asynchronously; track when playback finishes
+            inject_script = REPO_DIR / "utils" / "bush-pray"
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, str(inject_script), "--phrase", self._phrase,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -575,7 +575,7 @@ def main():
     if broker_override:
         broker = broker_override
     else:
-        sys.path.insert(0, str(SCRIPTS_DIR))
+        sys.path.insert(0, str(REPO_DIR))
         from bushutil import get_mqtt_broker
         broker = get_mqtt_broker()
 
