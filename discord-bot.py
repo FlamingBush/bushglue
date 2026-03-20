@@ -11,7 +11,8 @@ Setup:
   3. echo "DISCORD_TOKEN=<token>" > /home/ubuntu/.config/bush/discord-token.env
   4. Enable MESSAGE CONTENT intent on the Bot tab
   5. Invite the bot with scopes: bot, applications.commands
-     Permissions: Send Messages, Embed Links, Add Reactions, Read Message History
+     Permissions: Send Messages, Embed Links, Add Reactions, Read Message History,
+                  Connect, Speak (for voice channel support)
   6. systemctl enable --now bush-discord
 
 Environment variables:
@@ -20,8 +21,11 @@ Environment variables:
   MQTT_BROKER     Override MQTT broker host (default: auto-detect via bushutil)
 """
 import asyncio
+import io
 import json
 import os
+import queue
+import subprocess
 import sys
 import threading
 import time
@@ -31,7 +35,15 @@ from typing import Callable, Optional
 
 import discord
 from discord import app_commands
+import numpy as np
 import paho.mqtt.client as mqtt
+
+# Phase 2: discord-ext-voice-recv (optional — graceful degradation if absent)
+try:
+    import voice_recv
+    HAS_VOICE_RECV = True
+except ImportError:
+    HAS_VOICE_RECV = False
 
 # ── MQTT topics ───────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT = "bush/pipeline/stt/transcript"
@@ -62,6 +74,10 @@ EMOTION_COLORS = {
 EMOTIONS_ORDER = ["anger", "joy", "love", "surprise", "fear", "sadness"]
 BAR_WIDTH = 10
 
+# ── TTS synthesis params (mirrors tts-service.py) ────────────────────────────
+ESPEAK_CMD  = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "--stdout"]
+SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
+
 
 # ── data class ────────────────────────────────────────────────────────────────
 
@@ -77,6 +93,133 @@ class PipelineResult:
     bigjet_total_ms: int
     total_elapsed_s: float
     passed: bool
+
+
+# ── Discord TTS audio source (Phase 1) ───────────────────────────────────────
+
+class DiscordTTSSource(discord.AudioSource):
+    """
+    Long-lived AudioSource that synthesizes verses and streams 48kHz stereo PCM
+    to Discord VC. Returns silence frames when idle so voice_client.play()
+    never stops.
+    """
+    FRAME_SIZE = 3840  # 20ms @ 48kHz stereo s16le
+
+    def __init__(self):
+        self._buf     = b""
+        self._buf_pos = 0
+        self._lock    = threading.Lock()
+
+    def read(self) -> bytes:
+        with self._lock:
+            remaining = len(self._buf) - self._buf_pos
+            if remaining >= self.FRAME_SIZE:
+                start = self._buf_pos
+                self._buf_pos += self.FRAME_SIZE
+                return self._buf[start:start + self.FRAME_SIZE]
+            elif remaining > 0:
+                frame = self._buf[self._buf_pos:]
+                self._buf     = b""
+                self._buf_pos = 0
+                return frame + b'\x00' * (self.FRAME_SIZE - len(frame))
+        return b'\x00' * self.FRAME_SIZE
+
+    def is_opus(self) -> bool:
+        return False
+
+    async def synthesize(self, text: str):
+        """Synthesize verse text to raw PCM and queue it for playback."""
+        loop = asyncio.get_event_loop()
+        pcm = await loop.run_in_executor(None, self._run_synth, text)
+        if pcm:
+            with self._lock:
+                self._buf     = pcm
+                self._buf_pos = 0
+
+    def _run_synth(self, text: str) -> bytes:
+        try:
+            espeak = subprocess.Popen(
+                ESPEAK_CMD + [text],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            sox = subprocess.Popen(
+                [
+                    "sox", "-q", "-t", "wav", "-",
+                    "-t", "raw", "-r", "48000", "-c", "2",
+                    "-e", "signed-integer", "-b", "16", "-",
+                ] + SOX_EFFECTS,
+                stdin=espeak.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            espeak.stdout.close()
+            pcm, _ = sox.communicate()
+            espeak.wait()
+            return pcm
+        except Exception as e:
+            print(f"[tts-source] synth error: {e}", flush=True)
+            return b""
+
+
+# ── Loopback writer for voice receive → STT (Phase 2) ────────────────────────
+
+class LoopbackWriter:
+    """
+    Receives 48kHz stereo s16le PCM from Discord, downsamples to 16kHz mono,
+    and writes it to the ALSA loopback device for the existing stt-service.
+    """
+    LOOPBACK_DEVICE = "hw:Loopback,0"
+
+    def __init__(self):
+        self._queue: queue.Queue[bytes] = queue.Queue(maxsize=50)
+        self._thread: Optional[threading.Thread] = None
+        self._stop  = threading.Event()
+        self.muted  = False
+
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._queue.put(b"")  # unblock blocking get
+        if self._thread:
+            self._thread.join(timeout=2)
+        self._thread = None
+
+    def push(self, pcm_48k_stereo: bytes):
+        if self.muted or not pcm_48k_stereo:
+            return
+        try:
+            self._queue.put_nowait(pcm_48k_stereo)
+        except queue.Full:
+            pass  # drop on backpressure
+
+    def _run(self):
+        import sounddevice as sd
+        try:
+            with sd.RawOutputStream(
+                samplerate=16000,
+                channels=1,
+                dtype="int16",
+                device=self.LOOPBACK_DEVICE,
+            ) as stream:
+                while not self._stop.is_set():
+                    try:
+                        chunk = self._queue.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    if not chunk:
+                        break
+                    # 48kHz stereo s16le → 16kHz mono
+                    arr = np.frombuffer(chunk, dtype=np.int16).reshape(-1, 2)
+                    mono_48k = arr.mean(axis=1).astype(np.int16)
+                    mono_16k = mono_48k[::3]
+                    stream.write(mono_16k.tobytes())
+        except Exception as e:
+            print(f"[loopback-writer] error: {e}", flush=True)
 
 
 # ── MQTT bridge ───────────────────────────────────────────────────────────────
@@ -438,16 +581,30 @@ class BushBot(discord.Client):
     def __init__(self, guild_id: Optional[int], bridge: MQTTBridge):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.voice_states    = True
         super().__init__(intents=intents)
         self.tree         = app_commands.CommandTree(self)
         self._guild_id    = guild_id
         self._bridge      = bridge
         self._lock        = asyncio.Lock()
 
+        # voice state (Phase 1 + 2)
+        self._voice_client:   Optional[discord.VoiceClient] = None
+        self._tts_source:     Optional[DiscordTTSSource]    = None
+        self._loopback_writer: Optional[LoopbackWriter]     = None
+
         @self.tree.command(name="pray", description="Run the Bush pipeline with a phrase")
         @app_commands.describe(phrase="The phrase to inject into the pipeline")
         async def pray(interaction: discord.Interaction, phrase: str):
             await self._handle_pray(interaction, phrase)
+
+        @self.tree.command(name="join", description="Join your current voice channel")
+        async def join(interaction: discord.Interaction):
+            await self._cmd_join(interaction)
+
+        @self.tree.command(name="leave", description="Leave the current voice channel")
+        async def leave(interaction: discord.Interaction):
+            await self._cmd_leave(interaction)
 
     async def setup_hook(self):
         # Sync globally so DMs work
@@ -513,6 +670,8 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
+                if self._tts_source:
+                    asyncio.ensure_future(self._tts_source.synthesize(text))
 
             session = PipelineSession(self._bridge, phrase)
             result  = await session.run(on_verse=on_verse)
@@ -558,6 +717,8 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
+                if self._tts_source:
+                    asyncio.ensure_future(self._tts_source.synthesize(text))
 
             session = PipelineSession(self._bridge, phrase)
             result  = await session.run(on_verse=on_verse)
@@ -573,6 +734,103 @@ class BushBot(discord.Client):
                 await interaction.followup.send(embed=embed)
             except Exception as e:
                 print(f"[bot] Failed to send summary embed: {e}", flush=True)
+
+    # ── voice commands ────────────────────────────────────────────────────────
+
+    async def _cmd_join(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("Voice channels only work in a server.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(interaction.user.id)
+        if not member or not member.voice or not member.voice.channel:
+            await interaction.response.send_message("You need to be in a voice channel first.", ephemeral=True)
+            return
+
+        channel = member.voice.channel
+
+        # disconnect from existing VC if any
+        if self._voice_client and self._voice_client.is_connected():
+            await self._leave_voice()
+
+        await interaction.response.defer(thinking=True)
+        try:
+            await self._join_voice(channel)
+            recv_note = " (with voice receive)" if HAS_VOICE_RECV else ""
+            await interaction.followup.send(f"Joined **{channel.name}**{recv_note}.")
+        except Exception as e:
+            print(f"[bot] Failed to join VC: {e}", flush=True)
+            await interaction.followup.send(f"Failed to join voice channel: {e}", ephemeral=True)
+
+    async def _cmd_leave(self, interaction: discord.Interaction):
+        if not self._voice_client or not self._voice_client.is_connected():
+            await interaction.response.send_message("Not currently in a voice channel.", ephemeral=True)
+            return
+        await self._leave_voice()
+        await interaction.response.send_message("Left voice channel.")
+
+    async def _join_voice(self, channel: discord.VoiceChannel):
+        """Connect to a voice channel and start the TTS source (+ optional receive)."""
+        # Phase 2: use VoiceRecvClient if available
+        if HAS_VOICE_RECV:
+            vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
+        else:
+            vc = await channel.connect()
+
+        self._voice_client = vc
+        self._tts_source   = DiscordTTSSource()
+
+        # Start the persistent silent source so play() never stops
+        vc.play(self._tts_source, after=self._on_vc_play_end)
+        print(f"[bot] Joined VC {channel.name}, TTS source running", flush=True)
+
+        # Phase 2: set up loopback writer + voice receive sink
+        if HAS_VOICE_RECV and isinstance(vc, voice_recv.VoiceRecvClient):
+            self._loopback_writer = LoopbackWriter()
+            self._loopback_writer.start()
+
+            loopback = self._loopback_writer
+
+            def on_audio(user, data: voice_recv.VoiceData):
+                loopback.push(data.pcm)
+
+            vc.listen(voice_recv.BasicSink(on_audio))
+            print(f"[bot] Voice receive active → loopback", flush=True)
+
+            # echo mute gate: mute loopback while TTS is speaking
+            self._bridge.add_handler(TOPIC_SPEAKING, self._on_speaking_mute)
+            self._bridge.add_handler(TOPIC_DONE,     self._on_done_unmute)
+
+    async def _leave_voice(self):
+        """Disconnect from VC and clean up all voice resources."""
+        vc = self._voice_client
+        if vc:
+            if vc.is_playing():
+                vc.stop()
+            if vc.is_connected():
+                await vc.disconnect()
+        self._voice_client = None
+        self._tts_source   = None
+
+        if self._loopback_writer:
+            self._loopback_writer.stop()
+            self._loopback_writer = None
+            self._bridge.remove_handler(TOPIC_SPEAKING, self._on_speaking_mute)
+            self._bridge.remove_handler(TOPIC_DONE,     self._on_done_unmute)
+
+        print("[bot] Left VC, voice resources cleaned up", flush=True)
+
+    def _on_vc_play_end(self, error: Optional[Exception]):
+        if error:
+            print(f"[bot] VC play error: {error}", flush=True)
+
+    async def _on_speaking_mute(self, topic: str, payload: bytes):
+        if self._loopback_writer:
+            self._loopback_writer.muted = True
+
+    async def _on_done_unmute(self, topic: str, payload: bytes):
+        if self._loopback_writer:
+            self._loopback_writer.muted = False
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -595,6 +853,10 @@ def main():
         broker = get_mqtt_broker()
 
     print(f"[bot] MQTT broker: {broker}", flush=True)
+    if HAS_VOICE_RECV:
+        print("[bot] discord-ext-voice-recv available — Phase 2 voice receive enabled", flush=True)
+    else:
+        print("[bot] discord-ext-voice-recv not installed — voice output only (Phase 1)", flush=True)
 
     loop   = asyncio.new_event_loop()
     bridge = MQTTBridge(broker, loop)
@@ -611,6 +873,8 @@ def main():
         try:
             await bot.start(token)
         finally:
+            if bot._voice_client:
+                await bot._leave_voice()
             bridge.disconnect()
 
     try:
