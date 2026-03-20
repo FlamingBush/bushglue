@@ -168,6 +168,7 @@ class State:
         self.flare_ts: float | None = None
         self.bigjet_ms = 0
         self.bigjet_ts: float | None = None
+        self.t2v_processing = False
         self.tts_text = ""
         self.tts_ts: float | None = None
         self.tts_speaking = False
@@ -238,8 +239,9 @@ def build_verse_panel(s: State) -> Panel:
         text.append(f"   {_fmt_ts(s.verse_ts)}", style="dim")
     else:
         text.append("waiting for transcript…", style="dim")
+    border = "bold bright_yellow" if s.t2v_processing else "yellow"
     return Panel(text, title="[bold]TEXT-TO-VERSE[/bold]  [dim]bush/pipeline/t2v/verse[/dim]",
-                 box=box.ROUNDED, border_style="yellow")
+                 box=box.ROUNDED, border_style=border)
 
 
 def build_sentiment_panel(s: State) -> Panel:
@@ -323,7 +325,7 @@ def build_fire_panel(s: State) -> Panel:
 def build_tts_panel(s: State) -> Panel:
     text = Text()
     if s.tts_text:
-        style = _age_style(s.tts_ts)
+        style = "bold" if s.tts_speaking else _age_style(s.tts_ts)
         indicator = "[bold green]▶ SPEAKING[/bold green]" if s.tts_speaking else "[dim]last:[/dim]"
         text.append_text(Text.from_markup(indicator))
         text.append(f"  {s.tts_text}", style=f"{style} italic")
@@ -603,6 +605,7 @@ def on_message(client, userdata, msg):
                 data = json.loads(msg.payload)
                 state.stt_text = data.get("text", "")
                 state.stt_ts = now
+                state.t2v_processing = True
                 state.log.append((now, "TRANSCRIPT", f'"{state.stt_text[:80]}"'))
 
             elif topic == "bush/pipeline/t2v/verse":
@@ -610,6 +613,7 @@ def on_message(client, userdata, msg):
                 state.verse_query = data.get("query", "")
                 state.verse_text = data.get("text", "").replace("\n", " ")
                 state.verse_ts = now
+                state.t2v_processing = False
                 state.log.append((now, "VERSE", f'"{state.verse_text[:80]}"'))
 
             elif topic == "bush/pipeline/sentiment/result":
