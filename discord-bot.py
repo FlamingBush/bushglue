@@ -202,29 +202,57 @@ class LoopbackWriter:
         except queue.Full:
             pass  # drop on backpressure
 
+    # Close the ALSA stream after this many seconds of silence so bush-pray
+    # (which also needs hw:Loopback,0) can always get exclusive access.
+    IDLE_CLOSE_S = 0.5
+
     def _run(self):
         import sounddevice as sd
-        try:
-            with sd.RawOutputStream(
-                samplerate=16000,
-                channels=1,
-                dtype="int16",
-                device=self.LOOPBACK_DEVICE,
-            ) as stream:
-                while not self._stop.is_set():
+        stream = None
+        last_write = 0.0
+        while not self._stop.is_set():
+            try:
+                chunk = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                # Close the stream when idle so the ALSA device is free
+                if stream is not None and (time.time() - last_write) > self.IDLE_CLOSE_S:
                     try:
-                        chunk = self._queue.get(timeout=0.5)
-                    except queue.Empty:
-                        continue
-                    if not chunk:
-                        break
-                    # 48kHz stereo s16le → 16kHz mono
-                    arr = np.frombuffer(chunk, dtype=np.int16).reshape(-1, 2)
-                    mono_48k = arr.mean(axis=1).astype(np.int16)
-                    mono_16k = mono_48k[::3]
-                    stream.write(mono_16k.tobytes())
-        except Exception as e:
-            print(f"[loopback-writer] error: {e}", flush=True)
+                        stream.close()
+                    except Exception:
+                        pass
+                    stream = None
+                continue
+            if not chunk:
+                break
+            # Open stream on demand
+            if stream is None:
+                try:
+                    stream = sd.RawOutputStream(
+                        samplerate=16000, channels=1, dtype="int16",
+                        device=self.LOOPBACK_DEVICE,
+                    )
+                    stream.start()
+                except Exception as e:
+                    print(f"[loopback-writer] open error: {e}", flush=True)
+                    continue
+            try:
+                arr = np.frombuffer(chunk, dtype=np.int16).reshape(-1, 2)
+                mono_48k = arr.mean(axis=1).astype(np.int16)
+                mono_16k = mono_48k[::3]
+                stream.write(mono_16k.tobytes())
+                last_write = time.time()
+            except Exception as e:
+                print(f"[loopback-writer] write error: {e}", flush=True)
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                stream = None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
 
 
 # ── MQTT bridge ───────────────────────────────────────────────────────────────
@@ -734,26 +762,18 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
-            # Text stomps on voice: cut VC playback and stop the loopback writer
-            # so bush-pray can get exclusive ALSA access to hw:Loopback,0
+            # Text stomps on voice: cut any VC playback and mute voice input
             if self._voice_client and self._voice_client.is_playing():
                 self._voice_client.stop()
-            writer = self._loopback_writer
-            if writer:
-                await asyncio.get_event_loop().run_in_executor(None, writer.stop)
+            if self._loopback_writer:
+                self._loopback_writer.muted = True
 
             session = PipelineSession(self._bridge, phrase)
             try:
                 result = await session.run(on_verse=on_verse)
             finally:
-                if writer:
-                    # drain stale VC audio queued while writer was stopped
-                    while not writer._queue.empty():
-                        try:
-                            writer._queue.get_nowait()
-                        except queue.Empty:
-                            break
-                    writer.start()
+                if self._loopback_writer:
+                    self._loopback_writer.muted = False
 
             if not verse_sent and result.verse:
                 await message.channel.send(f"> *\"{result.verse}\"*")
@@ -796,25 +816,18 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
-            # Text stomps on voice: cut VC playback and stop the loopback writer
-            # so bush-pray can get exclusive ALSA access to hw:Loopback,0
+            # Text stomps on voice: cut any VC playback and mute voice input
             if self._voice_client and self._voice_client.is_playing():
                 self._voice_client.stop()
-            writer = self._loopback_writer
-            if writer:
-                await asyncio.get_event_loop().run_in_executor(None, writer.stop)
+            if self._loopback_writer:
+                self._loopback_writer.muted = True
 
             session = PipelineSession(self._bridge, phrase)
             try:
                 result = await session.run(on_verse=on_verse)
             finally:
-                if writer:
-                    while not writer._queue.empty():
-                        try:
-                            writer._queue.get_nowait()
-                        except queue.Empty:
-                            break
-                    writer.start()
+                if self._loopback_writer:
+                    self._loopback_writer.muted = False
 
             if not verse_sent and result.verse:
                 try:
