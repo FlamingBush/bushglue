@@ -398,6 +398,7 @@ class BushBot(discord.Client):
 
     def __init__(self, guild_id: Optional[int], bridge: MQTTBridge):
         intents = discord.Intents.default()
+        intents.message_content = True
         super().__init__(intents=intents)
         self.tree         = app_commands.CommandTree(self)
         self._guild_id    = guild_id
@@ -435,6 +436,43 @@ class BushBot(discord.Client):
 
     async def on_ready(self):
         print(f"[bot] Logged in as {self.user} (id={self.user.id})", flush=True)
+
+    async def on_message(self, message: discord.Message):
+        # only handle plain DMs, ignore bots and empty messages
+        if message.author.bot:
+            return
+        if not isinstance(message.channel, discord.DMChannel):
+            return
+        phrase = message.content.strip()
+        if not phrase:
+            return
+
+        if self._lock.locked():
+            await message.channel.send(
+                "Pipeline is currently running — your request is queued, please wait…"
+            )
+
+        async with self._lock:
+            print(f"[bot] DM '{phrase}' from {message.author}", flush=True)
+
+            verse_sent = False
+
+            async def on_verse(text: str):
+                nonlocal verse_sent
+                try:
+                    await message.channel.send(f"> *\"{text}\"*")
+                    verse_sent = True
+                except Exception as e:
+                    print(f"[bot] Failed to send verse: {e}", flush=True)
+
+            session = PipelineSession(self._bridge, phrase)
+            result  = await session.run(on_verse=on_verse)
+
+            if not verse_sent and result.verse:
+                await message.channel.send(f"> *\"{result.verse}\"*")
+
+            embed = build_summary_embed(phrase, result)
+            await message.channel.send(embed=embed)
 
     async def _handle_pray(self, interaction: discord.Interaction, phrase: str):
         phrase = phrase.strip()
