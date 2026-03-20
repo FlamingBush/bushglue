@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Bush Glue daemon control
+# Usage: bushctl [restart|start|stop|status] [SERVICE...]
+#
+# SERVICE can be a full unit name (bush-stt) or a short name (stt, tts, t2v,
+# sentiment, audio-agent, discord, chroma).  Omit SERVICE to target all
+# pipeline daemons.
+
+PIPELINE=(bush-stt bush-t2v bush-tts bush-sentiment bush-audio-agent)
+
+# Expand short names to full unit names
+resolve() {
+    case "$1" in
+        stt)          echo bush-stt ;;
+        t2v)          echo bush-t2v ;;
+        tts)          echo bush-tts ;;
+        sentiment)    echo bush-sentiment ;;
+        audio-agent)  echo bush-audio-agent ;;
+        discord)      echo bush-discord ;;
+        chroma*)      echo chromadb ;;
+        *)            echo "$1" ;;
+    esac
+}
+
+cmd="${1:-status}"
+shift || true
+
+if [[ $# -gt 0 ]]; then
+    targets=()
+    for arg in "$@"; do targets+=("$(resolve "$arg")"); done
+else
+    targets=("${PIPELINE[@]}")
+fi
+
+case "$cmd" in
+    restart|start|stop)
+        sudo systemctl "$cmd" "${targets[@]}"
+        echo ""
+        systemctl status "${targets[@]}" --no-pager -n 0
+        ;;
+    status)
+        systemctl status "${targets[@]}" --no-pager -n 0
+        ;;
+    *)
+        echo "Usage: bushctl [restart|start|stop|status] [SERVICE...]" >&2
+        echo "  Short names: stt, t2v, tts, sentiment, audio-agent, discord, chroma" >&2
+        exit 1
+        ;;
+esac
