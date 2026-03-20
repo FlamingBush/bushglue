@@ -32,8 +32,6 @@ import threading
 import time
 
 logging.basicConfig(level=logging.WARNING, format="[%(name)s] %(levelname)s %(message)s")
-logging.getLogger("discord.ext.voice_recv").setLevel(logging.DEBUG)
-logging.getLogger("discord.voice_client").setLevel(logging.DEBUG)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -799,18 +797,9 @@ class BushBot(discord.Client):
             opus_dec    = discord.opus.Decoder()
             import davey as _davey
 
-            # Raw socket probe: count ALL incoming UDP packets to determine
-            # if Discord is forwarding audio at all.
-            _raw_count = [0]
-            def _raw_probe(data: bytes):
-                _raw_count[0] += 1
-                if _raw_count[0] <= 5 or _raw_count[0] % 500 == 0:
-                    is_rtcp = 200 <= data[1] <= 204 if len(data) > 1 else False
-                    print(f"[socket] pkt #{_raw_count[0]} len={len(data)} rtcp={is_rtcp} byte1={data[1] if len(data)>1 else '?'}", flush=True)
-            vc._connection.add_socket_listener(_raw_probe)
 
             def on_audio(user, data: voice_recv.VoiceData):
-                raw = data.opus  # RTP-decrypted but DAVE-encrypted Opus bytes
+                raw = data.opus  # RTP-decrypted, DAVE-encrypted Opus bytes
                 if not raw:
                     return
                 # DAVE layer: decrypt if session exists and user is known
