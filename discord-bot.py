@@ -500,7 +500,7 @@ class BushBot(discord.Client):
                 nonlocal verse_sent
                 try:
                     verse = " ".join(text.split())
-                    header = f"{message.author.display_name} said \"{phrase}\" and AI Am heard \"{heard}\"\n" if heard else ""
+                    header = f"{message.author.display_name} said \"{phrase}\" and AI Am (your fucking god dude) \"{heard}\"\n" if heard else ""
                     await message.channel.send(f"{header}> *\"{verse}\"*")
                     verse_sent = True
                 except Exception as e:
@@ -538,7 +538,7 @@ class BushBot(discord.Client):
                 nonlocal verse_sent
                 try:
                     verse = " ".join(text.split())
-                    header = f"{interaction.user.display_name} said \"{phrase}\" and AI Am heard \"{heard}\"\n" if heard else ""
+                    header = f"{interaction.user.display_name} said \"{phrase}\" and AI Am (your fucking god dude) \"{heard}\"\n" if heard else ""
                     await interaction.followup.send(f"{header}> *\"{verse}\"*")
                     verse_sent = True
                 except Exception as e:
