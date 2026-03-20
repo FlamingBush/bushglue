@@ -323,11 +323,32 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
     )
 
 
+LOOPBACK_COMPETITOR = "bush-discord"   # holds hw:7,0 sub-device 0; bumps bush-pray to sub-device 1
+
+
+def _loopback_inject(broker: str, phrase: str) -> PipelineResult:
+    """Stop the loopback competitor, run the full inject pipeline, then restart it."""
+    stopped = False
+    check = subprocess.run(["systemctl", "is-active", LOOPBACK_COMPETITOR],
+                           capture_output=True, text=True)
+    if check.stdout.strip() == "active":
+        subprocess.run(["sudo", "systemctl", "stop", LOOPBACK_COMPETITOR], check=True)
+        stopped = True
+    try:
+        return run_pipeline(broker, phrase, transcript_only=False)
+    finally:
+        if stopped:
+            subprocess.run(["sudo", "systemctl", "start", LOOPBACK_COMPETITOR], check=True)
+
+
 def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool = False) -> bool:
     if not skip_health and not check_health():
         print("Aborting: one or more services are down.")
         return False
-    result = run_pipeline(broker, phrase, transcript_only)
+    if transcript_only:
+        result = run_pipeline(broker, phrase, transcript_only=True)
+    else:
+        result = _loopback_inject(broker, phrase)
     return _print_results(result)
 
 
