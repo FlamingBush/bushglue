@@ -794,20 +794,35 @@ class BushBot(discord.Client):
             self._loopback_writer = LoopbackWriter()
             self._loopback_writer.start()
 
-            loopback = self._loopback_writer
-            _audio_packet_count = [0]
+            loopback    = self._loopback_writer
+            dave        = vc._connection.dave_session  # may be None if DAVE not active
+            opus_dec    = discord.opus.Decoder()
+            import davey as _davey
 
             def on_audio(user, data: voice_recv.VoiceData):
-                _audio_packet_count[0] += 1
-                if _audio_packet_count[0] == 1 or _audio_packet_count[0] % 500 == 0:
-                    print(f"[voice-recv] packet #{_audio_packet_count[0]} user={user} pcm_len={len(data.pcm) if data.pcm else 0}", flush=True)
-                loopback.push(data.pcm)
+                raw = data.opus  # RTP-decrypted but DAVE-encrypted Opus bytes
+                if not raw:
+                    return
+                # DAVE layer: decrypt if session exists and user is known
+                if dave and user:
+                    try:
+                        raw = dave.decrypt(user.id, _davey.MediaType.Audio, raw)
+                    except Exception as e:
+                        print(f"[voice-recv] DAVE decrypt error: {e}", flush=True)
+                        return
+                # Opus → PCM
+                try:
+                    pcm = opus_dec.decode(raw, fec=False)
+                except Exception as e:
+                    print(f"[voice-recv] opus decode error: {e}", flush=True)
+                    return
+                loopback.push(pcm)
 
             def on_listen_end(error):
                 if error:
                     print(f"[voice-recv] reader stopped with error: {error}", flush=True)
 
-            vc.listen(voice_recv.BasicSink(on_audio), after=on_listen_end)
+            vc.listen(voice_recv.BasicSink(on_audio, decode=False), after=on_listen_end)
             print(f"[bot] Voice receive active → loopback", flush=True)
 
             # echo mute gate: mute loopback while TTS is speaking
