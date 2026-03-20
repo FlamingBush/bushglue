@@ -816,7 +816,7 @@ class BushBot(discord.Client):
                 # DAVE layer: decrypt if session exists and user is known
                 if dave and user:
                     try:
-                        raw = dave.decrypt(user.id, _davey.MediaType.Audio, raw)
+                        raw = dave.decrypt(user.id, _davey.MediaType.audio, raw)
                     except Exception as e:
                         print(f"[voice-recv] DAVE decrypt error: {e}", flush=True)
                         return
