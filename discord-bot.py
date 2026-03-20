@@ -521,6 +521,13 @@ class BushBot(discord.Client):
             await interaction.response.send_message("Please provide a phrase.", ephemeral=True)
             return
 
+        # redirect guild channel messages to #bush-irl
+        if isinstance(interaction.channel, discord.TextChannel) and interaction.channel.name != "bush-irl":
+            bush_irl = discord.utils.get(interaction.guild.text_channels, name="bush-irl")
+            dest = bush_irl.mention if bush_irl else "#bush-irl"
+            await interaction.response.send_message(f"I live in {dest} now.", ephemeral=True)
+            return
+
         await interaction.response.defer(thinking=True)
 
         if self._lock.locked():
