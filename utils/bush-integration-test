@@ -221,7 +221,7 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
     else:
         inject_time[0] = time.time()
         print(f'Injecting audio via loopback: "{phrase}"\n')
-        inject_script = SCRIPTS_DIR / "inject.py"
+        inject_script = SCRIPTS_DIR / "bush-inject"
         threading.Thread(
             target=subprocess.run,
             args=(["python3", str(inject_script), "--phrase", phrase],),
