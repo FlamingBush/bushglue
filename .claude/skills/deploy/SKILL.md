@@ -37,7 +37,7 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
 
 6. **Run the integration test**:
    ```
-   ssh odroid-cmd 'python3 ~/repos/bushglue/scripts/integration-test.py'
+   ssh odroid-cmd 'bush-integration-test'
    ```
    The test has a long timeout (up to ~3 minutes for the full pipeline). Let it run to completion.
 

@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=simple
 User=odroid
-ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/scripts/tts-service.py
+ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/tts-service.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

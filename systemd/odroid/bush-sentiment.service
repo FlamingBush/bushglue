@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=odroid
-ExecStart=/home/odroid/repos/bbsentimentqq/.venv/bin/python3 /home/odroid/repos/bushglue/scripts/sentiment-service.py
+ExecStart=/home/odroid/repos/bbsentimentqq/.venv/bin/python3 /home/odroid/repos/bushglue/sentiment-service.py
 WorkingDirectory=/home/odroid/repos/bushglue/scripts
 Restart=on-failure
 RestartSec=10

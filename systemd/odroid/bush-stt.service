@@ -8,7 +8,7 @@ User=odroid
 Environment=STT_DIR=/home/odroid/repos/speech-to-text
 Environment=STT_MODEL=/home/odroid/repos/speech-to-text/models/en-us
 Environment="STT_DEVICE=Loopback: PCM (hw:7,1)"
-ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/scripts/stt-service.py
+ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/stt-service.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

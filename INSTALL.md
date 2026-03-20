@@ -137,6 +137,27 @@ python3 -m venv .venv
 # Populate the database — see that repo's README
 ```
 
+## Shell Setup (Odroid)
+
+Add to `~/.bashrc` so the `bush-*` utilities are on PATH and can find `bushutil`:
+
+```bash
+export PYTHONPATH=~/repos/bushglue
+export PATH="$PATH:$HOME/repos/bushglue/utils"
+```
+
+Then reload: `source ~/.bashrc`
+
+Available utilities:
+
+| Command | Purpose |
+|---------|---------|
+| `bush-monitor` | Real-time pipeline TUI |
+| `bush-inject` | Inject a phrase or WAV into the loopback |
+| `bush-stt-file` | Replay a WAV file through the STT stage |
+| `bush-integration-test` | End-to-end pipeline test |
+| `bush-wait-for-http` | Poll a URL until it responds |
+
 ## Install systemd Units
 
 ```bash
@@ -173,7 +194,7 @@ journalctl -u bush-t2v -u bush-sentiment -u bush-tts -u bush-sound -f
 ## Monitor TUI
 
 ```bash
-python3 /mnt/c/Users/EB/bushglue/scripts/monitor.py
+bush-monitor
 ```
 
 Shows live STT transcripts, verses, emotion bars, ASCII bush (standby / flare /
@@ -189,7 +210,7 @@ selection, ChromaDB collections, and other parameters.
 Requires a mono, 16-bit PCM WAV file (16 kHz recommended):
 
 ```bash
-python3 scripts/stt-file-service.py --file recording.wav --delay 3 --log runs/run1.jsonl
+bush-stt-file --file recording.wav --delay 3 --log runs/run1.jsonl
 ```
 
 `--delay` pauses between utterances so you can watch `monitor.py` update in real time.
