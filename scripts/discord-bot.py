@@ -438,6 +438,7 @@ class BushBot(discord.Client):
         print(f"[bot] Logged in as {self.user} (id={self.user.id})", flush=True)
 
     async def on_message(self, message: discord.Message):
+        print(f"[bot] on_message: author={message.author} bot={message.author.bot} channel={message.channel} content={message.content!r:.60}", flush=True)
         # ignore bots and empty messages
         if message.author.bot:
             return
