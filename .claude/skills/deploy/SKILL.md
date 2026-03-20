@@ -30,7 +30,12 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
    ```
    Wait a few seconds for services to settle before running the test.
 
-5. **Run the integration test**:
+5. **Restart the local monitor** (if it's running, it will reload with the new code):
+   ```
+   mosquitto_pub -h localhost -t bush/monitor/restart -m '{}'
+   ```
+
+6. **Run the integration test**:
    ```
    ssh odroid-cmd 'python3 ~/repos/bushglue/scripts/integration-test.py'
    ```
