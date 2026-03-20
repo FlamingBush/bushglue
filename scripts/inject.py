@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
-LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "hw:3,0")
+LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "hw:Loopback,0")
 
 
 def phrase_to_filename(phrase: str) -> str:
