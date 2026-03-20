@@ -429,7 +429,10 @@ class PipelineSession:
                 pass
 
             if not self._transcript_ev.is_set():
-                proc.kill()
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
                 await proc.wait()
                 return self._build_result(inject_elapsed=time.monotonic() - self._inject_start)
 
