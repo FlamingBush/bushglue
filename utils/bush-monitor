@@ -65,7 +65,7 @@ EMOTION_COLOUR = {
     "sadness":  "blue",
 }
 
-LOG_MAX = 12
+LOG_MAX = 200
 BAR_WIDTH = 28
 
 # ── bush ASCII art ─────────────────────────────────────────────────────────
@@ -361,9 +361,16 @@ def build_log_panel(s: State) -> Panel:
              f"  [bold green]\\[o][/bold green][dim]utput[/dim]"
              f"  [bold yellow]\\[t][/bold yellow][dim]ranscript[/dim]"
              f"  [bold white]\\[q][/bold white][dim]uit[/dim]")
+    try:
+        term_h = os.get_terminal_size().lines
+    except OSError:
+        term_h = 40
+    _FIXED_ROWS = 1 + 5 + 4 + 11  # header + top + sentiment + bottom
+    content_rows = max(1, term_h - _FIXED_ROWS - 2)  # -2 for panel border
+
+    entries = list(s.log)[-content_rows:]  # newest at bottom
     text = Text()
-    entries = list(s.log)
-    for ts, tag, msg in reversed(entries):
+    for ts, tag, msg in entries:
         tag_colour = {
             "TRANSCRIPT": "cyan",
             "T2V":        "bold yellow",
