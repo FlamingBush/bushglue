@@ -97,7 +97,7 @@ def check_health() -> bool:
     return all_active
 
 
-def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
+def run_test(broker: str, phrase: str, transcript_only: bool, skip_health: bool = False) -> bool:
     # transcript stage only exists in inject (default) mode
     transcript_stage = Stage("stt/transcript", T_TRANSCRIPT)
 
@@ -138,7 +138,9 @@ def run_test(broker: str, phrase: str, transcript_only: bool) -> bool:
     mqttc.on_connect = on_connect
     mqttc.on_message = on_message
 
-    check_health()
+    if not skip_health and not check_health():
+        print("Aborting: one or more services are down.")
+        return False
     print(f"Connecting to {broker}:{MQTT_PORT} ...")
     try:
         mqttc.connect(broker, MQTT_PORT, 60)
@@ -251,12 +253,20 @@ def main():
                         help="Phrase to inject")
     parser.add_argument("--transcript-only", action="store_true",
                         help="Skip audio injection; publish transcript directly to MQTT")
+    parser.add_argument("--mqtt-only", action="store_true",
+                        help="Publish transcript via MQTT only — no health checks, no audio injection, "
+                             "no local system access. Defaults broker to localhost.")
     parser.add_argument("--health-only", action="store_true",
                         help="Print service health and exit")
     args = parser.parse_args()
 
     if args.health_only:
         sys.exit(0 if check_health() else 1)
+
+    if args.mqtt_only:
+        broker = args.broker or "localhost"
+        ok = run_test(broker, args.phrase, transcript_only=True, skip_health=True)
+        sys.exit(0 if ok else 1)
 
     broker = args.broker
     if not broker:
