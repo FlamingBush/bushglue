@@ -673,9 +673,6 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
-                if self._tts_source:
-                    asyncio.ensure_future(self._tts_source.synthesize(text))
-
             session = PipelineSession(self._bridge, phrase)
             result  = await session.run(on_verse=on_verse)
 
@@ -720,9 +717,6 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
-                if self._tts_source:
-                    asyncio.ensure_future(self._tts_source.synthesize(text))
-
             session = PipelineSession(self._bridge, phrase)
             result  = await session.run(on_verse=on_verse)
 
@@ -787,13 +781,15 @@ class BushBot(discord.Client):
         vc.play(self._tts_source, after=self._on_vc_play_end)
         print(f"[bot] Joined VC {channel.name}, TTS source running", flush=True)
 
+        # Global verse handler: synthesize to VC for ALL pipeline runs (text or voice triggered)
+        self._bridge.add_handler(TOPIC_VERSE, self._on_verse_global)
+
         # Phase 2: set up loopback writer + voice receive sink
         if HAS_VOICE_RECV and isinstance(vc, voice_recv.VoiceRecvClient):
             self._loopback_writer = LoopbackWriter()
             self._loopback_writer.start()
 
             loopback    = self._loopback_writer
-            dave        = vc._connection.dave_session  # may be None if DAVE not active
             opus_dec    = discord.opus.Decoder()
             import davey as _davey
 
@@ -802,12 +798,15 @@ class BushBot(discord.Client):
                 raw = data.opus  # RTP-decrypted, DAVE-encrypted Opus bytes
                 if not raw:
                     return
-                # DAVE layer: decrypt if session exists and user is known
+                # DAVE layer: look up session dynamically (it may re-key after join)
+                dave = vc._connection.dave_session
                 if dave and user:
                     try:
                         raw = dave.decrypt(user.id, _davey.MediaType.audio, raw)
                     except Exception as e:
-                        print(f"[voice-recv] DAVE decrypt error: {e}", flush=True)
+                        # UnencryptedWhenPassthroughDisabled = transitional packet, skip silently
+                        if "UnencryptedWhenPassthroughDisabled" not in str(e):
+                            print(f"[voice-recv] DAVE decrypt error: {e}", flush=True)
                         return
                 elif dave and not user:
                     return  # user unknown, can't decrypt
@@ -841,6 +840,8 @@ class BushBot(discord.Client):
         self._voice_client = None
         self._tts_source   = None
 
+        self._bridge.remove_handler(TOPIC_VERSE, self._on_verse_global)
+
         if self._loopback_writer:
             self._loopback_writer.stop()
             self._loopback_writer = None
@@ -852,6 +853,30 @@ class BushBot(discord.Client):
     def _on_vc_play_end(self, error: Optional[Exception]):
         if error:
             print(f"[bot] VC play error: {error}", flush=True)
+        # Restart the silent TTS source if still connected (play() stops if source ends or errors)
+        vc  = self._voice_client
+        src = self._tts_source
+        if vc and src and vc.is_connected() and not vc.is_playing():
+            try:
+                vc.play(src, after=self._on_vc_play_end)
+                print("[bot] VC play restarted", flush=True)
+            except Exception as e:
+                print(f"[bot] VC play restart error: {e}", flush=True)
+
+    async def _on_verse_global(self, topic: str, payload: bytes):
+        """Global TOPIC_VERSE handler: synthesize verse to VC whenever bot is joined."""
+        if not self._tts_source:
+            return
+        try:
+            data = json.loads(payload)
+            text = data.get("text", "").strip()
+            if not text:
+                return
+            first_para = text.split("\n\n")[0]
+            clean = " ".join(line.strip() for line in first_para.splitlines() if line.strip())
+            asyncio.ensure_future(self._tts_source.synthesize(clean))
+        except Exception as e:
+            print(f"[bot] verse-to-vc error: {e}", flush=True)
 
     async def _on_speaking_mute(self, topic: str, payload: bytes):
         if self._loopback_writer:
