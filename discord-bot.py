@@ -675,9 +675,13 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
-            session = PipelineSession(self._bridge, phrase)
+            # Text stomps on voice: stop current VC playback and mute voice input
+            if self._voice_client and self._voice_client.is_playing():
+                self._voice_client.stop()
             if self._loopback_writer:
                 self._loopback_writer.muted = True
+
+            session = PipelineSession(self._bridge, phrase)
             try:
                 result = await session.run(on_verse=on_verse)
             finally:
@@ -725,9 +729,13 @@ class BushBot(discord.Client):
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse message: {e}", flush=True)
-            session = PipelineSession(self._bridge, phrase)
+            # Text stomps on voice: stop current VC playback and mute voice input
+            if self._voice_client and self._voice_client.is_playing():
+                self._voice_client.stop()
             if self._loopback_writer:
                 self._loopback_writer.muted = True
+
+            session = PipelineSession(self._bridge, phrase)
             try:
                 result = await session.run(on_verse=on_verse)
             finally:
