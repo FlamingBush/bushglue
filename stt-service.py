@@ -13,6 +13,7 @@ Accepts runtime device changes via bush/audio/stt/set-device {"device": <int|str
 import json
 import os
 import queue
+import random
 import sys
 import threading
 import time
@@ -29,6 +30,32 @@ if _dev:
 else:
     STT_DEVICE = load_audio_device("stt")  # restore last saved device (or None)
 SAMPLE_RATE = 16000
+
+FALLBACK_PHRASES = [
+    "what is the fire",
+    "speak of the light",
+    "what burns in the darkness",
+    "tell me of the wilderness",
+    "who tends the flame",
+    "what is the meaning of the desert",
+    "speak of the beginning",
+    "what lives in the smoke",
+    "where does the fire come from",
+    "tell me of the burning bush",
+    "what is the voice in the wilderness",
+    "speak of water and flame",
+    "what is revealed by fire",
+    "tell me of the night",
+    "what rises from the ash",
+]
+_fallback_iter: list[str] = []
+
+
+def _next_fallback() -> str:
+    global _fallback_iter
+    if not _fallback_iter:
+        _fallback_iter = random.sample(FALLBACK_PHRASES, len(FALLBACK_PHRASES))
+    return _fallback_iter.pop()
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT      = "bush/pipeline/stt/transcript"
@@ -163,11 +190,10 @@ def main():
 
                         if force_finalize.is_set():
                             force_finalize.clear()
-                            text = stt.final_result() or last_partial
-                            if text:
-                                log(f"Force-final: {text!r}")
-                                mqttc.publish(TOPIC_TRANSCRIPT,
-                                              json.dumps({"text": text, "ts": time.time()}))
+                            text = stt.final_result() or last_partial or _next_fallback()
+                            log(f"Force-final: {text!r}")
+                            mqttc.publish(TOPIC_TRANSCRIPT,
+                                          json.dumps({"text": text, "ts": time.time()}))
                             last_partial = ""
                             mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
                             stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
