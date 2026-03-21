@@ -366,6 +366,7 @@ def build_log_panel(s: State) -> Panel:
              f"  [bold cyan]\\[i][/bold cyan][dim]nput[/dim]"
              f"  [bold green]\\[o][/bold green][dim]utput[/dim]"
              f"  [bold yellow]\\[t][/bold yellow][dim]ranscript[/dim]"
+             f"  [bold red]\\[f][/bold red][dim]inalize[/dim]"
              f"  [bold cyan]\\[]/][/bold cyan][dim]clarity[/dim]"
              f"  [bold white]\\[q][/bold white][dim]uit[/dim]")
     try:
@@ -526,6 +527,9 @@ def _handle_key(key: str):
             with state.lock:
                 state.ui_mode = "input_text"
                 state.input_text = ""
+        elif key == "f":
+            if _mqttc:
+                _mqttc.publish("bush/pipeline/stt/force-finalize", "{}")
         elif key == "[":
             with state.lock:
                 new_clarity = max(0, state.tts_clarity - 10)

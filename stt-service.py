@@ -31,11 +31,12 @@ else:
 SAMPLE_RATE = 16000
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
-TOPIC_TRANSCRIPT    = "bush/pipeline/stt/transcript"
-TOPIC_TTS_SPEAKING  = "bush/pipeline/tts/speaking"
-TOPIC_TTS_DONE      = "bush/pipeline/tts/done"
-TOPIC_SET_DEVICE    = "bush/audio/stt/set-device"
-TOPIC_DEVICE_STATUS = "bush/audio/stt/device"
+TOPIC_TRANSCRIPT      = "bush/pipeline/stt/transcript"
+TOPIC_TTS_SPEAKING    = "bush/pipeline/tts/speaking"
+TOPIC_TTS_DONE        = "bush/pipeline/tts/done"
+TOPIC_SET_DEVICE      = "bush/audio/stt/set-device"
+TOPIC_DEVICE_STATUS   = "bush/audio/stt/device"
+TOPIC_FORCE_FINALIZE  = "bush/pipeline/stt/force-finalize"
 MQTT_PORT = 1883
 
 
@@ -54,6 +55,7 @@ def main():
     MUTE_TIMEOUT_S = 30
     muted = threading.Event()
     reset_recognizer = threading.Event()
+    force_finalize = threading.Event()
     _mute_timer: list[threading.Timer | None] = [None]
 
     # ── device change ──────────────────────────────────────────────────────
@@ -87,6 +89,9 @@ def main():
             on_tts_speaking()
         elif msg.topic == TOPIC_TTS_DONE:
             on_tts_done()
+        elif msg.topic == TOPIC_FORCE_FINALIZE:
+            log("Force-finalize requested.")
+            force_finalize.set()
         elif msg.topic == TOPIC_SET_DEVICE:
             try:
                 data = json.loads(msg.payload)
@@ -105,6 +110,7 @@ def main():
         client.subscribe(TOPIC_TTS_SPEAKING)
         client.subscribe(TOPIC_TTS_DONE)
         client.subscribe(TOPIC_SET_DEVICE)
+        client.subscribe(TOPIC_FORCE_FINALIZE)
         # Publish current device on reconnect
         client.publish(TOPIC_DEVICE_STATUS,
                        json.dumps({"device": next_device[0]}), retain=True)
@@ -151,6 +157,18 @@ def main():
                         try:
                             data = audio_queue.get(timeout=0.5)
                         except queue.Empty:
+                            continue
+
+                        if force_finalize.is_set():
+                            force_finalize.clear()
+                            if not muted.is_set():
+                                text = stt.final_result()
+                                if text:
+                                    log(f"Force-final: {text!r}")
+                                    mqttc.publish(TOPIC_TRANSCRIPT,
+                                                  json.dumps({"text": text, "ts": time.time()}))
+                            stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                            log("Recognizer reset (force-finalize).")
                             continue
 
                         if reset_recognizer.is_set():
