@@ -153,6 +153,7 @@ def main():
                                   json.dumps({"device": current_device, "status": "ok"}),
                                   retain=True)
                     log("Listening. Speak a query...")
+                    last_partial = ""
                     while not device_change.is_set():
                         try:
                             data = audio_queue.get(timeout=0.5)
@@ -162,17 +163,19 @@ def main():
                         if force_finalize.is_set():
                             force_finalize.clear()
                             if not muted.is_set():
-                                text = stt.final_result()
+                                text = stt.final_result() or last_partial
                                 if text:
                                     log(f"Force-final: {text!r}")
                                     mqttc.publish(TOPIC_TRANSCRIPT,
                                                   json.dumps({"text": text, "ts": time.time()}))
+                            last_partial = ""
                             stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
                             log("Recognizer reset (force-finalize).")
                             continue
 
                         if reset_recognizer.is_set():
                             reset_recognizer.clear()
+                            last_partial = ""
                             stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
                             log("Recognizer reset.")
 
@@ -183,10 +186,12 @@ def main():
 
                         if result["type"] == "final" and result["text"]:
                             text = result["text"]
+                            last_partial = ""
                             log(f"Final: {text!r}")
                             mqttc.publish(TOPIC_TRANSCRIPT,
                                           json.dumps({"text": text, "ts": time.time()}))
                         elif result["type"] == "partial" and result["text"]:
+                            last_partial = result["text"]
                             print(f"\rPartial: {result['text']}", end="", flush=True)
 
             except Exception as e:
