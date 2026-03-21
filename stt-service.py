@@ -162,12 +162,11 @@ def main():
 
                         if force_finalize.is_set():
                             force_finalize.clear()
-                            if not muted.is_set():
-                                text = stt.final_result() or last_partial
-                                if text:
-                                    log(f"Force-final: {text!r}")
-                                    mqttc.publish(TOPIC_TRANSCRIPT,
-                                                  json.dumps({"text": text, "ts": time.time()}))
+                            text = stt.final_result() or last_partial
+                            if text:
+                                log(f"Force-final: {text!r}")
+                                mqttc.publish(TOPIC_TRANSCRIPT,
+                                              json.dumps({"text": text, "ts": time.time()}))
                             last_partial = ""
                             stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
                             log("Recognizer reset (force-finalize).")
