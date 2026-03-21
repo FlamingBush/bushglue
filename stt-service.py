@@ -162,8 +162,10 @@ def main():
 
                         if force_finalize.is_set():
                             force_finalize.clear()
+                            fr = stt.final_result()
+                            log(f"Force-finalize: muted={muted.is_set()} final_result={fr!r} last_partial={last_partial!r}")
                             if not muted.is_set():
-                                text = stt.final_result() or last_partial
+                                text = fr or last_partial
                                 if text:
                                     log(f"Force-final: {text!r}")
                                     mqttc.publish(TOPIC_TRANSCRIPT,
