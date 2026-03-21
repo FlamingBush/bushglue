@@ -38,6 +38,7 @@ from rich.text import Text
 MQTT_PORT = 1883
 TOPICS = [
     "bush/pipeline/stt/transcript",
+    "bush/pipeline/stt/partial",
     "bush/pipeline/t2v/processing",
     "bush/pipeline/t2v/verse",
     "bush/pipeline/sentiment/result",
@@ -167,6 +168,7 @@ class State:
         self.broker = "?"
         self.stt_text = ""
         self.stt_ts: float | None = None
+        self.stt_partial = ""
         self.verse_query = ""
         self.verse_text = ""
         self.verse_ts: float | None = None
@@ -234,6 +236,8 @@ def build_stt_panel(s: State) -> Panel:
         text.append(f"   {_fmt_ts(s.stt_ts)}", style="dim")
     else:
         text.append("waiting for speech…", style="dim")
+    if s.stt_partial:
+        text.append(f'\n  {s.stt_partial}…', style="dim italic cyan")
     return Panel(text, title="[bold]STT[/bold]  [dim]bush/pipeline/stt/transcript[/dim]",
                  box=box.ROUNDED, border_style="cyan")
 
@@ -648,9 +652,14 @@ def on_message(client, userdata, msg):
     now = time.time()
     try:
         with state.lock:
-            if topic == "bush/pipeline/stt/transcript":
+            if topic == "bush/pipeline/stt/partial":
+                data = json.loads(msg.payload)
+                state.stt_partial = data.get("text", "")
+
+            elif topic == "bush/pipeline/stt/transcript":
                 data = json.loads(msg.payload)
                 state.stt_text = data.get("text", "")
+                state.stt_partial = ""
                 state.stt_ts = now
                 state.log.append((now, "TRANSCRIPT", f'"{state.stt_text[:80]}"'))
 

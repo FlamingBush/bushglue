@@ -32,6 +32,7 @@ SAMPLE_RATE = 16000
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT      = "bush/pipeline/stt/transcript"
+TOPIC_PARTIAL         = "bush/pipeline/stt/partial"
 TOPIC_TTS_SPEAKING    = "bush/pipeline/tts/speaking"
 TOPIC_TTS_DONE        = "bush/pipeline/tts/done"
 TOPIC_SET_DEVICE      = "bush/audio/stt/set-device"
@@ -168,6 +169,7 @@ def main():
                                 mqttc.publish(TOPIC_TRANSCRIPT,
                                               json.dumps({"text": text, "ts": time.time()}))
                             last_partial = ""
+                            mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
                             stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
                             log("Recognizer reset (force-finalize).")
                             continue
@@ -175,6 +177,7 @@ def main():
                         if reset_recognizer.is_set():
                             reset_recognizer.clear()
                             last_partial = ""
+                            mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
                             stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
                             log("Recognizer reset.")
 
@@ -191,6 +194,7 @@ def main():
                                           json.dumps({"text": text, "ts": time.time()}))
                         elif result["type"] == "partial" and result["text"]:
                             last_partial = result["text"]
+                            mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": result["text"]}))
                             print(f"\rPartial: {result['text']}", end="", flush=True)
 
             except Exception as e:
