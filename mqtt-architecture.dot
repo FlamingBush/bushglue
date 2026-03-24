@@ -1,0 +1,77 @@
+digraph bushglue {
+    graph [
+        rankdir=TD
+        fontname="Helvetica"
+        fontsize=12
+        splines=ortho
+        nodesep=0.6
+        ranksep=0.8
+        bgcolor="white"
+    ]
+    node [
+        fontname="Helvetica"
+        fontsize=11
+        shape=box
+        style="rounded,filled"
+        fillcolor="#f5f5f5"
+        color="#555555"
+        margin="0.15,0.1"
+    ]
+    edge [
+        fontname="Helvetica"
+        fontsize=9
+        color="#444444"
+        labeldistance=2
+    ]
+
+    // Hardware / external inputs
+    MIC [label="Microphone\n(audio input)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    SPEAKER [label="Speaker\n(audio output)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    DISCORD_USER [label="Discord User\n(/pray command)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+
+    // Services
+    STT [label="bush-stt\nstt-service.py\n──────────────\nVosk STT\nmic input" fillcolor="#cfe2f3" color="#1155cc"]
+    T2V [label="bush-t2v\nt2v-service.py\n──────────────\nRust HTTP :8765\nOllama embed\nChromaDB :8000" fillcolor="#cfe2f3" color="#1155cc"]
+    TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
+    SENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nemotion classify\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
+    SND [label="bush-sound\nsound-service.py\n──────────────\nnumpy waveform\nsynthesis" fillcolor="#cfe2f3" color="#1155cc"]
+    AGENT [label="audio-agent\naudio-agent.py\n──────────────\nPortAudio\ndevice discovery" fillcolor="#cfe2f3" color="#1155cc"]
+    BOT [label="discord-bot\ndiscord-bot.py\n──────────────\nDiscord VC bridge\n/pray injection" fillcolor="#cfe2f3" color="#1155cc"]
+
+    // Layout hints
+    { rank=source; MIC; DISCORD_USER }
+    { rank=same; STT; AGENT }
+    { rank=same; T2V }
+    { rank=same; TTS; SENT; BOT }
+    { rank=same; SND }
+    { rank=sink; SPEAKER }
+
+    // Audio I/O
+    MIC -> STT [label="audio" color="#38761d"]
+    TTS -> SPEAKER [label="espeak+sox" color="#38761d"]
+    SND -> SPEAKER [label="flare / bigjet\nwaveform" color="#38761d"]
+
+    // Discord /pray loop
+    DISCORD_USER -> BOT [label="/pray phrase" color="#674ea7"]
+    BOT -> STT [label="ALSA loopback\nhw:Loopback,0" color="#674ea7" style=dashed]
+
+    // Main pipeline (MQTT)
+    STT -> T2V [label="stt/transcript\n{text, ts}" color="#1155cc"]
+    T2V -> TTS [label="t2v/verse\n{query, text, ts}" color="#1155cc"]
+    T2V -> SENT [label="t2v/verse\n{query, text, ts}" color="#1155cc"]
+    T2V -> BOT [label="t2v/verse" color="#1155cc" style=dashed]
+
+    // TTS feedback
+    TTS -> STT [label="tts/speaking\ntts/done" color="#cc4125" style=dashed]
+
+    // Sentiment fire control
+    SENT -> SND [label="flare/pulse (ms)\nbigjet/pulse (ms)" color="#e69138"]
+    TTS -> SENT [label="tts/done\n{ts}" color="#cc4125" style=dashed]
+
+    // Sentiment result
+    SENT -> BOT [label="sentiment/result\n{classification[], flare, bigjet}" color="#1155cc" style=dashed]
+
+    // Audio device management
+    AGENT -> STT [label="audio/devices\n(retained)" color="#999999" style=dotted]
+    AGENT -> TTS [label="audio/devices\n(retained)" color="#999999" style=dotted]
+}

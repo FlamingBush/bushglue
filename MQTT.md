@@ -2,63 +2,9 @@
 
 ## Component Diagram
 
-```
-                         ┌──────────────────────────────────┐
-                         │         MQTT Broker               │
-                         │    (Mosquitto, Windows :1883)     │
-                         └──────────────────────────────────┘
-                                         │
-          ┌──────────────────────────────┼────────────────────────────────────┐
-          │                              │                                    │
-          │                              │                                    │
- ┌────────▼──────────┐        ┌──────────▼────────┐               ┌──────────▼──────────┐
- │    bush-stt        │        │    bush-t2v        │               │    audio-agent       │
- │  stt-service.py    │        │  t2v-service.py    │               │  audio-agent.py      │
- │                    │        │                    │               │                      │
- │  Vosk STT          │  PUB   │  Rust HTTP API     │               │  PortAudio discovery │
- │  Mic input         ├───────►│  (localhost:8765)  │               │                      │
- │                    │transcript  Ollama embeddings│               │ PUB: audio/devices   │
- │ PUB: stt/transcript│        │  ChromaDB (:8000)  │               │ SUB: audio/discover  │
- │ PUB: stt/partial   │        │                    │               └──────────────────────┘
- │ PUB: audio/stt/dev │        │ PUB: t2v/verse     │
- │ SUB: tts/speaking  │        │ PUB: t2v/processing│
- │ SUB: tts/done      │        │ SUB: stt/transcript│
- │ SUB: stt/set-device│        └────────┬───────────┘
- │ SUB: force-finalize│                 │
- └────────────────────┘         t2v/verse
-                                        │
-                   ┌────────────────────┼─────────────────────┐
-                   │                    │                      │
-          ┌────────▼──────────┐  ┌──────▼────────────┐  ┌────▼──────────────────┐
-          │    bush-tts        │  │  bush-sentiment    │  │    discord-bot         │
-          │  tts-service.py    │  │ sentiment-service  │  │  discord-bot.py        │
-          │                    │  │                    │  │                        │
-          │  espeak-ng + sox   │  │  DistilBERT        │  │  Discord VC bridge     │
-          │                    │  │  emotion classify  │  │                        │
-          │ PUB: tts/speaking  │  │  fire orchestration│  │ SUB: all pipeline/#    │
-          │ PUB: tts/done      │  │                    │  │                        │
-          │ PUB: audio/tts/dev │  │ PUB: sentiment/res │  │ CMD: /pray phrase      │
-          │ PUB: audio/clarity │  │ PUB: flame/flare/p │  │  → utils/bush-pray     │
-          │ SUB: t2v/verse     │  │ PUB: flame/bigjet/p│  │  → ALSA loopback       │
-          │ SUB: set-device    │  │ SUB: t2v/verse     │  │  → bush-stt captures   │
-          │ SUB: set-clarity   │  │ SUB: tts/done      │  └────────────────────────┘
-          └────────────────────┘  └──────┬─────────────┘
-                   │                     │
-          tts/speaking,done       flame/*/pulse
-                   │                     │
-                   └──────┬──────────────┘
-                          │
-                 ┌────────▼──────────┐
-                 │    bush-sound      │
-                 │  sound-service.py  │
-                 │                    │
-                 │  numpy waveform    │
-                 │  synthesis         │
-                 │                    │
-                 │ SUB: flare/pulse   │
-                 │ SUB: bigjet/pulse  │
-                 └────────────────────┘
-```
+![MQTT architecture diagram](mqtt-architecture.svg)
+
+> Source: [`mqtt-architecture.dot`](mqtt-architecture.dot) — regenerate with `python3 render-diagram.py`
 
 ---
 
