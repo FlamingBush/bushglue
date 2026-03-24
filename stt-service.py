@@ -14,12 +14,12 @@ import json
 import os
 import queue
 import random
+import subprocess
 import sys
 import threading
 import time
 
 import paho.mqtt.client as mqtt
-import sounddevice as sd
 
 # ── paths / device ─────────────────────────────────────────────────────────
 STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
@@ -73,6 +73,39 @@ from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
 
 def log(msg: str):
     print(f"[stt-service] {msg}", flush=True)
+
+
+_AUDIO_PROBE_TIMEOUT = 20   # seconds before we declare PortAudio hung
+_AUDIO_RETRY_INTERVAL = 10  # seconds between probe attempts
+
+
+def _probe_audio(device) -> bool:
+    """
+    Test that PortAudio can enumerate the given device without hanging.
+    Runs in a subprocess so a hung PortAudio scan can be killed cleanly.
+    """
+    code = (
+        f"import sounddevice as sd; sd.query_devices({repr(device)})"
+    )
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", code],
+            timeout=_AUDIO_PROBE_TIMEOUT,
+            capture_output=True,
+        )
+        return r.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def _wait_for_audio(device) -> None:
+    """Block until the audio device probes cleanly, logging each retry."""
+    while not _probe_audio(device):
+        log(
+            f"Audio device {device!r} not ready or PortAudio scan hung — "
+            f"retrying in {_AUDIO_RETRY_INTERVAL}s..."
+        )
+        time.sleep(_AUDIO_RETRY_INTERVAL)
 
 
 def main():
@@ -164,9 +197,24 @@ def main():
 
     # ── restartable audio loop ─────────────────────────────────────────────
     current_device = STT_DEVICE
+    sd = None  # imported lazily after probe
     try:
         while True:
             device_change.clear()
+
+            # Probe in a subprocess first — kills any hung PortAudio scan
+            _wait_for_audio(current_device)
+
+            # Import (or re-init) sounddevice only after the probe succeeded
+            if sd is None:
+                import sounddevice as sd  # noqa: PLC0415
+            else:
+                try:
+                    sd._terminate()
+                    sd._initialize()
+                except Exception:
+                    pass
+
             log(f"Opening microphone at {SAMPLE_RATE} Hz (device={current_device!r})...")
             try:
                 with sd.RawInputStream(
@@ -226,7 +274,7 @@ def main():
             except Exception as e:
                 log(f"Stream error: {e}")
                 if not device_change.is_set():
-                    time.sleep(2)   # brief pause before retry on unexpected error
+                    time.sleep(2)
 
             if device_change.is_set():
                 current_device = next_device[0]
