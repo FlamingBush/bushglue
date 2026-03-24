@@ -2,7 +2,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
   <defs>
     <marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
-<marker id="arrow-674ea7" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#674ea7"/></marker>
 <marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
 <marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
 <marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
@@ -17,10 +16,8 @@
   <text x="235" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">feedback / mute</text>
   <line x1="350" y1="797" x2="380" y2="797" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
   <text x="385" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
-  <line x1="560" y1="797" x2="590" y2="797" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
-  <text x="595" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">Discord /pray</text>
-  <line x1="675" y1="797" x2="705" y2="797" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-  <text x="710" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">device config</text>
+  <line x1="450" y1="797" x2="480" y2="797" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
+  <text x="485" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">device config</text>
 
   <!-- edges (drawn first so nodes appear on top) -->
   <path d="M 170 74 C 170 100.4 140 113.6 140 140" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
@@ -28,12 +25,6 @@
 
 <path d="M 140 660 C 140 694.0 180 711.0 180 745" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
 <text x="168" y="702" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">espeak+sox</text>
-
-<path d="M 900 52 C 922.5 52 927.5 600 950 600" fill="none" stroke="#674ea7" stroke-width="1.5" marker-end="url(#arrow-674ea7)"/>
-<text x="925" y="318" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">/pray phrase</text>
-
-<path d="M 730 600 C 946.0 600 34.0 200 250 200" fill="none" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
-<text x="490" y="392" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">ALSA loopback</text>
 
 <path d="M 250 200 C 290.5 200 299.5 400 340 400" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
 <text x="295" y="292" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">stt/transcript</text>
@@ -70,10 +61,6 @@
   <!-- nodes -->
   <ellipse cx="170" cy="52" rx="70" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
 <text x="170" y="55" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Microphone</text>
-
-<ellipse cx="980" cy="52" rx="80" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
-<text x="980" y="48" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Discord User</text>
-<text x="980" y="63" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray command</text>
 
 <rect x="30" y="140" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="140" y="173" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-stt</text>
