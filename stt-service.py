@@ -14,7 +14,6 @@ import json
 import os
 import queue
 import random
-import subprocess
 import sys
 import threading
 import time
@@ -75,34 +74,32 @@ def log(msg: str):
     print(f"[stt-service] {msg}", flush=True)
 
 
-_AUDIO_PROBE_TIMEOUT = 20   # seconds before we declare PortAudio hung
-_AUDIO_RETRY_INTERVAL = 10  # seconds between probe attempts
+_AUDIO_RETRY_INTERVAL = 10  # seconds between device-ready checks
 
 
-def _probe_audio(device) -> bool:
+def _alsa_card_present(device) -> bool:
     """
-    Test that PortAudio can enumerate the given device without hanging.
-    Runs in a subprocess so a hung PortAudio scan can be killed cleanly.
+    Check /proc/asound/cards for the named card — no PortAudio involved.
+    Works for string device names like "Loopback: PCM (hw:7,1)" or int indices.
     """
-    code = (
-        f"import sounddevice as sd; sd.query_devices({repr(device)})"
-    )
     try:
-        r = subprocess.run(
-            [sys.executable, "-c", code],
-            timeout=_AUDIO_PROBE_TIMEOUT,
-            capture_output=True,
-        )
-        return r.returncode == 0
-    except subprocess.TimeoutExpired:
+        with open("/proc/asound/cards") as f:
+            contents = f.read()
+        if isinstance(device, int):
+            # Check that card <N> line exists (e.g. " 7 [Loopback")
+            return f" {device} [" in contents
+        # String device: extract the card name before the colon
+        card_name = str(device).split(":")[0].strip()
+        return card_name in contents
+    except Exception:
         return False
 
 
 def _wait_for_audio(device) -> None:
-    """Block until the audio device probes cleanly, logging each retry."""
-    while not _probe_audio(device):
+    """Block until the ALSA card for the device appears, logging each retry."""
+    while not _alsa_card_present(device):
         log(
-            f"Audio device {device!r} not ready or PortAudio scan hung — "
+            f"Audio device {device!r} not yet visible in ALSA — "
             f"retrying in {_AUDIO_RETRY_INTERVAL}s..."
         )
         time.sleep(_AUDIO_RETRY_INTERVAL)
