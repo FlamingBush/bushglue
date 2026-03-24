@@ -50,13 +50,13 @@
 <path d="M 620 600 C 669.5 600 680.5 600 730 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-999999)"/>
 <text x="675" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">sentiment/result</text>
 
-<path d="M 820 190 C 1076.5 190 -6.5 200 250 200" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="535" y="187" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="535" y="200" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
+<path d="M 820 190 C 650 110 400 110 250 190" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
+<text x="535" y="105" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
+<text x="535" y="118" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
 
-<path d="M 820 190 C 1076.5 190 -6.5 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="535" y="387" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="535" y="400" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
+<path d="M 820 190 C 200 190 200 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
+<text x="285" y="390" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
+<text x="285" y="403" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
 
   <!-- nodes -->
   <ellipse cx="170" cy="52" rx="70" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
