@@ -278,8 +278,14 @@ def main():
     worker = threading.Thread(target=_speak_worker, daemon=True)
     worker.start()
 
-    keepalive = threading.Thread(target=_pa_keepalive, daemon=True)
-    keepalive.start()
+    # Only run PA keepalive when PulseAudio is actually the audio backend
+    # (WSL/PulseAudio only — on bare ALSA this hammers the default device)
+    import shutil
+    if shutil.which("pactl") and not subprocess.run(
+        ["pactl", "info"], capture_output=True, timeout=2
+    ).returncode:
+        keepalive = threading.Thread(target=_pa_keepalive, daemon=True)
+        keepalive.start()
 
     global _mqttc
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
