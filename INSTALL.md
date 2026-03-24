@@ -15,7 +15,6 @@ over MQTT.
                                             → bush/flame/bigjet/pulse
                                             → bush/pipeline/sentiment/result
                                                    ↓
-                                             bush-sound (synth audio)
                                              bush-tts   (espeak verse)
 ```
 
@@ -86,7 +85,7 @@ sudo apt-get install -y espeak-ng python3-pip portaudio19-dev
 
 ## Python Dependencies
 
-### System Python (used by bush-stt, bush-t2v, bush-tts, bush-sound, monitor)
+### System Python (used by bush-stt, bush-t2v, bush-tts, monitor)
 
 ```bash
 pip3 install paho-mqtt rich numpy sounddevice vosk --break-system-packages
@@ -163,14 +162,14 @@ Available utilities:
 ```bash
 sudo cp /mnt/c/Users/EB/bushglue/systemd/*.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now chromadb bush-t2v bush-sentiment bush-stt bush-tts bush-sound
+sudo systemctl enable --now chromadb bush-t2v bush-sentiment bush-stt bush-tts
 ```
 
 ## Verify
 
 ```bash
 # All services running
-systemctl status chromadb bush-t2v bush-sentiment bush-stt bush-tts bush-sound
+systemctl status chromadb bush-t2v bush-sentiment bush-stt bush-tts
 
 # t2v HTTP healthy
 curl http://localhost:8765/health
@@ -188,7 +187,7 @@ c.disconnect()
 "
 
 # Watch logs
-journalctl -u bush-t2v -u bush-sentiment -u bush-tts -u bush-sound -f
+journalctl -u bush-t2v -u bush-sentiment -u bush-tts -f
 ```
 
 ## Monitor TUI

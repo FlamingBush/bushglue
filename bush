@@ -2,7 +2,7 @@
 # Bush Glue service manager
 # Usage: bush start | stop | restart | status
 
-SERVICES=(chromadb bush-t2v bush-sentiment bush-stt bush-tts bush-sound)
+SERVICES=(chromadb bush-t2v bush-sentiment bush-stt bush-tts)
 
 cmd="${1:-status}"
 
