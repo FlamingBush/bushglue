@@ -2,9 +2,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
   <defs>
     <marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
-<marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
 <marker id="arrow-674ea7" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#674ea7"/></marker>
-<marker id="arrow-e69138" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#e69138"/></marker>
+<marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
 <marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
 <marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
   </defs>
@@ -16,10 +15,8 @@
   <text x="105" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">MQTT pipeline</text>
   <line x1="200" y1="797" x2="230" y2="797" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
   <text x="235" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">feedback / mute</text>
-  <line x1="350" y1="797" x2="380" y2="797" stroke="#e69138" stroke-width="1.5" marker-end="url(#arrow-e69138)"/>
-  <text x="385" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">fire control</text>
-  <line x1="460" y1="797" x2="490" y2="797" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-  <text x="495" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
+  <line x1="350" y1="797" x2="380" y2="797" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
+  <text x="385" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
   <line x1="560" y1="797" x2="590" y2="797" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
   <text x="595" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">Discord /pray</text>
   <line x1="675" y1="797" x2="705" y2="797" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
@@ -31,10 +28,6 @@
 
 <path d="M 140 660 C 140 694.0 180 711.0 180 745" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
 <text x="168" y="702" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">espeak+sox</text>
-
-<path d="M 340 790 C 376.0 790 224.0 767 260 767" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-<text x="300" y="770" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">flare/bigjet</text>
-<text x="300" y="784" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">waveform</text>
 
 <path d="M 900 52 C 922.5 52 927.5 600 950 600" fill="none" stroke="#674ea7" stroke-width="1.5" marker-end="url(#arrow-674ea7)"/>
 <text x="925" y="318" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">/pray phrase</text>
@@ -62,10 +55,6 @@
 
 <path d="M 250 600 C 308.5 600 321.5 600 380 600" fill="none" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
 <text x="315" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/done</text>
-
-<path d="M 500 660 C 500 692.0 470 708.0 470 740" fill="none" stroke="#e69138" stroke-width="1.5" marker-end="url(#arrow-e69138)"/>
-<text x="493" y="700" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#e69138" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">flare/pulse</text>
-<text x="493" y="713" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#e69138" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">bigjet/pulse</text>
 
 <path d="M 620 600 C 669.5 600 680.5 600 730 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-999999)"/>
 <text x="675" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">sentiment/result</text>
@@ -126,12 +115,6 @@
 <text x="840" y="603" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
 <text x="840" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Discord VC bridge</text>
 <text x="840" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray injection</text>
-
-<rect x="340" y="740" width="260" height="100" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="470" y="771" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-sound</text>
-<text x="470" y="786" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sound-service.py</text>
-<text x="470" y="801" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
-<text x="470" y="816" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">numpy waveform synthesis</text>
 
 <ellipse cx="180" cy="767" rx="80" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
 <text x="180" y="770" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Speaker / output</text>

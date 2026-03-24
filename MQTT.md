@@ -27,8 +27,8 @@
 
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
-| `bush/flame/flare/pulse` | → | bush-sentiment, discord-bot | bush-sound |
-| `bush/flame/bigjet/pulse` | → | bush-sentiment, discord-bot | bush-sound |
+| `bush/flame/flare/pulse` | → | bush-sentiment, discord-bot | (fire hardware) |
+| `bush/flame/bigjet/pulse` | → | bush-sentiment, discord-bot | (fire hardware) |
 
 ### Audio Management Topics (all retained)
 
@@ -169,8 +169,7 @@ Empty payload. Forces bush-stt to finalize the current recognition window immedi
     bush-sentiment PUB bush/pipeline/sentiment/result
     bush-sentiment PUB bush/flame/flare/pulse  (loop until tts/done)
     bush-sentiment PUB bush/flame/bigjet/pulse (loop until tts/done)
-6. bush-sound  SUB  flare/pulse, bigjet/pulse  →  numpy waveform → speaker
-7. bush-stt    SUB  tts/speaking  →  mute mic
+6. bush-stt    SUB  tts/speaking  →  mute mic
    bush-stt    SUB  tts/done      →  unmute + reset Vosk
 ```
 

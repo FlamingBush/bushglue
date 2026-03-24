@@ -45,12 +45,6 @@ NODES = [
                 "Discord VC bridge", "/pray injection"],
          shape="box", fill="#cfe2f3", stroke="#1155cc"),
 
-    # services — row 4
-    dict(id="SND",    x=340,  y=740, w=260, h=100,
-         lines=["bush-sound", "sound-service.py", "──────────────",
-                "numpy waveform synthesis"],
-         shape="box", fill="#cfe2f3", stroke="#1155cc"),
-
     # speaker output
     dict(id="SPKR",   x=100,  y=745, w=160, h=44,
          lines=["Speaker / output"], shape="ellipse", fill="#d9ead3", stroke="#38761d"),
@@ -69,7 +63,6 @@ EDGES = [
     # audio I/O
     dict(src="MIC",    dst="STT",   label="audio",                  color="#38761d", dash=""),
     dict(src="TTS",    dst="SPKR",  label="espeak+sox",             color="#38761d", dash=""),
-    dict(src="SND",    dst="SPKR",  label="flare/bigjet\nwaveform", color="#38761d", dash=""),
 
     # discord /pray
     dict(src="DISC_U", dst="BOT",   label="/pray phrase",           color="#674ea7", dash=""),
@@ -84,9 +77,6 @@ EDGES = [
     # TTS feedback to STT and SENT
     dict(src="TTS",    dst="STT",   label="tts/speaking\ntts/done", color="#cc4125", dash="5,3"),
     dict(src="TTS",    dst="SENT",  label="tts/done",               color="#cc4125", dash="5,3"),
-
-    # fire control
-    dict(src="SENT",   dst="SND",   label="flare/pulse\nbigjet/pulse", color="#e69138", dash=""),
 
     # sentiment to discord
     dict(src="SENT",   dst="BOT",   label="sentiment/result",       color="#999999", dash="4,3"),
@@ -234,10 +224,8 @@ svg = f"""<?xml version="1.0" encoding="UTF-8"?>
   <text x="105" y="{H-60}" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">MQTT pipeline</text>
   <line x1="200" y1="{H-63}" x2="230" y2="{H-63}" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
   <text x="235" y="{H-60}" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">feedback / mute</text>
-  <line x1="350" y1="{H-63}" x2="380" y2="{H-63}" stroke="#e69138" stroke-width="1.5" marker-end="url(#arrow-e69138)"/>
-  <text x="385" y="{H-60}" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">fire control</text>
-  <line x1="460" y1="{H-63}" x2="490" y2="{H-63}" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-  <text x="495" y="{H-60}" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
+  <line x1="350" y1="{H-63}" x2="380" y2="{H-63}" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
+  <text x="385" y="{H-60}" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
   <line x1="560" y1="{H-63}" x2="590" y2="{H-63}" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
   <text x="595" y="{H-60}" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">Discord /pray</text>
   <line x1="675" y1="{H-63}" x2="705" y2="{H-63}" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>

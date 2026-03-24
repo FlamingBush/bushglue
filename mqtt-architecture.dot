@@ -34,7 +34,6 @@ digraph bushglue {
     T2V [label="bush-t2v\nt2v-service.py\n──────────────\nRust HTTP :8765\nOllama embed\nChromaDB :8000" fillcolor="#cfe2f3" color="#1155cc"]
     TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
     SENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nemotion classify\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
-    SND [label="bush-sound\nsound-service.py\n──────────────\nnumpy waveform\nsynthesis" fillcolor="#cfe2f3" color="#1155cc"]
     AGENT [label="audio-agent\naudio-agent.py\n──────────────\nPortAudio\ndevice discovery" fillcolor="#cfe2f3" color="#1155cc"]
     BOT [label="discord-bot\ndiscord-bot.py\n──────────────\nDiscord VC bridge\n/pray injection" fillcolor="#cfe2f3" color="#1155cc"]
 
@@ -43,13 +42,11 @@ digraph bushglue {
     { rank=same; STT; AGENT }
     { rank=same; T2V }
     { rank=same; TTS; SENT; BOT }
-    { rank=same; SND }
     { rank=sink; SPEAKER }
 
     // Audio I/O
     MIC -> STT [label="audio" color="#38761d"]
     TTS -> SPEAKER [label="espeak+sox" color="#38761d"]
-    SND -> SPEAKER [label="flare / bigjet\nwaveform" color="#38761d"]
 
     // Discord /pray loop
     DISCORD_USER -> BOT [label="/pray phrase" color="#674ea7"]
@@ -64,8 +61,7 @@ digraph bushglue {
     // TTS feedback
     TTS -> STT [label="tts/speaking\ntts/done" color="#cc4125" style=dashed]
 
-    // Sentiment fire control
-    SENT -> SND [label="flare/pulse (ms)\nbigjet/pulse (ms)" color="#e69138"]
+    // TTS / sentiment
     TTS -> SENT [label="tts/done\n{ts}" color="#cc4125" style=dashed]
 
     // Sentiment result
