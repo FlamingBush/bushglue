@@ -1,10 +1,12 @@
 [Unit]
 Description=Speech-to-Text MQTT Publisher
-After=network-online.target pulseaudio.service
+After=network-online.target user@1000.service
 
 [Service]
 Type=simple
 User=odroid
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 Environment=STT_DIR=/home/odroid/repos/speech-to-text
 Environment=STT_MODEL=/home/odroid/repos/speech-to-text/models/en-us
 Environment="STT_DEVICE=loopback-inject.monitor"
