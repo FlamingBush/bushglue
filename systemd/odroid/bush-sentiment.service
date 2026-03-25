@@ -5,6 +5,12 @@ After=network.target
 [Service]
 Type=simple
 User=odroid
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+CPUAffinity=0
+Nice=10
 ExecStart=/home/odroid/repos/bbsentimentqq/.venv/bin/python3 /home/odroid/repos/bushglue/sentiment-service.py
 WorkingDirectory=/home/odroid/repos/bushglue/scripts
 Restart=on-failure
