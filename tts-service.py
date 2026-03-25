@@ -75,9 +75,9 @@ def _sox_cmd() -> list[str]:
     with _clarity_lock:
         clarity = _tts_clarity
     if dev is None:
-        output_args = ["-t", "pulseaudio"]
+        output_args = ["-d"]
     else:
-        output_args = ["-t", "pulseaudio", dev]
+        output_args = ["-t", "alsa", dev]
     return ["sox", "-q", "-t", "wav", "-"] + output_args + build_sox_effects(clarity)
 
 
