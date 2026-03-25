@@ -1,6 +1,6 @@
 [Unit]
 Description=Audio device discovery agent
-After=network-online.target
+After=network-online.target pulseaudio.service
 
 [Service]
 Type=simple

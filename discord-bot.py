@@ -190,9 +190,9 @@ class DiscordTTSSource(discord.AudioSource):
 class LoopbackWriter:
     """
     Receives 48kHz stereo s16le PCM from Discord, downsamples to 16kHz mono,
-    and writes it to the ALSA loopback device for the existing stt-service.
+    and writes it to the PulseAudio loopback sink for the existing stt-service.
     """
-    LOOPBACK_DEVICE = 4  # Loopback: PCM (hw:7,0) — playback side; stt-service reads from hw:7,1
+    LOOPBACK_DEVICE = "loopback-inject"  # PA sink; stt-service reads from loopback-inject.monitor
 
     def __init__(self):
         self._queue: queue.Queue[bytes] = queue.Queue(maxsize=50)
@@ -220,36 +220,35 @@ class LoopbackWriter:
         except queue.Full:
             pass  # drop on backpressure
 
-    # Close the ALSA stream after this many seconds of silence so bush-pray
-    # (which also needs hw:Loopback,0) can always get exclusive access.
     IDLE_CLOSE_S = 0.5
 
     def _run(self):
-        import sounddevice as sd
-        stream = None
+        proc = None
         last_write = 0.0
         while not self._stop.is_set():
             try:
                 chunk = self._queue.get(timeout=0.1)
             except queue.Empty:
-                # Close the stream when idle so the ALSA device is free
-                if stream is not None and (time.time() - last_write) > self.IDLE_CLOSE_S:
+                if proc is not None and (time.time() - last_write) > self.IDLE_CLOSE_S:
                     try:
-                        stream.close()
+                        proc.stdin.close()
+                        proc.wait(timeout=1)
                     except Exception:
                         pass
-                    stream = None
+                    proc = None
                 continue
             if not chunk:
                 break
-            # Open stream on demand
-            if stream is None:
+            # Open pacat subprocess on demand
+            if proc is None:
                 try:
-                    stream = sd.RawOutputStream(
-                        samplerate=16000, channels=1, dtype="int16",
-                        device=self.LOOPBACK_DEVICE,
+                    proc = subprocess.Popen(
+                        ["pacat", "--playback",
+                         "--device", self.LOOPBACK_DEVICE,
+                         "--format=s16le", "--rate=16000", "--channels=1"],
+                        stdin=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
                     )
-                    stream.start()
                 except Exception as e:
                     print(f"[loopback-writer] open error: {e}", flush=True)
                     continue
@@ -257,18 +256,21 @@ class LoopbackWriter:
                 arr = np.frombuffer(chunk, dtype=np.int16).reshape(-1, 2)
                 mono_48k = arr.mean(axis=1).astype(np.int16)
                 mono_16k = mono_48k[::3]
-                stream.write(mono_16k.tobytes())
+                proc.stdin.write(mono_16k.tobytes())
+                proc.stdin.flush()
                 last_write = time.time()
             except Exception as e:
                 print(f"[loopback-writer] write error: {e}", flush=True)
                 try:
-                    stream.close()
+                    proc.kill()
+                    proc.wait()
                 except Exception:
                     pass
-                stream = None
-        if stream is not None:
+                proc = None
+        if proc is not None:
             try:
-                stream.close()
+                proc.stdin.close()
+                proc.wait(timeout=1)
             except Exception:
                 pass
 

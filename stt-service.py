@@ -77,29 +77,26 @@ def log(msg: str):
 _AUDIO_RETRY_INTERVAL = 10  # seconds between device-ready checks
 
 
-def _alsa_card_present(device) -> bool:
-    """
-    Check /proc/asound/cards for the named card — no PortAudio involved.
-    Works for string device names like "Loopback: PCM (hw:7,1)" or int indices.
-    """
+import subprocess as _subprocess
+
+
+def _pa_source_present(device) -> bool:
+    """Check if a PulseAudio source is available via pactl."""
     try:
-        with open("/proc/asound/cards") as f:
-            contents = f.read()
-        if isinstance(device, int):
-            # Check that card <N> line exists (e.g. " 7 [Loopback")
-            return f" {device} [" in contents
-        # String device: extract the card name before the colon
-        card_name = str(device).split(":")[0].strip()
-        return card_name in contents
+        result = _subprocess.run(
+            ["pactl", "list", "short", "sources"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return str(device) in result.stdout
     except Exception:
         return False
 
 
 def _wait_for_audio(device) -> None:
-    """Block until the ALSA card for the device appears, logging each retry."""
-    while not _alsa_card_present(device):
+    """Block until the PulseAudio source appears, logging each retry."""
+    while not _pa_source_present(device):
         log(
-            f"Audio device {device!r} not yet visible in ALSA — "
+            f"Audio source {device!r} not yet available in PulseAudio — "
             f"retrying in {_AUDIO_RETRY_INTERVAL}s..."
         )
         time.sleep(_AUDIO_RETRY_INTERVAL)
@@ -187,91 +184,105 @@ def main():
     stt = SpeechToText(model_path=MODEL_PATH, sample_rate=SAMPLE_RATE)
     audio_queue: queue.Queue[bytes] = queue.Queue()
 
-    def callback(indata, frames, time_info, status):
-        if status:
-            log(f"sounddevice status: {status}")
-        audio_queue.put(bytes(indata))
-
     # ── restartable audio loop ─────────────────────────────────────────────
+    CHUNK = 8000 * 2  # 8000 samples × 2 bytes (int16)
     current_device = STT_DEVICE
-    sd = None  # imported lazily after probe
+
+    def _feed_parec(proc, stop_evt):
+        """Background thread: reads parec stdout into audio_queue."""
+        while not stop_evt.is_set():
+            try:
+                data = proc.stdout.read(CHUNK)
+                if not data:
+                    break
+                audio_queue.put(data)
+            except Exception:
+                break
+
     try:
         while True:
             device_change.clear()
-
-            # Probe in a subprocess first — kills any hung PortAudio scan
             _wait_for_audio(current_device)
 
-            # Import (or re-init) sounddevice only after the probe succeeded
-            if sd is None:
-                import sounddevice as sd  # noqa: PLC0415
-            else:
-                try:
-                    sd._terminate()
-                    sd._initialize()
-                except Exception:
-                    pass
-
-            log(f"Opening microphone at {SAMPLE_RATE} Hz (device={current_device!r})...")
+            log(f"Opening PA source {current_device!r} at {SAMPLE_RATE} Hz...")
+            parec_proc = None
+            reader_stop = threading.Event()
+            reader_thread = None
             try:
-                with sd.RawInputStream(
-                    samplerate=SAMPLE_RATE,
-                    blocksize=8000,
-                    dtype="int16",
-                    channels=1,
-                    device=current_device,
-                    callback=callback,
-                ):
-                    mqttc.publish(TOPIC_DEVICE_STATUS,
-                                  json.dumps({"device": current_device, "status": "ok"}),
-                                  retain=True)
-                    log("Listening. Speak a query...")
-                    last_partial = ""
-                    while not device_change.is_set():
-                        try:
-                            data = audio_queue.get(timeout=0.5)
-                        except queue.Empty:
-                            continue
+                parec_proc = _subprocess.Popen(
+                    ["parec", "--device", str(current_device),
+                     "--format=s16le", f"--rate={SAMPLE_RATE}", "--channels=1"],
+                    stdout=_subprocess.PIPE,
+                    stderr=_subprocess.DEVNULL,
+                )
+                reader_thread = threading.Thread(
+                    target=_feed_parec, args=(parec_proc, reader_stop), daemon=True
+                )
+                reader_thread.start()
 
-                        if force_finalize.is_set():
-                            force_finalize.clear()
-                            text = stt.final_result() or last_partial or _next_fallback()
-                            log(f"Force-final: {text!r}")
-                            mqttc.publish(TOPIC_TRANSCRIPT,
-                                          json.dumps({"text": text, "ts": time.time()}))
-                            last_partial = ""
-                            mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
-                            stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
-                            log("Recognizer reset (force-finalize).")
-                            continue
+                mqttc.publish(TOPIC_DEVICE_STATUS,
+                              json.dumps({"device": current_device, "status": "ok"}),
+                              retain=True)
+                log("Listening. Speak a query...")
+                last_partial = ""
+                while not device_change.is_set():
+                    if parec_proc.poll() is not None:
+                        log("parec exited unexpectedly")
+                        break
+                    try:
+                        data = audio_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
 
-                        if reset_recognizer.is_set():
-                            reset_recognizer.clear()
-                            last_partial = ""
-                            mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
-                            stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
-                            log("Recognizer reset.")
+                    if force_finalize.is_set():
+                        force_finalize.clear()
+                        text = stt.final_result() or last_partial or _next_fallback()
+                        log(f"Force-final: {text!r}")
+                        mqttc.publish(TOPIC_TRANSCRIPT,
+                                      json.dumps({"text": text, "ts": time.time()}))
+                        last_partial = ""
+                        mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
+                        stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                        log("Recognizer reset (force-finalize).")
+                        continue
 
-                        if muted.is_set():
-                            continue
+                    if reset_recognizer.is_set():
+                        reset_recognizer.clear()
+                        last_partial = ""
+                        mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
+                        stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                        log("Recognizer reset.")
 
-                        result = stt.accept_audio(data)
+                    if muted.is_set():
+                        continue
 
-                        if result["type"] == "final" and result["text"]:
-                            text = result["text"]
-                            last_partial = ""
-                            log(f"Final: {text!r}")
-                            mqttc.publish(TOPIC_TRANSCRIPT,
-                                          json.dumps({"text": text, "ts": time.time()}))
-                        elif result["type"] == "partial" and result["text"]:
-                            last_partial = result["text"]
-                            mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": result["text"]}))
-                            print(f"\rPartial: {result['text']}", end="", flush=True)
+                    result = stt.accept_audio(data)
+
+                    if result["type"] == "final" and result["text"]:
+                        text = result["text"]
+                        last_partial = ""
+                        log(f"Final: {text!r}")
+                        mqttc.publish(TOPIC_TRANSCRIPT,
+                                      json.dumps({"text": text, "ts": time.time()}))
+                    elif result["type"] == "partial" and result["text"]:
+                        last_partial = result["text"]
+                        mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": result["text"]}))
+                        print(f"\rPartial: {result['text']}", end="", flush=True)
 
             except Exception as e:
                 log(f"Stream error: {e}")
                 if not device_change.is_set():
                     time.sleep(2)
+            finally:
+                reader_stop.set()
+                if parec_proc is not None:
+                    try:
+                        parec_proc.kill()
+                        parec_proc.wait()
+                    except Exception:
+                        pass
+                if reader_thread is not None:
+                    reader_thread.join(timeout=2)
 
             if device_change.is_set():
                 current_device = next_device[0]

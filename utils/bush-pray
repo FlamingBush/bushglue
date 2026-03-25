@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
-LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "hw:Loopback,0")
+LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "loopback-inject")
 
 
 def phrase_to_filename(phrase: str) -> str:
@@ -70,7 +70,7 @@ def main():
 
     print(f"[bush-pray] Playing into {LOOPBACK_DEVICE}")
     subprocess.run(
-        ["sox", str(wav), "-t", "alsa", LOOPBACK_DEVICE],
+        ["sox", str(wav), "-t", "pulseaudio", LOOPBACK_DEVICE],
         check=True,
     )
 

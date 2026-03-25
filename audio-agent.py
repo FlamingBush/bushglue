@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
 Audio device discovery agent.
-Enumerates ALSA devices and publishes the list to bush/audio/devices (retained).
+Enumerates PulseAudio sources and sinks via pactl and publishes the list to
+bush/audio/devices (retained).
 Responds to bush/audio/discover requests at runtime.
 """
 import json
 import signal
+import subprocess
 import sys
 
 import paho.mqtt.client as mqtt
-import sounddevice as sd
 
 from bushutil import get_mqtt_broker
 
@@ -22,38 +23,52 @@ def log(msg: str):
     print(f"[audio-agent] {msg}", flush=True)
 
 
-def _device_list():
-    """Return {capture: [...], playback: [...]} from sounddevice.
+def _pactl_list(kind: str) -> list[dict]:
+    """Return a list of PA sources or sinks parsed from 'pactl list short <kind>'."""
+    try:
+        result = subprocess.run(
+            ["pactl", "list", "short", kind],
+            capture_output=True, text=True, timeout=10,
+        )
+        entries = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            entry: dict = {"index": int(parts[0]), "name": parts[1]}
+            # parts[3] looks like "s16le 2ch 44100Hz" — parse if present
+            if len(parts) >= 4:
+                fmt = parts[3]
+                for seg in fmt.split():
+                    if seg.endswith("Hz"):
+                        try:
+                            entry["sr"] = int(seg[:-2])
+                        except ValueError:
+                            pass
+                    elif seg.endswith("ch"):
+                        try:
+                            entry["channels"] = int(seg[:-2])
+                        except ValueError:
+                            pass
+            entries.append(entry)
+        return entries
+    except Exception as e:
+        log(f"pactl {kind} error: {e}")
+        return []
 
-    Re-initialises PortAudio each time so hot-plugged USB devices are picked up
-    (PortAudio caches the device list at initialisation and won't see devices
-    that were connected after the process started otherwise).
-    """
-    sd._terminate()
-    sd._initialize()
-    capture = []
-    playback = []
-    for dev in sd.query_devices():
-        entry = {
-            "index":    dev["index"],
-            "name":     dev["name"],
-            "channels": max(dev["max_input_channels"], dev["max_output_channels"]),
-            "sr":       dev["default_samplerate"],
-        }
-        if dev["max_input_channels"] > 0:
-            entry["channels"] = dev["max_input_channels"]
-            capture.append(dict(entry))
-        if dev["max_output_channels"] > 0:
-            entry["channels"] = dev["max_output_channels"]
-            playback.append(dict(entry))
-    return {"capture": capture, "playback": playback}
+
+def _device_list() -> dict:
+    return {
+        "capture":  _pactl_list("sources"),
+        "playback": _pactl_list("sinks"),
+    }
 
 
 def _publish_devices(client):
     devices = _device_list()
     payload = json.dumps(devices)
     client.publish(TOPIC_DEVICES, payload, retain=True)
-    log(f"Published {len(devices['capture'])} capture / {len(devices['playback'])} playback devices")
+    log(f"Published {len(devices['capture'])} sources / {len(devices['playback'])} sinks")
 
 
 def on_connect(client, userdata, flags, reason_code, properties):

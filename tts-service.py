@@ -75,9 +75,9 @@ def _sox_cmd() -> list[str]:
     with _clarity_lock:
         clarity = _tts_clarity
     if dev is None:
-        output_args = ["-d"]
+        output_args = ["-t", "pulseaudio"]
     else:
-        output_args = ["-t", "alsa", dev]
+        output_args = ["-t", "pulseaudio", dev]
     return ["sox", "-q", "-t", "wav", "-"] + output_args + build_sox_effects(clarity)
 
 
@@ -100,22 +100,6 @@ def _kill_current():
                 p.kill()
         _current_procs.clear()
 
-
-def _pa_keepalive():
-    """Play silence every 4 s through sox to keep PulseAudio awake.
-    Without this, WSLg's PA sink sleeps after a few seconds of silence and
-    the first real sox invocation stalls for several seconds while it wakes."""
-    time.sleep(0.5)
-    while True:
-        try:
-            subprocess.run(
-                ["sox", "-n", "-d", "synth", "0.1", "sin", "0", "vol", "0"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=3,
-            )
-        except Exception:
-            pass
-        time.sleep(4)
 
 
 def _speak_worker():
@@ -277,15 +261,6 @@ def main():
 
     worker = threading.Thread(target=_speak_worker, daemon=True)
     worker.start()
-
-    # Only run PA keepalive when PulseAudio is actually the audio backend
-    # (WSL/PulseAudio only — on bare ALSA this hammers the default device)
-    import shutil
-    if shutil.which("pactl") and not subprocess.run(
-        ["pactl", "info"], capture_output=True, timeout=2
-    ).returncode:
-        keepalive = threading.Thread(target=_pa_keepalive, daemon=True)
-        keepalive.start()
 
     global _mqttc
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
