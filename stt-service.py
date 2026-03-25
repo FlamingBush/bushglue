@@ -77,7 +77,14 @@ def log(msg: str):
 _AUDIO_RETRY_INTERVAL = 10  # seconds between device-ready checks
 
 
+import pathlib
 import subprocess as _subprocess
+
+
+def _is_alsa_device(device) -> bool:
+    """Return True if device is an ALSA hw: specifier rather than a PA source name."""
+    s = str(device)
+    return s.startswith("hw:") or s.startswith("plughw:")
 
 
 def _pa_source_present(device) -> bool:
@@ -92,13 +99,21 @@ def _pa_source_present(device) -> bool:
         return False
 
 
+def _alsa_device_present(device) -> bool:
+    """Check if an ALSA capture device is present via /proc/asound."""
+    s = str(device)
+    card = s.split(":")[1].split(",")[0] if ":" in s else s
+    return pathlib.Path(f"/proc/asound/{card}").exists()
+
+
 def _wait_for_audio(device) -> None:
-    """Block until the PulseAudio source appears, logging each retry."""
-    while not _pa_source_present(device):
-        log(
-            f"Audio source {device!r} not yet available in PulseAudio — "
-            f"retrying in {_AUDIO_RETRY_INTERVAL}s..."
-        )
+    """Block until the audio source appears, logging each retry."""
+    if _is_alsa_device(device):
+        check = lambda: _alsa_device_present(device)
+    else:
+        check = lambda: _pa_source_present(device)
+    while not check():
+        log(f"Audio source {device!r} not yet available — retrying in {_AUDIO_RETRY_INTERVAL}s...")
         time.sleep(_AUDIO_RETRY_INTERVAL)
 
 
@@ -204,17 +219,26 @@ def main():
             device_change.clear()
             _wait_for_audio(current_device)
 
-            log(f"Opening PA source {current_device!r} at {SAMPLE_RATE} Hz...")
             parec_proc = None
             reader_stop = threading.Event()
             reader_thread = None
             try:
-                parec_proc = _subprocess.Popen(
-                    ["parec", "--device", str(current_device),
-                     "--format=s16le", f"--rate={SAMPLE_RATE}", "--channels=1"],
-                    stdout=_subprocess.PIPE,
-                    stderr=_subprocess.DEVNULL,
-                )
+                if _is_alsa_device(current_device):
+                    log(f"Opening ALSA device {current_device!r} at {SAMPLE_RATE} Hz...")
+                    parec_proc = _subprocess.Popen(
+                        ["arecord", "-D", str(current_device),
+                         "-f", "S16_LE", "-c", "1", f"-r{SAMPLE_RATE}", "-t", "raw"],
+                        stdout=_subprocess.PIPE,
+                        stderr=_subprocess.DEVNULL,
+                    )
+                else:
+                    log(f"Opening PA source {current_device!r} at {SAMPLE_RATE} Hz...")
+                    parec_proc = _subprocess.Popen(
+                        ["parec", "--device", str(current_device),
+                         "--format=s16le", f"--rate={SAMPLE_RATE}", "--channels=1"],
+                        stdout=_subprocess.PIPE,
+                        stderr=_subprocess.DEVNULL,
+                    )
                 reader_thread = threading.Thread(
                     target=_feed_parec, args=(parec_proc, reader_stop), daemon=True
                 )
