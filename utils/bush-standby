@@ -1,0 +1,78 @@
+#!/bin/bash
+# bush-standby: stop the pipeline and loop standby audio.
+# Stops all bush pipeline services, leaves mosquitto running.
+# Plays ~/wavs/standby.mp3 on loop until interrupted (Ctrl-C or SIGTERM).
+#
+# Usage:
+#   bush-standby              # enter standby, persist state
+#   bush-standby --undo       # restore services that were running before standby
+#   bush-standby --device hw:0  # override output device (default: hw:0)
+
+DEVICE="hw:CODEC"
+UNDO=0
+STATE_FILE="/tmp/bush-standby.state"
+STANDBY_FILE="$HOME/wavs/standby.mp3"
+
+SERVICES=(
+    bush-stt
+    bush-tts
+    bush-t2v
+    bush-sentiment
+    bush-audio-agent
+    bush-discord
+)
+
+for arg in "$@"; do
+    case "$arg" in
+        --undo) UNDO=1 ;;
+        --device) shift; DEVICE="$1" ;;
+        --device=*) DEVICE="${arg#--device=}" ;;
+    esac
+done
+
+if [[ $UNDO -eq 1 ]]; then
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "bush-standby: no saved state at $STATE_FILE" >&2
+        exit 1
+    fi
+    echo "bush-standby: restoring services..."
+    while IFS= read -r svc; do
+        sudo systemctl start "$svc"
+        echo "  started $svc"
+    done < "$STATE_FILE"
+    rm -f "$STATE_FILE"
+    echo "bush-standby: done"
+    exit 0
+fi
+
+if [[ ! -f "$STANDBY_FILE" ]]; then
+    echo "bush-standby: $STANDBY_FILE not found" >&2
+    exit 1
+fi
+
+# Save which services are currently running, then stop them
+rm -f "$STATE_FILE"
+echo "bush-standby: stopping pipeline services..."
+for svc in "${SERVICES[@]}"; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        sudo systemctl stop "$svc"
+        echo "$svc" >> "$STATE_FILE"
+        echo "  stopped $svc"
+    fi
+done
+
+cleanup() {
+    echo "bush-standby: stopping playback"
+    kill "$SOX_PID" 2>/dev/null
+    wait "$SOX_PID" 2>/dev/null
+    exit 0
+}
+trap cleanup SIGTERM SIGINT
+
+echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
+
+while true; do
+    sox "$STANDBY_FILE" -t alsa "$DEVICE" 2>/dev/null &
+    SOX_PID=$!
+    wait "$SOX_PID"
+done
