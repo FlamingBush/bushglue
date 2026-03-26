@@ -11,7 +11,9 @@
 DEVICE="hw:CODEC"
 UNDO=0
 STATE_FILE="/tmp/bush-standby.state"
-STANDBY_FILE="$HOME/wavs/standby.mp3"
+STANDBY_FILE="${BUSH_STANDBY_FILE:-$HOME/wavs/standby.mp3}"
+# Resolve script dir even when called by name through PATH
+SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 
 SERVICES=(
     bush-stt
@@ -46,7 +48,8 @@ if [[ $UNDO -eq 1 ]]; then
 fi
 
 if [[ ! -f "$STANDBY_FILE" ]]; then
-    echo "bush-standby: $STANDBY_FILE not found" >&2
+    echo "bush-standby: $STANDBY_FILE not found"
+    echo "bush-standby: set BUSH_STANDBY_FILE=<path> or place a file at $STANDBY_FILE"
     exit 1
 fi
 
@@ -62,7 +65,6 @@ for svc in "${SERVICES[@]}"; do
 done
 
 WEB_PORT=8080
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cleanup() {
     echo "bush-standby: stopping"
