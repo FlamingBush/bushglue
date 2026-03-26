@@ -1,16 +1,7 @@
 #!/bin/sh
 # Called by udev when the TI PCM2912A USB codec appears.
-# Mutes the mic sidetone and restores saved volume levels.
+# Mutes the mic sidetone to prevent speaker feedback.
+# Volume levels are NOT restored here — amixer sset on this device causes
+# usb_set_interface failures on the RK3568 OHCI controller.
 sleep 0.5  # wait for ALSA mixer to be ready after enumeration
-
-# Mute mic sidetone (Mic Playback) to prevent speaker feedback
 /usr/bin/amixer -c CODEC -q sset Mic playback mute > /dev/null 2>&1 || true
-
-# Restore saved volume levels (written by bush-monitor when user adjusts with v)
-CONFIG=/home/odroid/.config/bush/codec-mixer.json
-if [ -f "$CONFIG" ]; then
-    SPK=$(python3 -c "import json; d=json.load(open('$CONFIG')); print(d.get('speaker', 100))" 2>/dev/null)
-    MIC=$(python3 -c "import json; d=json.load(open('$CONFIG')); print(d.get('mic_cap', 48))" 2>/dev/null)
-    [ -n "$SPK" ] && /usr/bin/amixer -c CODEC -q sset Speaker "${SPK}%" > /dev/null 2>&1 || true
-    [ -n "$MIC" ] && /usr/bin/amixer -c CODEC -q sset Mic cap "${MIC}%" > /dev/null 2>&1 || true
-fi
