@@ -874,26 +874,11 @@ def _codec_watch_thread():
                 state.codec_present = present
             if present and (not prev_present or first_run):
                 # Device just appeared (or was already present at startup).
-                # Wait longer on plug-in than on startup so the device is settled.
-                time.sleep(1.0 if first_run else 3.0)
-                # Mute mic sidetone first, then restore saved levels
-                try:
-                    subprocess.run(["amixer", "-c", "CODEC", "-q", "sset",
-                                    "Mic", "playback", "mute"],
-                                   capture_output=True, timeout=3)
-                except Exception:
-                    pass
-                if _CODEC_MIXER_PATH.exists():
-                    try:
-                        saved = json.loads(_CODEC_MIXER_PATH.read_text())
-                        spk = int(saved.get("speaker", 100))
-                        mic = int(saved.get("mic_cap", 48))
-                        _amixer_set_codec(speaker_pct=spk, mic_cap_pct=mic)
-                        with state.lock:
-                            state.codec_speaker_pct = spk
-                            state.codec_mic_cap_pct = mic
-                    except Exception:
-                        pass
+                # NOTE: amixer sset on the TI PCM2912A triggers usb_set_interface
+                # failures on the RK3568 OHCI controller, breaking the device.
+                # Do NOT call amixer here — levels must be set manually via the v panel
+                # once the device is fully settled.
+                pass
             prev_present = present
             first_run = False
         time.sleep(2.0)
