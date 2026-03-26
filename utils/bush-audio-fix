@@ -172,7 +172,8 @@ def main():
     if tts_device:
         if tts_device.startswith("hw:") or tts_device.startswith("plughw:"):
             card = tts_device.split(":")[1].split(",")[0]
-            tts_card_present = Path(f"/proc/asound/{card}").exists()
+            card_path = f"/proc/asound/card{card}" if card.isdigit() else f"/proc/asound/{card}"
+            tts_card_present = Path(card_path).exists()
             check(f"TTS device {tts_device!r} card present", tts_card_present,
                   fix=f"TTS output is set to {tts_device!r} but the card is missing.\n"
                       f"     Switch back: mosquitto_pub -h {args.broker} -t bush/audio/tts/set-device "
@@ -205,7 +206,8 @@ def main():
     if stt_device:
         if stt_device.startswith("hw:") or stt_device.startswith("plughw:"):
             card = stt_device.split(":")[1].split(",")[0]
-            stt_card_present = Path(f"/proc/asound/{card}").exists()
+            card_path = f"/proc/asound/card{card}" if card.isdigit() else f"/proc/asound/{card}"
+            stt_card_present = Path(card_path).exists()
             check(f"STT device {stt_device!r} card present", stt_card_present,
                   fix=f"STT input is set to {stt_device!r} but the card is missing.\n"
                       f"     Switch back: mosquitto_pub -h {args.broker} -t bush/audio/stt/set-device "

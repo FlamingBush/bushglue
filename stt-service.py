@@ -103,7 +103,8 @@ def _alsa_device_present(device) -> bool:
     """Check if an ALSA capture device is present via /proc/asound."""
     s = str(device)
     card = s.split(":")[1].split(",")[0] if ":" in s else s
-    return pathlib.Path(f"/proc/asound/{card}").exists()
+    path = f"/proc/asound/card{card}" if card.isdigit() else f"/proc/asound/{card}"
+    return pathlib.Path(path).exists()
 
 
 def _wait_for_audio(device) -> None:
