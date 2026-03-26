@@ -875,6 +875,13 @@ def _codec_watch_thread():
                 # Device just appeared (or was already present at startup).
                 # Wait longer on plug-in than on startup so the device is settled.
                 time.sleep(1.0 if first_run else 3.0)
+                # Mute mic sidetone first, then restore saved levels
+                try:
+                    subprocess.run(["amixer", "-c", "CODEC", "-q", "sset",
+                                    "Mic", "playback", "mute"],
+                                   capture_output=True, timeout=3)
+                except Exception:
+                    pass
                 if _CODEC_MIXER_PATH.exists():
                     try:
                         saved = json.loads(_CODEC_MIXER_PATH.read_text())
