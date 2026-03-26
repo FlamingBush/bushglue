@@ -114,6 +114,12 @@ def _speak_worker():
                 _mqttc.publish(TOPIC_SPEAKING, json.dumps({"text": text, "ts": time.time()}))
             except Exception:
                 pass
+        with _device_lock:
+            dev = _tts_device
+        if dev is not None and (dev.startswith("hw:") or dev.startswith("plughw:")):
+            # Give STT time to release the capture interface before sox opens playback.
+            # STT kills arecord on tts/speaking; 200ms is enough for MQTT + process kill.
+            time.sleep(0.2)
         try:
             espeak = subprocess.Popen(
                 ESPEAK_CMD + [text],
