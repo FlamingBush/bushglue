@@ -64,6 +64,8 @@ TOPIC_TTS_DONE        = "bush/pipeline/tts/done"
 TOPIC_SET_DEVICE      = "bush/audio/stt/set-device"
 TOPIC_DEVICE_STATUS   = "bush/audio/stt/device"
 TOPIC_FORCE_FINALIZE  = "bush/pipeline/stt/force-finalize"
+TOPIC_PIPELINE_PING   = "bush/pipeline/ping"
+TOPIC_PIPELINE_PONG   = "bush/pipeline/pong"
 MQTT_PORT = 1883
 
 
@@ -163,6 +165,8 @@ def main():
         elif msg.topic == TOPIC_FORCE_FINALIZE:
             log("Force-finalize requested.")
             force_finalize.set()
+        elif msg.topic == TOPIC_PIPELINE_PING:
+            client.publish(TOPIC_PIPELINE_PONG, "")
         elif msg.topic == TOPIC_SET_DEVICE:
             try:
                 data = json.loads(msg.payload)
@@ -182,6 +186,7 @@ def main():
         client.subscribe(TOPIC_TTS_DONE)
         client.subscribe(TOPIC_SET_DEVICE)
         client.subscribe(TOPIC_FORCE_FINALIZE)
+        client.subscribe(TOPIC_PIPELINE_PING)
         # Publish current device on reconnect
         client.publish(TOPIC_DEVICE_STATUS,
                        json.dumps({"device": next_device[0]}), retain=True)

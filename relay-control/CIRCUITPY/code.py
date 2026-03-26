@@ -9,6 +9,13 @@
 #   SSID, PASSWORD, MQTT_BROKER
 # Optional keys:
 #   MQTT_PORT (default 1883), MQTT_USER, MQTT_PASSWORD
+#
+# Broker discovery: if the configured MQTT_BROKER fails 3 times in a
+# row, the firmware scans every IP on the local /24 subnet for an open
+# port 1883.  When one is found it verifies the broker is hosting the
+# bush pipeline by waiting for a retained message on
+# bush/pipeline/status.  The configured host is retried periodically
+# during scanning so it recovers immediately if it comes back online.
 
 import board
 import digitalio
@@ -37,8 +44,9 @@ pin_bigjet.value = False
 off_ms_flare  = None
 off_ms_bigjet = None
 
-TOPIC_FLARE  = b"bush/flame/flare/pulse"
-TOPIC_BIGJET = b"bush/flame/bigjet/pulse"
+TOPIC_FLARE   = b"bush/flame/flare/pulse"
+TOPIC_BIGJET  = b"bush/flame/bigjet/pulse"
+VERIFY_TOPIC  = b"bush/pipeline/status"
 
 # ── Tick arithmetic (handles 29-day rollover) ────────────────────────────────
 def ticks_diff(later, earlier):
@@ -85,6 +93,28 @@ pool          = None
 rx_buf        = bytearray()  # persistent receive buffer
 last_ping_ms  = 0
 connected     = False
+
+# ── Connection state machine ─────────────────────────────────────────────────
+ST_CONNECTED        = 0   # normal operation
+ST_RETRY_CONFIGURED = 1   # retrying secrets["MQTT_BROKER"]
+ST_SCAN_PROBE       = 2   # TCP-probing one subnet IP per loop pass
+ST_SCAN_CONNECT     = 3   # probe succeeded — attempt full MQTT handshake
+ST_VERIFY_PIPELINE  = 4   # connected to scanned broker — await pipeline proof
+
+conn_state          = ST_RETRY_CONFIGURED
+configured_failures = 0
+MAX_CONFIGURED_TRIES = 3   # failures before starting subnet scan
+
+scan_index          = 0    # 0–254, indexes host octet of current candidate
+scan_base           = None # e.g. "192.168.1."  — derived from own IP
+scan_candidate      = None # IP string currently being tested
+pipeline_verified   = False
+verify_deadline_ms  = None
+
+RECONNECT_INTERVAL  = 3_000   # ms between configured-broker retry attempts
+VERIFY_WAIT_MS      = 3_000   # ms to wait for bush/pipeline/status after connecting
+SCAN_PROBE_TIMEOUT  = 0.05    # seconds — TCP connect timeout for port probes
+SCAN_RETRY_INTERVAL = 50      # re-try configured broker every N scan IPs
 
 
 def encode_string(s):
@@ -143,9 +173,38 @@ def wifi_connect():
     pool = socketpool.SocketPool(wifi.radio)
 
 
-def mqtt_open():
+def compute_scan_base():
+    """Derive the /24 network prefix from our own IP (e.g. '192.168.1.')."""
+    global scan_base
+    parts = str(wifi.radio.ipv4_address).split(".")
+    scan_base = parts[0] + "." + parts[1] + "." + parts[2] + "."
+    print("Scan base:", scan_base)
+
+
+def tcp_probe(ip):
+    """Try to TCP-connect to ip:MQTT_PORT with a short timeout.
+    Returns True if the port is open.  Always closes the socket."""
+    s = None
+    try:
+        s = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
+        s.settimeout(SCAN_PROBE_TIMEOUT)
+        s.connect((ip, MQTT_PORT))
+        return True
+    except Exception:
+        return False
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+
+def mqtt_open(broker=None):
     """Open TCP socket, send CONNECT, wait for CONNACK, then go non-blocking."""
     global sock, rx_buf, connected, last_ping_ms
+    if broker is None:
+        broker = MQTT_BROKER
     if sock:
         try:
             sock.close()
@@ -154,11 +213,11 @@ def mqtt_open():
         sock = None
     connected = False
     rx_buf = bytearray()
-    print("Connecting to MQTT broker…")
+    print("Connecting to MQTT broker", broker, "…")
     try:
         s = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
         s.settimeout(5)                        # blocking only during handshake
-        s.connect((MQTT_BROKER, MQTT_PORT))
+        s.connect((broker, MQTT_PORT))
         s.send(mqtt_connect_packet())
         # Wait for CONNACK (4 bytes)
         buf = bytearray(4)
@@ -171,9 +230,6 @@ def mqtt_open():
         connected = True
         last_ping_ms = supervisor.ticks_ms()
         print("MQTT connected.")
-        sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
-        sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
-        print("Subscribed.")
     except Exception as e:
         print("mqtt_open failed:", e)
         connected = False
@@ -197,7 +253,7 @@ def decode_remaining(buf, pos):
 
 def process_packets():
     """Parse and dispatch all complete MQTT packets sitting in rx_buf."""
-    global off_ms_flare, off_ms_bigjet, rx_buf
+    global off_ms_flare, off_ms_bigjet, rx_buf, pipeline_verified
     pos = 0
     while pos < len(rx_buf):
         if pos + 2 > len(rx_buf):
@@ -220,6 +276,12 @@ def process_packets():
                 continue
             topic   = bytes(pkt[2:2 + topic_len])
             payload = bytes(pkt[2 + topic_len:])  # QoS 0: no packet identifier
+
+            if topic == VERIFY_TOPIC:
+                pipeline_verified = True
+                print("Pipeline verified:", payload)
+                pos = pkt_end
+                continue
 
             try:
                 duration_ms = int(payload)
@@ -297,27 +359,127 @@ def mqtt_loop():
 
 # ── Boot ─────────────────────────────────────────────────────────────────────
 wifi_connect()
+compute_scan_base()
 mqtt_open()
+if connected:
+    sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
+    sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+    print("Subscribed.")
+    conn_state = ST_CONNECTED
+else:
+    conn_state = ST_RETRY_CONFIGURED
 
-RECONNECT_INTERVAL = 3_000   # ms between reconnect attempts
-last_reconnect_ms  = 0
+last_reconnect_ms = 0
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 while True:
     # 🔴 Pins FIRST — always, unconditionally, ~2 µs
     service_pins()
 
-    # 🌐 Network I/O — non-blocking, safe every iteration
-    if connected:
+    # ── CONNECTED: normal operation ──────────────────────────────────────────
+    if conn_state == ST_CONNECTED:
         mqtt_loop()
-    else:
+        if not connected:
+            print("Connection lost, retrying configured broker…")
+            conn_state = ST_RETRY_CONFIGURED
+            configured_failures = 0
+
+    # ── RETRY_CONFIGURED: keep hammering the known broker ───────────────────
+    elif conn_state == ST_RETRY_CONFIGURED:
         now = supervisor.ticks_ms()
         if ticks_diff(now, last_reconnect_ms) >= RECONNECT_INTERVAL:
             last_reconnect_ms = now
-            service_pins()   # one more check before the blocking handshake
+            service_pins()
             try:
                 if not wifi.radio.ipv4_address:
                     wifi_connect()
-                mqtt_open()
+                    compute_scan_base()
+                mqtt_open(MQTT_BROKER)
             except Exception as e:
                 print("Reconnect error:", e)
+            if connected:
+                sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
+                sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+                print("Subscribed.")
+                conn_state = ST_CONNECTED
+                configured_failures = 0
+            else:
+                configured_failures += 1
+                print(f"Configured broker failed ({configured_failures}/{MAX_CONFIGURED_TRIES})")
+                if configured_failures >= MAX_CONFIGURED_TRIES:
+                    print("Scanning subnet for MQTT broker…")
+                    conn_state = ST_SCAN_PROBE
+                    scan_index = 0
+
+    # ── SCAN_PROBE: probe one IP per loop pass ───────────────────────────────
+    elif conn_state == ST_SCAN_PROBE:
+        if scan_index > 254:
+            print("Subnet scan complete, no verified pipeline broker found.")
+            conn_state = ST_RETRY_CONFIGURED
+            configured_failures = 0
+            continue
+
+        # Periodically retry the configured broker mid-scan
+        if scan_index > 0 and scan_index % SCAN_RETRY_INTERVAL == 0:
+            service_pins()
+            mqtt_open(MQTT_BROKER)
+            if connected:
+                sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
+                sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+                print("Configured broker back online, subscribed.")
+                conn_state = ST_CONNECTED
+                configured_failures = 0
+                continue
+
+        candidate = scan_base + str(scan_index)
+        my_ip = str(wifi.radio.ipv4_address)
+        scan_index += 1
+
+        # Skip our own IP and the configured broker (already tried)
+        if candidate == my_ip or candidate == MQTT_BROKER:
+            continue
+
+        service_pins()
+        if tcp_probe(candidate):
+            print(f"Port {MQTT_PORT} open on {candidate}, attempting MQTT…")
+            scan_candidate = candidate
+            conn_state = ST_SCAN_CONNECT
+
+    # ── SCAN_CONNECT: full MQTT handshake with the candidate ─────────────────
+    elif conn_state == ST_SCAN_CONNECT:
+        service_pins()
+        mqtt_open(scan_candidate)
+        if connected:
+            # Subscribe to the pipeline verification topic
+            pipeline_verified = False
+            sock.send(mqtt_subscribe_packet(VERIFY_TOPIC, packet_id=10))
+            verify_deadline_ms = (supervisor.ticks_ms() + VERIFY_WAIT_MS) & 0x3FFFFFFF
+            print(f"Waiting for pipeline status on {scan_candidate}…")
+            conn_state = ST_VERIFY_PIPELINE
+        else:
+            # Handshake failed — continue scanning
+            conn_state = ST_SCAN_PROBE
+
+    # ── VERIFY_PIPELINE: drain socket until status arrives or timeout ────────
+    elif conn_state == ST_VERIFY_PIPELINE:
+        if not connected:
+            print("Scanned broker disconnected during verify, continuing scan…")
+            conn_state = ST_SCAN_PROBE
+            continue
+
+        mqtt_loop()  # drains socket; process_packets() sets pipeline_verified
+
+        if pipeline_verified:
+            # Good broker — subscribe to fire topics and go live
+            sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
+            sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+            print(f"Pipeline verified on {scan_candidate}, subscribed.")
+            conn_state = ST_CONNECTED
+        elif ticks_expired(verify_deadline_ms):
+            print(f"No pipeline on {scan_candidate}, continuing scan…")
+            try:
+                sock.close()
+            except Exception:
+                pass
+            connected = False
+            conn_state = ST_SCAN_PROBE
