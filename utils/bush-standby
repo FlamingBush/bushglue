@@ -8,7 +8,7 @@
 #   bush-standby --undo       # restore services that were running before standby
 #   bush-standby --device hw:0  # override output device (default: hw:0)
 
-DEVICE="plughw:CODEC"
+DEVICE="hw:CODEC"
 UNDO=0
 STATE_FILE="/tmp/bush-standby.state"
 STANDBY_FILE="${BUSH_STANDBY_FILE:-/home/odroid/standby.mp3}"
@@ -88,7 +88,7 @@ echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to resto
 # and it works. No USB resets — sysfs writes to authorized also time out
 # on this hardware when the controller is cold.
 while true; do
-    sox "$STANDBY_FILE" -t alsa "$DEVICE" 2>/dev/null &
+    sox "$STANDBY_FILE" -r 48000 -t alsa "$DEVICE" 2>/dev/null &
     SOX_PID=$!
     wait "$SOX_PID"
     [[ $? -ne 0 ]] && { echo "bush-standby: playback failed, retrying in 30s..."; sleep 30; }
