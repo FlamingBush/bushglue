@@ -180,11 +180,8 @@ def main():
                       f"-m '{{\"device\":\"hw:0\"}}'")
             if tts_card_present:
                 # Quick open test (stereo, 48kHz — common TTS format)
-                rc, _, _ = run(["aplay", "-D", tts_device, "-f", "S16_LE", "-c", "2",
-                                 "-r", "48000", "-d", "0", "/dev/zero"], timeout=3)
-                # rc=0 means it ran; rc=1 with set_params failure means broken
-                # rc=-1 is timeout which means it opened fine (success)
-                tts_opens = rc in (0, -1)
+                rc, _, _ = run(["aplay", "-D", tts_device, "--dump-hw-params"], timeout=3)
+                tts_opens = rc == 0
                 check(f"TTS device {tts_device!r} opens for playback", tts_opens,
                       fix=f"TTS device {tts_device!r} cannot be opened.\n"
                           f"     If hw:CODEC: replug the USB sound card.\n"
