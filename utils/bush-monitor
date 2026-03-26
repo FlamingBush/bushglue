@@ -860,6 +860,37 @@ def on_message(client, userdata, msg):
             state.log.append((now, "ERROR", str(e)))
 
 
+# ── CODEC plug/unplug watcher ───────────────────────────────────────────────
+def _codec_watch_thread():
+    """Polls /proc/asound/CODEC and restores saved levels when the device appears."""
+    _CODEC_PATH = Path("/proc/asound/CODEC")
+    prev_present = False
+    first_run = True
+    while True:
+        present = _CODEC_PATH.exists()
+        if present != prev_present or first_run:
+            with state.lock:
+                state.codec_present = present
+            if present and (not prev_present or first_run):
+                # Device just appeared (or was already present at startup).
+                # Wait longer on plug-in than on startup so the device is settled.
+                time.sleep(1.0 if first_run else 3.0)
+                if _CODEC_MIXER_PATH.exists():
+                    try:
+                        saved = json.loads(_CODEC_MIXER_PATH.read_text())
+                        spk = int(saved.get("speaker", 100))
+                        mic = int(saved.get("mic_cap", 48))
+                        _amixer_set_codec(speaker_pct=spk, mic_cap_pct=mic)
+                        with state.lock:
+                            state.codec_speaker_pct = spk
+                            state.codec_mic_cap_pct = mic
+                    except Exception:
+                        pass
+            prev_present = present
+            first_run = False
+        time.sleep(2.0)
+
+
 # ── main ───────────────────────────────────────────────────────────────────
 def main():
     global _mqttc
@@ -880,6 +911,10 @@ def main():
         sys.exit(1)
 
     mqttc.loop_start()
+
+    # Start CODEC watcher thread
+    codec_watcher = threading.Thread(target=_codec_watch_thread, daemon=True)
+    codec_watcher.start()
 
     # Start keyboard input thread (only if stdin is a tty)
     if sys.stdin.isatty():
