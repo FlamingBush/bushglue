@@ -11,7 +11,7 @@
 DEVICE="hw:CODEC"
 UNDO=0
 STATE_FILE="/tmp/bush-standby.state"
-STANDBY_FILE="${BUSH_STANDBY_FILE:-$HOME/wavs/standby.mp3}"
+STANDBY_FILE="${BUSH_STANDBY_FILE:-$HOME/standby.mp3}"
 # Resolve script dir even when called by name through PATH
 SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 
