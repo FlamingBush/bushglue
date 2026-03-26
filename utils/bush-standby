@@ -8,7 +8,7 @@
 #   bush-standby --undo       # restore services that were running before standby
 #   bush-standby --device hw:0  # override output device (default: hw:0)
 
-DEVICE="hw:CODEC"
+DEVICE="plughw:CODEC"
 UNDO=0
 STATE_FILE="/tmp/bush-standby.state"
 STANDBY_FILE="${BUSH_STANDBY_FILE:-$HOME/standby.mp3}"
