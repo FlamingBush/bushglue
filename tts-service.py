@@ -118,8 +118,9 @@ def _speak_worker():
             dev = _tts_device
         if dev is not None and (dev.startswith("hw:") or dev.startswith("plughw:")):
             # Give STT time to release the capture interface before sox opens playback.
-            # STT kills arecord on tts/speaking; 200ms is enough for MQTT + process kill.
-            time.sleep(0.2)
+            # STT inner loop polls audio_queue with 0.5s timeout, so worst-case teardown
+            # is ~500ms + kill latency. Use 600ms to cover it.
+            time.sleep(0.6)
         try:
             espeak = subprocess.Popen(
                 ESPEAK_CMD + [text],

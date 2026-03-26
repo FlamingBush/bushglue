@@ -125,6 +125,17 @@ def main():
           fix="USB codec not found. Replug the USB sound card.")
 
     if usb_present:
+        # PA must NOT claim hw:CODEC — any PA module load triggers usb_set_interface
+        # failures on the RK3568 OHCI controller, permanently breaking the device.
+        if pa_running:
+            rc, pa_sinks, _ = run(["pactl", "list", "short", "sinks"])
+            rc2, pa_sources, _ = run(["pactl", "list", "short", "sources"])
+            pa_claimed = "CODEC" in pa_sinks or "CODEC" in pa_sources
+            check("PA has NOT claimed hw:CODEC", not pa_claimed,
+                  fix="PulseAudio has loaded hw:CODEC — this will break the device.\n"
+                      "     Fix: pactl unload-module <module-id> for any CODEC module.\n"
+                      "     Prevent: add 'device.blacklist = \"*CODEC*\"' to PA config.")
+
         # Primary health check: try to open the device.
         # Some usb_set_interface errors occur normally during enumeration and
         # don't indicate a broken state — the open test is the authoritative signal.
@@ -248,6 +259,22 @@ def main():
               fix="Can't read bush/audio/stt/device from MQTT — is bush-stt running?")
 
     print()
+
+    # ── 6. USB codec settle / udev mute ────────────────────────────────────────
+    if usb_present:
+        print("USB codec settle")
+        udev_log = Path("/tmp/bush-codec-init.log")
+        if udev_log.exists():
+            last_line = udev_log.read_text().strip().splitlines()[-1]
+            check("udev sidetone-mute script ran", True,
+                  fix=f"Last run: {last_line}")
+        else:
+            check("udev sidetone-mute script ran", False, warn=True,
+                  fix="No /tmp/bush-codec-init.log — udev may not be calling bush-codec-init.\n"
+                      "     Check: ls -la /home/odroid/repos/bushglue/udev/bush-codec-init (needs +x)\n"
+                      "     Check: sudo udevadm test $(udevadm info -q path /dev/snd/controlC3)\n"
+                      "     Fallback: bush-monitor mutes sidetone if running (polling, 8s delay).")
+        print()
 
     # ── Summary ────────────────────────────────────────────────────────────────
     if fixes:
