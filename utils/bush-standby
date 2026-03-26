@@ -83,11 +83,9 @@ echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}
 
 echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
 
-# Wait for the ALSA card to appear, then do a software USB reset.
-# A physical replug is needed to reliably open the PCM2912A on the RK3568
-# OHCI controller after boot — this mimics it without touching the hardware.
-# Do NOT open the device to test it before the real open: any prior open/close
-# corrupts the codec's rate state.
+# Wait for the ALSA card to appear in /proc/asound, then settle.
+# Do NOT open the device before the real open — any prior open/close
+# corrupts the USB codec's rate state on the RK3568 OHCI controller.
 wait_for_device() {
     local card="${DEVICE#*:}"   # CODEC from plughw:CODEC
     card="${card%%,*}"
@@ -95,23 +93,8 @@ wait_for_device() {
         echo "bush-standby: waiting for /proc/asound/$card ..."
         sleep 3
     done
-    # Find the USB sysfs path for idVendor=08bb (TI PCM2912A)
-    local usb_dev
-    usb_dev=$(grep -rl "08bb" /sys/bus/usb/devices/*/idVendor 2>/dev/null | head -1)
-    usb_dev="${usb_dev%/idVendor}"
-    if [[ -n "$usb_dev" && -w "$usb_dev/authorized" ]]; then
-        echo "bush-standby: software USB reset of $(basename "$usb_dev")..."
-        echo 0 > "$usb_dev/authorized"
-        sleep 2
-        echo 1 > "$usb_dev/authorized"
-        # Wait for the card to reappear after re-enumeration
-        while [[ ! -e "/proc/asound/$card" ]]; do sleep 1; done
-        echo "bush-standby: re-enumerated, settling 8s..."
-        sleep 8
-    else
-        echo "bush-standby: USB device not found, settling 12s..."
-        sleep 12
-    fi
+    echo "bush-standby: $card present, settling 20s..."
+    sleep 20
 }
 
 wait_for_device
