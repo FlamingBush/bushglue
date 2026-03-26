@@ -35,7 +35,13 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
    ssh odroid-cmd 'mosquitto_pub -h localhost -t bush/monitor/restart -m "{}"'
    ```
 
-6. **Run the integration test** with a 40-second timeout:
+6. **Run the audio health check**:
+   ```
+   ssh odroid-cmd 'bush-audio-fix'
+   ```
+   Report any FAILs. The USB codec being in broken state is a known hardware issue (needs replug) — flag it but do not treat it as a deploy failure. Any other FAIL is a real problem.
+
+7. **Run the integration test** with a 40-second timeout:
    ```
    ssh odroid-cmd 'timeout 40 bush-integration-test'
    ```
@@ -43,8 +49,8 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
 
 ## Pass/fail
 
-- If the test passes, report success.
-- If the test fails, show the output and diagnose the failure based on which stage failed:
+- If the integration test passes, report success (and note any audio health warnings separately).
+- If the integration test fails, show the output and diagnose the failure based on which stage failed:
   - `stt/transcript` — STT or loopback audio issue; check `journalctl -u bush-stt -n 20`
   - `t2v/verse` — t2v or Ollama issue; check `journalctl -u bush-t2v -n 20`
   - `tts/speaking` or `tts/done` — TTS issue; check `journalctl -u bush-tts -n 20`
