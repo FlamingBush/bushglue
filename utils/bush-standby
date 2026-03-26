@@ -61,13 +61,24 @@ for svc in "${SERVICES[@]}"; do
     fi
 done
 
+WEB_PORT=8080
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 cleanup() {
-    echo "bush-standby: stopping playback"
-    kill "$SOX_PID" 2>/dev/null
-    wait "$SOX_PID" 2>/dev/null
+    echo "bush-standby: stopping"
+    kill "$SOX_PID"     2>/dev/null
+    kill "$WEB_PID"     2>/dev/null
+    wait "$SOX_PID"     2>/dev/null
+    wait "$WEB_PID"     2>/dev/null
     exit 0
 }
 trap cleanup SIGTERM SIGINT
+
+# Start web fire control
+python3 "$SCRIPT_DIR/bush-firecontrol-web" --broker localhost --web-port "$WEB_PORT" &
+WEB_PID=$!
+LOCAL_IP=$(ip -4 addr show scope global | awk '/inet/{print $2}' | cut -d/ -f1 | head -1)
+echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}/"
 
 echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
 
