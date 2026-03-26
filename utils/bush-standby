@@ -38,6 +38,7 @@ if [[ $UNDO -eq 1 ]]; then
         exit 1
     fi
     echo "bush-standby: restoring services..."
+    sudo systemctl stop bush-firecontrol-web 2>/dev/null
     while IFS= read -r svc; do
         sudo systemctl start "$svc"
         echo "  started $svc"
@@ -68,17 +69,15 @@ WEB_PORT=8080
 
 cleanup() {
     echo "bush-standby: stopping"
-    kill "$SOX_PID"     2>/dev/null
-    kill "$WEB_PID"     2>/dev/null
-    wait "$SOX_PID"     2>/dev/null
-    wait "$WEB_PID"     2>/dev/null
+    sudo systemctl stop bush-firecontrol-web 2>/dev/null
+    kill "$SOX_PID" 2>/dev/null
+    wait "$SOX_PID" 2>/dev/null
     exit 0
 }
 trap cleanup SIGTERM SIGINT
 
-# Start web fire control
-python3 "$SCRIPT_DIR/bush-firecontrol-web" --broker localhost --web-port "$WEB_PORT" &
-WEB_PID=$!
+# Start web fire control service
+sudo systemctl start bush-firecontrol-web
 LOCAL_IP=$(ip -4 addr show scope global | awk '/inet/{print $2}' | cut -d/ -f1 | head -1)
 echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}/"
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=Bush fire control web UI
+After=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=odroid
+ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/utils/bush-firecontrol-web --broker localhost
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
