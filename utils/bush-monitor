@@ -17,6 +17,8 @@ Keys:
 """
 import json
 import os
+import re
+import subprocess
 import sys
 import termios
 import threading
@@ -24,6 +26,7 @@ import time
 import tty
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 from rich import box
@@ -190,10 +193,15 @@ class State:
         self.playback_devices: list[dict] = []
         self.current_input: dict | None = None
         self.current_output: dict | None = None
-        self.ui_mode = "normal"        # "normal" | "select_input" | "select_output" | "input_text"
+        self.ui_mode = "normal"        # "normal" | "select_input" | "select_output" | "input_text" | "codec_volume"
         self.selected_index = 0
         self.input_text = ""
         self.quit = False
+        # CODEC ALSA mixer state
+        self.codec_present: bool = False
+        self.codec_speaker_pct: int = 100
+        self.codec_mic_cap_pct: int = 48
+        self.codec_selected: int = 0   # 0=speaker, 1=mic_cap
 
 
 state = State()
@@ -372,6 +380,7 @@ def build_log_panel(s: State) -> Panel:
              f"  [bold yellow]\\[t][/bold yellow][dim]ranscript[/dim]"
              f"  [bold red]\\[f][/bold red][dim]inalize[/dim]"
              f"  [bold cyan]\\[]/][/bold cyan][dim]clarity[/dim]"
+             f"  [bold yellow]\\[v][/bold yellow][dim]olume[/dim]"
              f"  [bold white]\\[q][/bold white][dim]uit[/dim]")
     try:
         term_h = os.get_terminal_size().lines
@@ -416,6 +425,74 @@ def _fmt_device(dev: dict | None) -> str:
     if d is None:
         return "default"
     return str(d)
+
+
+# ── CODEC ALSA mixer helpers ────────────────────────────────────────────────
+_CODEC_MIXER_PATH = Path.home() / ".config" / "bush" / "codec-mixer.json"
+
+
+def _amixer_get_codec() -> dict | None:
+    """Read current CODEC Speaker and Mic Capture percentages. Returns None if unavailable."""
+    try:
+        r_spk = subprocess.run(["amixer", "-c", "CODEC", "sget", "Speaker"],
+                               capture_output=True, text=True, timeout=3)
+        r_mic = subprocess.run(["amixer", "-c", "CODEC", "sget", "Mic"],
+                               capture_output=True, text=True, timeout=3)
+        if r_spk.returncode != 0:
+            return None
+        spk_m   = re.search(r"Playback\s+\d+\s+\[(\d+)%\]", r_spk.stdout)
+        mic_cap = re.search(r"Capture\s+\d+\s+\[(\d+)%\]",  r_mic.stdout)
+        return {
+            "speaker": int(spk_m.group(1)) if spk_m else 100,
+            "mic_cap": int(mic_cap.group(1)) if mic_cap else 0,
+        }
+    except Exception:
+        return None
+
+
+def _amixer_set_codec(speaker_pct: int | None = None, mic_cap_pct: int | None = None):
+    """Set CODEC Speaker and/or Mic Capture to given percentages."""
+    try:
+        if speaker_pct is not None:
+            subprocess.run(["amixer", "-c", "CODEC", "-q", "sset", "Speaker", f"{speaker_pct}%"],
+                           capture_output=True, timeout=3)
+        if mic_cap_pct is not None:
+            subprocess.run(["amixer", "-c", "CODEC", "-q", "sset", "Mic", "cap", f"{mic_cap_pct}%"],
+                           capture_output=True, timeout=3)
+    except Exception:
+        pass
+
+
+def _save_codec_levels(speaker_pct: int, mic_cap_pct: int):
+    """Persist CODEC levels for udev restore on next plug-in."""
+    try:
+        _CODEC_MIXER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CODEC_MIXER_PATH.write_text(json.dumps({"speaker": speaker_pct, "mic_cap": mic_cap_pct}))
+    except Exception:
+        pass
+
+
+def build_codec_panel(s: State) -> Panel:
+    text = Text()
+    if not s.codec_present:
+        text.append("USB codec (hw:CODEC) not connected — plug it in and press v again",
+                    style="dim red")
+    else:
+        rows = [
+            ("Speaker Out", s.codec_speaker_pct, "green"),
+            ("Mic Capture", s.codec_mic_cap_pct, "cyan"),
+        ]
+        for i, (label, pct, colour) in enumerate(rows):
+            selected = (i == s.codec_selected)
+            cursor = "► " if selected else "  "
+            style  = "bold" if selected else ""
+            text.append(cursor, style="bold yellow" if selected else "dim")
+            text.append(f"{label:<14}", style=style)
+            text.append_text(_bar(pct, 100, BAR_WIDTH, colour))
+            text.append(f"  {pct:3d}%\n", style=f"{colour} {style}")
+    return Panel(text,
+                 title="[bold]CODEC Mixer[/bold]  [dim]←/→ adjust  j/k select  Esc save+close[/dim]",
+                 box=box.ROUNDED, border_style="yellow")
 
 
 def build_audio_panel(s: State) -> Panel:
@@ -470,6 +547,8 @@ def render(s: State) -> Layout:
         layout["log"].update(build_audio_panel(s))
     elif s.ui_mode == "input_text":
         layout["log"].update(build_input_panel(s))
+    elif s.ui_mode == "codec_volume":
+        layout["log"].update(build_codec_panel(s))
     else:
         layout["log"].update(build_log_panel(s))
 
@@ -505,6 +584,10 @@ def _read_key(fd: int) -> str:
                         return "UP"
                     elif ch3 == "B":
                         return "DOWN"
+                    elif ch3 == "C":
+                        return "RIGHT"
+                    elif ch3 == "D":
+                        return "LEFT"
                     return f"ESC[{ch3}"
             return f"ESC{ch2}"
         return "ESC"
@@ -552,9 +635,47 @@ def _handle_key(key: str):
             if changed and _mqttc:
                 _mqttc.publish("bush/audio/tts/set-clarity",
                                json.dumps({"clarity": new_clarity}))
+        elif key == "v":
+            present = Path("/proc/asound/CODEC").exists()
+            with state.lock:
+                state.codec_present = present
+                state.codec_selected = 0
+                state.ui_mode = "codec_volume"
+            if present:
+                levels = _amixer_get_codec()
+                if levels:
+                    with state.lock:
+                        state.codec_speaker_pct = levels["speaker"]
+                        state.codec_mic_cap_pct = levels["mic_cap"]
         elif key in ("q", "Q", "\x03"):   # q or Ctrl-C
             with state.lock:
                 state.quit = True
+
+    elif mode == "codec_volume":
+        if key == "ESC":
+            with state.lock:
+                spk = state.codec_speaker_pct
+                mic = state.codec_mic_cap_pct
+                state.ui_mode = "normal"
+            _save_codec_levels(spk, mic)
+        elif key in ("j", "DOWN"):
+            with state.lock:
+                state.codec_selected = (state.codec_selected + 1) % 2
+        elif key in ("k", "UP"):
+            with state.lock:
+                state.codec_selected = (state.codec_selected - 1) % 2
+        elif key in ("LEFT", "RIGHT"):
+            delta = 5 if key == "RIGHT" else -5
+            speaker_pct = mic_cap_pct = None
+            with state.lock:
+                if state.codec_present:
+                    if state.codec_selected == 0:
+                        state.codec_speaker_pct = max(0, min(100, state.codec_speaker_pct + delta))
+                        speaker_pct = state.codec_speaker_pct
+                    else:
+                        state.codec_mic_cap_pct = max(0, min(100, state.codec_mic_cap_pct + delta))
+                        mic_cap_pct = state.codec_mic_cap_pct
+            _amixer_set_codec(speaker_pct=speaker_pct, mic_cap_pct=mic_cap_pct)
 
     elif mode == "input_text":
         if key == "ESC":
