@@ -135,12 +135,20 @@ def main():
     device_change = threading.Event()
     next_device = [STT_DEVICE]   # list so inner functions can mutate it
 
+    # ── ALSA TTS pause/resume (take turns on hw: devices) ──────────────────
+    # When TTS speaks on an ALSA device, STT releases the capture interface
+    # so the OHCI controller doesn't get concurrent playback+capture opens.
+    tts_pause  = threading.Event()
+    tts_resume = threading.Event()
+
     def on_tts_done():
         if _mute_timer[0] is not None:
             _mute_timer[0].cancel()
             _mute_timer[0] = None
         muted.clear()
         reset_recognizer.set()
+        tts_pause.clear()
+        tts_resume.set()
         log("Unmuting STT (TTS done)")
 
     def on_tts_speaking():
@@ -153,6 +161,9 @@ def main():
         t.daemon = True
         t.start()
         _mute_timer[0] = t
+        if _is_alsa_device(current_device):
+            tts_resume.clear()
+            tts_pause.set()
 
     # ── MQTT setup ─────────────────────────────────────────────────────────
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -223,6 +234,8 @@ def main():
     try:
         while True:
             device_change.clear()
+            tts_pause.clear()
+            tts_resume.clear()
             _wait_for_audio(current_device)
 
             parec_proc = None
@@ -255,7 +268,7 @@ def main():
                               retain=True)
                 log("Listening. Speak a query...")
                 last_partial = ""
-                while not device_change.is_set():
+                while not device_change.is_set() and not tts_pause.is_set():
                     if parec_proc.poll() is not None:
                         log("parec exited unexpectedly")
                         break
@@ -314,6 +327,10 @@ def main():
                 if reader_thread is not None:
                     reader_thread.join(timeout=2)
 
+            if tts_pause.is_set() and not device_change.is_set():
+                log("Pausing capture (TTS speaking on ALSA device)")
+                tts_resume.wait()
+                log("Resuming capture")
             if device_change.is_set():
                 current_device = next_device[0]
                 log(f"Switching to device {current_device!r}")
