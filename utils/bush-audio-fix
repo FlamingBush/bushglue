@@ -128,9 +128,10 @@ def main():
         # Primary health check: try to open the device.
         # Some usb_set_interface errors occur normally during enumeration and
         # don't indicate a broken state — the open test is the authoritative signal.
+        # Use -d 0 (run until killed) so timeout (-1) means device opened fine.
         rc, _, _ = run(["arecord", "-D", "hw:CODEC", "-f", "S16_LE", "-c", "1",
-                        "-r", "16000", "--dump-hw-params"], timeout=5)
-        usb_usable = rc == 0
+                        "-r", "16000", "-d", "0", "-t", "raw", "/dev/null"], timeout=3)
+        usb_usable = rc in (0, -1)
         if usb_usable:
             check("USB codec responds to ALSA open", True)
         else:
