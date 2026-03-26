@@ -125,40 +125,42 @@ def main():
           fix="USB codec not found. Replug the USB sound card.")
 
     if usb_present:
-        # Check if the USB codec is in a broken state (usb_set_interface errors)
-        # Only look at dmesg lines after the most recent enumeration of this device.
-        rc, dmesg_out, _ = run(["dmesg"], timeout=5)
-        broken_indicators = [
-            "usb_set_interface failed",
-            "cannot set freq",
-            "can't set config",
-            "retire_capture_urb",
-        ]
-        lines = dmesg_out.splitlines()
-        # Find the last line where the TI codec was newly enumerated
-        last_enum_idx = -1
-        for i, line in enumerate(lines):
-            if "idVendor=08bb" in line and "New USB device found" in line:
-                last_enum_idx = i
-        lines_since_enum = lines[last_enum_idx + 1:] if last_enum_idx >= 0 else lines
-        post_enum_text = "\n".join(lines_since_enum)
-        recent_errors = [ind for ind in broken_indicators if ind in post_enum_text]
-        usb_healthy = len(recent_errors) == 0
-        if not usb_healthy:
-            err_list = ", ".join(f'"{e}"' for e in recent_errors)
-            check("USB codec not in broken state", False,
-                  fix=f"USB codec has kernel errors ({err_list}).\n"
-                      f"     Fix: physically unplug and replug the USB sound card.\n"
-                      f"     Do NOT load it into PulseAudio — use hw:CODEC for direct ALSA access only.")
+        # Primary health check: try to open the device.
+        # Some usb_set_interface errors occur normally during enumeration and
+        # don't indicate a broken state — the open test is the authoritative signal.
+        rc, _, _ = run(["arecord", "-D", "hw:CODEC", "-f", "S16_LE", "-c", "1",
+                        "-r", "16000", "--dump-hw-params"], timeout=5)
+        usb_usable = rc == 0
+        if usb_usable:
+            check("USB codec responds to ALSA open", True)
         else:
-            # Try a quick open to confirm it's actually usable
-            rc, _, err = run(["arecord", "-D", "hw:CODEC", "-f", "S16_LE", "-c", "1",
-                              "-r", "16000", "--dump-hw-params"], timeout=5)
-            usb_usable = rc == 0
-            check("USB codec responds to ALSA open", usb_usable,
-                  fix="USB codec enumerates but can't be opened.\n"
-                      "     Fix: unplug and replug the USB sound card.\n"
-                      "     Do NOT attempt to load it via pactl — this corrupts the device state.")
+            # Open failed — check dmesg for a more specific cause
+            rc2, dmesg_out, _ = run(["dmesg"], timeout=5)
+            broken_indicators = [
+                "usb_set_interface failed",
+                "cannot set freq",
+                "can't set config",
+                "retire_capture_urb",
+            ]
+            lines = dmesg_out.splitlines()
+            last_enum_idx = -1
+            for i, line in enumerate(lines):
+                if "idVendor=08bb" in line and "New USB device found" in line:
+                    last_enum_idx = i
+            lines_since_enum = lines[last_enum_idx + 1:] if last_enum_idx >= 0 else lines
+            post_enum_text = "\n".join(lines_since_enum)
+            recent_errors = [ind for ind in broken_indicators if ind in post_enum_text]
+            if recent_errors:
+                err_list = ", ".join(f'"{e}"' for e in recent_errors)
+                check("USB codec not in broken state", False,
+                      fix=f"USB codec has kernel errors ({err_list}).\n"
+                          f"     Fix: physically unplug and replug the USB sound card.\n"
+                          f"     Do NOT load it into PulseAudio — use hw:CODEC for direct ALSA access only.")
+            else:
+                check("USB codec responds to ALSA open", False,
+                      fix="USB codec enumerates but can't be opened.\n"
+                          "     Fix: unplug and replug the USB sound card.\n"
+                          "     Do NOT attempt to load it via pactl — this corrupts the device state.")
 
     print()
 
