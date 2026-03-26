@@ -83,50 +83,13 @@ echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}
 
 echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
 
-# Wait for the ALSA card to appear in /proc/asound, then settle.
-# Do NOT open the device before the real open — any prior open/close
-# corrupts the USB codec's rate state on the RK3568 OHCI controller.
-wait_for_device() {
-    local card="${DEVICE#*:}"   # CODEC from plughw:CODEC
-    card="${card%%,*}"
-    while [[ ! -e "/proc/asound/$card" ]]; do
-        echo "bush-standby: waiting for /proc/asound/$card ..."
-        sleep 3
-    done
-    echo "bush-standby: $card present, settling 20s..."
-    sleep 20
-}
-
-usb_reset() {
-    # Force USB re-enumeration of the TI PCM2912A.
-    # Called after the first failed open: by then the OHCI controller has
-    # been running long enough that the re-enumerated device opens cleanly.
-    local usb_dev
-    usb_dev=$(grep -rl "08bb" /sys/bus/usb/devices/*/idVendor 2>/dev/null \
-              | head -1)
-    usb_dev="${usb_dev%/idVendor}"
-    [[ -z "$usb_dev" ]] && return 1
-    local card="${DEVICE#*:}"; card="${card%%,*}"
-    echo "bush-standby: USB reset (OHCI warm-up)..."
-    echo 0 > "$usb_dev/authorized"
-    sleep 2
-    echo 1 > "$usb_dev/authorized"
-    while [[ ! -e "/proc/asound/$card" ]]; do sleep 1; done
-    echo "bush-standby: re-enumerated, settling 10s..."
-    sleep 10
-}
-
-wait_for_device
-_usb_reset_done=0
+# The RK3568 OHCI controller can't handle SET_INTERFACE on the first open
+# at cold boot. Just retry: first attempt fails, 30s later the OHCI is warm
+# and it works. No USB resets — sysfs writes to authorized also time out
+# on this hardware when the controller is cold.
 while true; do
     sox "$STANDBY_FILE" -t alsa "$DEVICE" 2>/dev/null &
     SOX_PID=$!
     wait "$SOX_PID"
-    SOX_RC=$?
-    if [[ $SOX_RC -ne 0 && $_usb_reset_done -eq 0 ]]; then
-        _usb_reset_done=1
-        usb_reset || sleep 10
-    elif [[ $SOX_RC -ne 0 ]]; then
-        sleep 5
-    fi
+    [[ $? -ne 0 ]] && { echo "bush-standby: playback failed, retrying in 30s..."; sleep 30; }
 done
