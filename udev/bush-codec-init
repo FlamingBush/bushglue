@@ -1,7 +1,10 @@
 #!/bin/sh
 # Called by udev when the TI PCM2912A USB codec appears.
-# NOTE: amixer sset on this device triggers usb_set_interface failures on the
-# RK3568 OHCI controller even for simple mute/volume operations. All mixer
-# initialisation is handled by the bush-monitor _codec_watch_thread instead,
-# which runs 3s after plug-in when the device is fully settled.
-exit 0
+# Schedules sidetone mute 8s after plug-in via systemd-run (user context).
+# 8s delay is required: amixer sset during USB enumeration triggers
+# usb_set_interface failures on the RK3568 OHCI controller.
+systemd-run \
+    --uid=odroid \
+    --on-active=8s \
+    --unit=bush-codec-mute \
+    amixer -c CODEC -q sset Mic playback mute
