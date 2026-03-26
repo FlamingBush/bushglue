@@ -83,14 +83,18 @@ echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}
 
 echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
 
-# Wait until the ALSA device is healthy (can be opened) before playing.
-# Avoids the broken-device state if the USB codec isn't settled yet.
+# Wait for the ALSA card to appear, then let it settle.
+# Do NOT open the device to test it — any open/close cycle before the first
+# real open corrupts the USB codec's rate state on the RK3568 OHCI controller.
 wait_for_device() {
-    while true; do
-        ERR=$(sox -n -t alsa "$DEVICE" trim 0 0 2>&1) && return 0
-        echo "bush-standby: waiting for $DEVICE ($ERR)"
-        sleep 5
+    local card="${DEVICE#*:}"   # CODEC from plughw:CODEC
+    card="${card%%,*}"
+    while [[ ! -e "/proc/asound/$card" ]]; do
+        echo "bush-standby: waiting for /proc/asound/$card ..."
+        sleep 3
     done
+    echo "bush-standby: $card present, settling for 12s..."
+    sleep 12
 }
 
 wait_for_device
