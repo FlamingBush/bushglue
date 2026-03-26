@@ -267,6 +267,18 @@ Run the same input again after changing a parameter, save to `runs/run2.log`, th
 - **`bbsentimentqq` fire patterns** use `random.random()` for jitter, so fire timing
   will vary between runs even with the same input.
 
+## Fire Control TUI
+
+```bash
+python3 /mnt/c/Users/EB/bushglue/bush-firecontrol
+# with a custom broker:
+python3 /mnt/c/Users/EB/bushglue/bush-firecontrol --broker 192.168.86.50 --port 1883
+```
+
+Keyboard TUI for sending timed MQTT pulses directly to the flame relays (GP2 = flare,
+GP3 = bigjet). Left half of QWERTY = bigjet, right half = flare; rows = short/medium/long
+durations. ESC to quit.
+
 ## Troubleshooting
 
 | Symptom | Check |

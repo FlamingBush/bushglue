@@ -46,20 +46,10 @@ Copy the above into `CIRCUITPY/lib/`.
 |---|---|
 | `code.py` | **Active firmware** — non-blocking MQTT GPIO pulse controller |
 | `secrets.py` | WiFi + MQTT credentials (copy from `secrets.example.py`, do not commit) |
-| `pins.py` | Pin metadata shared with host tooling |
-| `non-websock.py` | Alt firmware — HTTP REST server (no MQTT) |
-| `websockets.py` | Alt firmware — HTTP + WebSocket server (no MQTT) |
-| `index.html` | Legacy HTML dashboard for the HTTP server variants |
 
-## Host Tooling
+## Fire Control TUI
 
-| File | Purpose |
-|---|---|
-| `host/fire_control.py` | curses TUI for sending MQTT pulses from a laptop |
-
-Run: `pip install paho-mqtt && python host/fire_control.py`
-
-Edit the `BROKER` constant at the top if your broker address differs from `localhost`.
+See `INSTALL.md` — run as `bush-firecontrol`.
 
 ## Rebuild Steps
 
