@@ -83,8 +83,21 @@ echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}
 
 echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
 
+# Wait until the ALSA device is healthy (can be opened) before playing.
+# Avoids the broken-device state if the USB codec isn't settled yet.
+wait_for_device() {
+    while true; do
+        ERR=$(sox -n -t alsa "$DEVICE" trim 0 0 2>&1) && return 0
+        echo "bush-standby: waiting for $DEVICE ($ERR)"
+        sleep 5
+    done
+}
+
+wait_for_device
 while true; do
     sox "$STANDBY_FILE" -t alsa "$DEVICE" 2>/dev/null &
     SOX_PID=$!
     wait "$SOX_PID"
+    # Brief pause on failure to avoid hammering a broken device
+    [[ $? -ne 0 ]] && sleep 5
 done
