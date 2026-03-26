@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""
+Bush audio diagnostic tool.
+
+Checks audio devices and routing for common failure conditions and prints
+a report with specific remediation steps.
+
+Usage:
+    bush-audio-fix
+    bush-audio-fix --broker 192.168.1.10
+"""
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+PASS  = "\033[32m  PASS\033[0m"
+FAIL  = "\033[31m  FAIL\033[0m"
+WARN  = "\033[33m  WARN\033[0m"
+SKIP  = "\033[2m  SKIP\033[0m"
+
+fixes = []
+
+
+def check(label: str, ok: bool, warn: bool = False, fix: str | None = None) -> bool:
+    tag = PASS if ok else (WARN if warn else FAIL)
+    print(f"{tag}  {label}")
+    if not ok and fix:
+        fixes.append((label, fix))
+    return ok
+
+
+def run(cmd: list[str], timeout: int = 5) -> tuple[int, str, str]:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        return -1, "", "timeout"
+    except FileNotFoundError:
+        return -1, "", f"{cmd[0]}: not found"
+
+
+def mqtt_get(topic: str, broker: str) -> str | None:
+    rc, out, _ = run(["mosquitto_sub", "-h", broker, "-t", topic, "-C", "1", "-W", "2"])
+    return out.strip() if rc == 0 and out.strip() else None
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Bush audio diagnostic tool")
+    ap.add_argument("--broker", default="localhost")
+    args = ap.parse_args()
+
+    print(f"\nBush Audio Diagnostic  (broker: {args.broker})\n")
+
+    # ── 1. PulseAudio ──────────────────────────────────────────────────────────
+    print("PulseAudio")
+    pa_env = {
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+        "PULSE_SERVER": "unix:/run/user/1000/pulse/native",
+    }
+    import os
+    env = os.environ | pa_env
+    try:
+        r = subprocess.run(["pactl", "info"], capture_output=True, text=True, timeout=5, env=env)
+        pa_running = r.returncode == 0
+    except Exception:
+        pa_running = False
+    check("PA daemon reachable", pa_running,
+          fix="Run: loginctl enable-linger odroid && systemctl --user start pulseaudio")
+
+    if pa_running:
+        rc, out, _ = run(["pactl", "list", "short", "sinks"])
+        loopback_sink = "loopback-inject" in out
+        check("loopback-inject sink loaded", loopback_sink,
+              fix="Run: pactl load-module module-null-sink sink_name=loopback-inject sink_properties=device.description=loopback-inject\n"
+                  "     Or add it to /etc/pulse/default.pa.d/loopback-inject.pa and restart PA.")
+
+        rc, out, _ = run(["pactl", "list", "short", "sources"])
+        loopback_mon = "loopback-inject.monitor" in out
+        check("loopback-inject.monitor source present", loopback_mon,
+              fix="The monitor source should appear automatically when the null sink is loaded.\n"
+                  "     Check: pactl list short sinks | grep loopback-inject")
+    else:
+        check("loopback-inject sink loaded", False,
+              fix="Fix PA first (see above).")
+        check("loopback-inject.monitor source present", False,
+              fix="Fix PA first (see above).")
+
+    print()
+
+    # ── 2. MQTT ────────────────────────────────────────────────────────────────
+    print("MQTT")
+    rc, _, _ = run(["mosquitto_pub", "-h", args.broker, "-t", "bush/diag/ping", "-m", "1", "-q", "0"])
+    mqtt_ok = rc == 0
+    check("Broker reachable", mqtt_ok,
+          fix=f"Check: systemctl status mosquitto\n"
+              f"     Broker address used: {args.broker}")
+
+    print()
+
+    # ── 3. Services ────────────────────────────────────────────────────────────
+    print("Services")
+    services = ["mosquitto", "bush-stt", "bush-tts", "bush-t2v", "bush-sentiment", "bush-audio-agent"]
+    for svc in services:
+        rc, out, _ = run(["systemctl", "is-active", svc])
+        up = out.strip() == "active"
+        check(f"{svc} active", up,
+              fix=f"Run: sudo systemctl restart {svc}\n"
+                  f"     Check logs: journalctl -q -u {svc} -n 30")
+
+    print()
+
+    # ── 4. ALSA cards ──────────────────────────────────────────────────────────
+    print("ALSA cards")
+    cards_path = Path("/proc/asound/cards")
+    cards_text = cards_path.read_text() if cards_path.exists() else ""
+
+    builtin_present = "rockchipes8316c" in cards_text or "es8316" in cards_text.lower()
+    check("Builtin codec (es8316) present", builtin_present,
+          fix="Builtin codec missing from /proc/asound/cards — kernel driver issue, try rebooting.")
+
+    usb_present = "CODEC" in cards_text or "USB audio" in cards_text
+    check("USB codec (hw:CODEC) enumerated", usb_present, warn=not usb_present,
+          fix="USB codec not found. Replug the USB sound card.")
+
+    if usb_present:
+        # Check if the USB codec is in a broken state (usb_set_interface errors)
+        rc, dmesg_out, _ = run(["dmesg"], timeout=5)
+        broken_indicators = [
+            "usb_set_interface failed",
+            "cannot set freq",
+            "can't set config",
+            "retire_capture_urb",
+        ]
+        recent_errors = [ind for ind in broken_indicators if ind in dmesg_out]
+        usb_healthy = len(recent_errors) == 0
+        if not usb_healthy:
+            err_list = ", ".join(f'"{e}"' for e in recent_errors)
+            check("USB codec not in broken state", False,
+                  fix=f"USB codec has kernel errors ({err_list}).\n"
+                      f"     Fix: physically unplug and replug the USB sound card.\n"
+                      f"     Do NOT load it into PulseAudio — use hw:CODEC for direct ALSA access only.")
+        else:
+            # Try a quick open to confirm it's actually usable
+            rc, _, err = run(["arecord", "-D", "hw:CODEC", "-f", "S16_LE", "-c", "1",
+                              "-r", "16000", "--dump-hw-params"], timeout=5)
+            usb_usable = rc == 0
+            check("USB codec responds to ALSA open", usb_usable,
+                  fix="USB codec enumerates but can't be opened.\n"
+                      "     Fix: unplug and replug the USB sound card.\n"
+                      "     Do NOT attempt to load it via pactl — this corrupts the device state.")
+
+    print()
+
+    # ── 5. Active device health ────────────────────────────────────────────────
+    print("Active device health")
+
+    if mqtt_ok:
+        tts_raw = mqtt_get("bush/audio/tts/device", args.broker)
+        stt_raw = mqtt_get("bush/audio/stt/device", args.broker)
+    else:
+        tts_raw = stt_raw = None
+
+    # TTS device
+    tts_device = None
+    if tts_raw:
+        try:
+            tts_device = json.loads(tts_raw).get("device")
+        except Exception:
+            pass
+    if tts_device:
+        if tts_device.startswith("hw:") or tts_device.startswith("plughw:"):
+            card = tts_device.split(":")[1].split(",")[0]
+            tts_card_present = Path(f"/proc/asound/{card}").exists()
+            check(f"TTS device {tts_device!r} card present", tts_card_present,
+                  fix=f"TTS output is set to {tts_device!r} but the card is missing.\n"
+                      f"     Switch back: mosquitto_pub -h {args.broker} -t bush/audio/tts/set-device "
+                      f"-m '{{\"device\":\"hw:0\"}}'")
+            if tts_card_present:
+                # Quick open test (stereo, 48kHz — common TTS format)
+                rc, _, _ = run(["aplay", "-D", tts_device, "-f", "S16_LE", "-c", "2",
+                                 "-r", "48000", "-d", "0", "/dev/zero"], timeout=3)
+                # rc=0 means it ran; rc=1 with set_params failure means broken
+                # rc=-1 is timeout which means it opened fine (success)
+                tts_opens = rc in (0, -1)
+                check(f"TTS device {tts_device!r} opens for playback", tts_opens,
+                      fix=f"TTS device {tts_device!r} cannot be opened.\n"
+                          f"     If hw:CODEC: replug the USB sound card.\n"
+                          f"     Switch to builtin: mosquitto_pub -h {args.broker} "
+                          f"-t bush/audio/tts/set-device -m '{{\"device\":\"hw:0\"}}'")
+        else:
+            check(f"TTS device {tts_device!r} (PA sink)", True)
+    else:
+        check("TTS device status readable", False, warn=True,
+              fix="Can't read bush/audio/tts/device from MQTT — is bush-tts running?")
+
+    # STT device
+    stt_device = None
+    if stt_raw:
+        try:
+            stt_device = json.loads(stt_raw).get("device")
+        except Exception:
+            pass
+    if stt_device:
+        if stt_device.startswith("hw:") or stt_device.startswith("plughw:"):
+            card = stt_device.split(":")[1].split(",")[0]
+            stt_card_present = Path(f"/proc/asound/{card}").exists()
+            check(f"STT device {stt_device!r} card present", stt_card_present,
+                  fix=f"STT input is set to {stt_device!r} but the card is missing.\n"
+                      f"     Switch back: mosquitto_pub -h {args.broker} -t bush/audio/stt/set-device "
+                      f"-m '{{\"device\":\"loopback-inject.monitor\"}}'")
+            if stt_card_present:
+                rc, _, _ = run(["arecord", "-D", stt_device, "-f", "S16_LE", "-c", "1",
+                                 "-r", "16000", "-d", "0", "-t", "raw", "/dev/null"], timeout=3)
+                stt_opens = rc in (0, -1)
+                check(f"STT device {stt_device!r} opens for capture", stt_opens,
+                      fix=f"STT device {stt_device!r} cannot be opened for capture.\n"
+                          f"     If hw:CODEC: replug the USB sound card.\n"
+                          f"     Switch to loopback: mosquitto_pub -h {args.broker} "
+                          f"-t bush/audio/stt/set-device -m '{{\"device\":\"loopback-inject.monitor\"}}'")
+        else:
+            # PA source — check it exists
+            if pa_running:
+                rc, out, _ = run(["pactl", "list", "short", "sources"])
+                stt_source_ok = str(stt_device) in out
+                check(f"STT device {stt_device!r} (PA source) present", stt_source_ok,
+                      fix=f"PA source {stt_device!r} not found.\n"
+                          f"     Check: pactl list short sources\n"
+                          f"     If loopback-inject.monitor is missing, see PulseAudio section above.")
+            else:
+                check(f"STT device {stt_device!r} (PA source)", False,
+                      fix="Fix PA first.")
+    else:
+        check("STT device status readable", False, warn=True,
+              fix="Can't read bush/audio/stt/device from MQTT — is bush-stt running?")
+
+    print()
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    if fixes:
+        print(f"{'─'*60}")
+        print(f"Remediation ({len(fixes)} issue{'s' if len(fixes) != 1 else ''})\n")
+        for i, (label, fix) in enumerate(fixes, 1):
+            print(f"  {i}. {label}")
+            for line in fix.splitlines():
+                print(f"     {line}")
+            print()
+    else:
+        print("All checks passed — audio stack looks healthy.\n")
+
+
+if __name__ == "__main__":
+    main()
