@@ -11,7 +11,7 @@
 DEVICE="plughw:CODEC"
 UNDO=0
 STATE_FILE="/tmp/bush-standby.state"
-STANDBY_FILE="${BUSH_STANDBY_FILE:-$HOME/standby.mp3}"
+STANDBY_FILE="${BUSH_STANDBY_FILE:-/home/odroid/standby.mp3}"
 # Resolve script dir even when called by name through PATH
 SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 
@@ -38,9 +38,9 @@ if [[ $UNDO -eq 1 ]]; then
         exit 1
     fi
     echo "bush-standby: restoring services..."
-    sudo systemctl stop bush-firecontrol-web 2>/dev/null
+    systemctl stop bush-firecontrol-web 2>/dev/null
     while IFS= read -r svc; do
-        sudo systemctl start "$svc"
+        systemctl start "$svc"
         echo "  started $svc"
     done < "$STATE_FILE"
     rm -f "$STATE_FILE"
@@ -59,7 +59,7 @@ rm -f "$STATE_FILE"
 echo "bush-standby: stopping pipeline services..."
 for svc in "${SERVICES[@]}"; do
     if systemctl is-active --quiet "$svc" 2>/dev/null; then
-        sudo systemctl stop "$svc"
+        systemctl stop "$svc"
         echo "$svc" >> "$STATE_FILE"
         echo "  stopped $svc"
     fi
@@ -69,7 +69,7 @@ WEB_PORT=8080
 
 cleanup() {
     echo "bush-standby: stopping"
-    sudo systemctl stop bush-firecontrol-web 2>/dev/null
+    systemctl stop bush-firecontrol-web 2>/dev/null
     kill "$SOX_PID" 2>/dev/null
     wait "$SOX_PID" 2>/dev/null
     exit 0
@@ -77,15 +77,17 @@ cleanup() {
 trap cleanup SIGTERM SIGINT
 
 # Start web fire control service
-sudo systemctl start bush-firecontrol-web
+systemctl start bush-firecontrol-web
 LOCAL_IP=$(ip -4 addr show scope global | awk '/inet/{print $2}' | cut -d/ -f1 | head -1)
 echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}/"
 
 echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
 
-# Wait for the ALSA card to appear, then let it settle.
-# Do NOT open the device to test it — any open/close cycle before the first
-# real open corrupts the USB codec's rate state on the RK3568 OHCI controller.
+# Wait for the ALSA card to appear, then do a software USB reset.
+# A physical replug is needed to reliably open the PCM2912A on the RK3568
+# OHCI controller after boot — this mimics it without touching the hardware.
+# Do NOT open the device to test it before the real open: any prior open/close
+# corrupts the codec's rate state.
 wait_for_device() {
     local card="${DEVICE#*:}"   # CODEC from plughw:CODEC
     card="${card%%,*}"
@@ -93,8 +95,23 @@ wait_for_device() {
         echo "bush-standby: waiting for /proc/asound/$card ..."
         sleep 3
     done
-    echo "bush-standby: $card present, settling for 12s..."
-    sleep 12
+    # Find the USB sysfs path for idVendor=08bb (TI PCM2912A)
+    local usb_dev
+    usb_dev=$(grep -rl "08bb" /sys/bus/usb/devices/*/idVendor 2>/dev/null | head -1)
+    usb_dev="${usb_dev%/idVendor}"
+    if [[ -n "$usb_dev" && -w "$usb_dev/authorized" ]]; then
+        echo "bush-standby: software USB reset of $(basename "$usb_dev")..."
+        echo 0 > "$usb_dev/authorized"
+        sleep 2
+        echo 1 > "$usb_dev/authorized"
+        # Wait for the card to reappear after re-enumeration
+        while [[ ! -e "/proc/asound/$card" ]]; do sleep 1; done
+        echo "bush-standby: re-enumerated, settling 8s..."
+        sleep 8
+    else
+        echo "bush-standby: USB device not found, settling 12s..."
+        sleep 12
+    fi
 }
 
 wait_for_device
