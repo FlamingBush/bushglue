@@ -728,7 +728,10 @@ def _handle_key(key: str):
                 state.ui_mode = "normal"
             if _mqttc and devices and sel < len(devices):
                 dev = devices[sel]
-                if mode == "select_input":
+                # Use name for ALSA devices (hw:X), index for PA sources
+                if dev.get("type") == "alsa":
+                    payload = json.dumps({"device": dev["name"]})
+                elif mode == "select_input":
                     payload = json.dumps({"device": dev["index"]})
                 else:
                     payload = json.dumps({"device": dev["name"]})
