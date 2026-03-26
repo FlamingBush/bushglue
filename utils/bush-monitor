@@ -910,6 +910,8 @@ def _acquire_lock() -> bool:
     _lock_fh = open(_LOCK_PATH, "w")
     try:
         fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Close-on-exec so os.execv (monitor restart) releases the lock
+        fcntl.fcntl(_lock_fh, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
         _lock_fh.write(str(os.getpid()))
         _lock_fh.flush()
         return True
