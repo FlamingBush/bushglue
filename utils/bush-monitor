@@ -438,8 +438,10 @@ def build_audio_panel(s: State) -> Panel:
             style  = "bold reverse" if i == s.selected_index else ""
             text.append(cursor, style="bold yellow" if i == s.selected_index else "dim")
             text.append(f"[{dev['index']:2d}]  {dev['name']}", style=style)
-            text.append(f"  {int(dev['sr'])} Hz  {dev['channels']}ch\n",
-                        style="dim" if i != s.selected_index else "dim reverse")
+            sr = dev.get('sr')
+            ch = dev.get('channels')
+            spec = f"  {int(sr)} Hz  {ch}ch" if sr and ch else f"  {dev.get('description', '')}"
+            text.append(spec + "\n", style="dim" if i != s.selected_index else "dim reverse")
     return Panel(text, title=title, box=box.ROUNDED, border_style=border)
 
 
