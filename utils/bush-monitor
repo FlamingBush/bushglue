@@ -15,6 +15,7 @@ Keys:
   0-9      — jump to device index
   q        — quit
 """
+import fcntl
 import json
 import os
 import re
@@ -898,8 +899,30 @@ def _codec_watch_thread():
         time.sleep(2.0)
 
 
+# ── single-instance lock ────────────────────────────────────────────────────
+_LOCK_PATH = Path("/tmp/bush-monitor.lock")
+_lock_fh = None   # keep a reference so the lock isn't GC'd
+
+
+def _acquire_lock() -> bool:
+    """Return True if we got the lock (sole instance). False if another is running."""
+    global _lock_fh
+    _lock_fh = open(_LOCK_PATH, "w")
+    try:
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fh.write(str(os.getpid()))
+        _lock_fh.flush()
+        return True
+    except OSError:
+        return False
+
+
 # ── main ───────────────────────────────────────────────────────────────────
 def main():
+    if not _acquire_lock():
+        print("bush-monitor is already running — kill the existing instance first.", file=sys.stderr)
+        sys.exit(1)
+
     global _mqttc
     broker = get_mqtt_broker()
     with state.lock:
