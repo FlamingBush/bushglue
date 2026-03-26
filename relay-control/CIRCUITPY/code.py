@@ -12,10 +12,10 @@
 #
 # Broker discovery: if the configured MQTT_BROKER fails 3 times in a
 # row, the firmware scans every IP on the local /24 subnet for an open
-# port 1883.  When one is found it verifies the broker is hosting the
-# bush pipeline by waiting for a retained message on
-# bush/pipeline/status.  The configured host is retried periodically
-# during scanning so it recovers immediately if it comes back online.
+# port 1883.  When one is found it publishes to bush/pipeline/ping and
+# waits for a reply on bush/pipeline/pong from stt-service.  The
+# configured host is retried periodically during scanning so it
+# recovers immediately if it comes back online.
 
 import board
 import digitalio
@@ -44,9 +44,10 @@ pin_bigjet.value = False
 off_ms_flare  = None
 off_ms_bigjet = None
 
-TOPIC_FLARE   = b"bush/flame/flare/pulse"
-TOPIC_BIGJET  = b"bush/flame/bigjet/pulse"
-VERIFY_TOPIC  = b"bush/pipeline/status"
+TOPIC_FLARE        = b"bush/flame/flare/pulse"
+TOPIC_BIGJET       = b"bush/flame/bigjet/pulse"
+PIPELINE_PING      = b"bush/pipeline/ping"
+PIPELINE_PONG      = b"bush/pipeline/pong"
 
 # ── Tick arithmetic (handles 29-day rollover) ────────────────────────────────
 def ticks_diff(later, earlier):
@@ -113,7 +114,7 @@ verify_deadline_ms  = None
 
 RECONNECT_INTERVAL  = 3_000   # ms between configured-broker retry attempts
 VERIFY_WAIT_MS      = 3_000   # ms to wait for bush/pipeline/status after connecting
-SCAN_PROBE_TIMEOUT  = 0.05    # seconds — TCP connect timeout for port probes
+SCAN_PROBE_TIMEOUT  = 0.5     # seconds — TCP connect timeout for port probes
 SCAN_RETRY_INTERVAL = 50      # re-try configured broker every N scan IPs
 
 
@@ -146,6 +147,13 @@ def mqtt_subscribe_packet(topic, packet_id=1):
     t = topic if isinstance(topic, bytes) else topic.encode()
     payload = struct.pack("!H", packet_id) + encode_string(t) + bytes([0x00])
     return bytes([0x82]) + encode_remaining(len(payload)) + payload
+
+
+def mqtt_publish_packet(topic, payload=b""):
+    t = topic if isinstance(topic, bytes) else topic.encode()
+    p = payload if isinstance(payload, bytes) else payload.encode()
+    body = encode_string(t) + p
+    return bytes([0x30]) + encode_remaining(len(body)) + body
 
 
 def mqtt_pingreq():
@@ -277,7 +285,7 @@ def process_packets():
             topic   = bytes(pkt[2:2 + topic_len])
             payload = bytes(pkt[2 + topic_len:])  # QoS 0: no packet identifier
 
-            if topic == VERIFY_TOPIC:
+            if topic == PIPELINE_PONG:
                 pipeline_verified = True
                 print("Pipeline verified:", payload)
                 pos = pkt_end
@@ -452,9 +460,10 @@ while True:
         if connected:
             # Subscribe to the pipeline verification topic
             pipeline_verified = False
-            sock.send(mqtt_subscribe_packet(VERIFY_TOPIC, packet_id=10))
+            sock.send(mqtt_subscribe_packet(PIPELINE_PONG, packet_id=10))
+            sock.send(mqtt_publish_packet(PIPELINE_PING))
             verify_deadline_ms = (supervisor.ticks_ms() + VERIFY_WAIT_MS) & 0x3FFFFFFF
-            print(f"Waiting for pipeline status on {scan_candidate}…")
+            print(f"Waiting for pipeline pong on {scan_candidate}…")
             conn_state = ST_VERIFY_PIPELINE
         else:
             # Handshake failed — continue scanning
