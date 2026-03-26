@@ -126,6 +126,7 @@ def main():
 
     if usb_present:
         # Check if the USB codec is in a broken state (usb_set_interface errors)
+        # Only look at dmesg lines after the most recent enumeration of this device.
         rc, dmesg_out, _ = run(["dmesg"], timeout=5)
         broken_indicators = [
             "usb_set_interface failed",
@@ -133,7 +134,15 @@ def main():
             "can't set config",
             "retire_capture_urb",
         ]
-        recent_errors = [ind for ind in broken_indicators if ind in dmesg_out]
+        lines = dmesg_out.splitlines()
+        # Find the last line where the TI codec was newly enumerated
+        last_enum_idx = -1
+        for i, line in enumerate(lines):
+            if "idVendor=08bb" in line and "New USB device found" in line:
+                last_enum_idx = i
+        lines_since_enum = lines[last_enum_idx + 1:] if last_enum_idx >= 0 else lines
+        post_enum_text = "\n".join(lines_since_enum)
+        recent_errors = [ind for ind in broken_indicators if ind in post_enum_text]
         usb_healthy = len(recent_errors) == 0
         if not usb_healthy:
             err_list = ", ".join(f'"{e}"' for e in recent_errors)
