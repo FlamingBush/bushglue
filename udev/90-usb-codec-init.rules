@@ -1,0 +1,6 @@
+# Initialise TI PCM2912A USB audio CODEC mixer when it is plugged in.
+# Mutes the Mic sidetone (Playback channel) to prevent speaker feedback.
+# Triggers on the ALSA control device appearing for this USB vendor/product.
+SUBSYSTEM=="sound", ACTION=="add", KERNEL=="controlC*", \
+    ATTRS{idVendor}=="08bb", ATTRS{idProduct}=="2912", \
+    RUN+="/usr/local/bin/bush-codec-init"

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Called by udev when the TI PCM2912A USB codec appears.
+# Sets safe initial mixer state: mic sidetone muted.
+sleep 0.5  # wait for ALSA mixer to be ready after enumeration
+/usr/bin/amixer -c CODEC sset Mic playback mute > /dev/null 2>&1 || true
