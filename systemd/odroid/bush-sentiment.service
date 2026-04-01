@@ -1,6 +1,6 @@
 [Unit]
 Description=Sentiment Analysis with MQTT Fire Control
-After=network.target
+After=network.target bush-t2v.service
 
 [Service]
 Type=simple
@@ -11,10 +11,12 @@ Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
 CPUAffinity=0
 Nice=10
+MemoryMax=1200M
+MemoryHigh=1000M
 ExecStart=/home/odroid/repos/bbsentimentqq/.venv/bin/python3 /home/odroid/repos/bushglue/sentiment-service.py
 WorkingDirectory=/home/odroid/repos/bushglue/scripts
 Restart=on-failure
-RestartSec=10
+RestartSec=30
 TimeoutStartSec=300
 StandardOutput=journal
 StandardError=journal

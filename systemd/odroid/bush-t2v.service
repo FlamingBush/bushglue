@@ -9,8 +9,10 @@ User=odroid
 Environment=T2V_BIN=/home/odroid/repos/t2v/target/release/text-to-verse
 Environment=AFFECTS_DIR=/home/odroid/repos/t2v/templates/affects
 ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/t2v-service.py
+MemoryMax=1500M
+MemoryHigh=1200M
 Restart=on-failure
-RestartSec=10
+RestartSec=30
 StandardOutput=journal
 StandardError=journal
 
