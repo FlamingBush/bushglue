@@ -33,7 +33,15 @@ else
 fi
 
 case "$cmd" in
-    restart|start|stop)
+    restart)
+        # stop-then-start so systemd respects After= ordering (plain
+        # "restart" fires everything simultaneously and can OOM the board)
+        sudo systemctl stop "${targets[@]}"
+        sudo systemctl start "${targets[@]}"
+        echo ""
+        systemctl status "${targets[@]}" --no-pager -n 0
+        ;;
+    start|stop)
         sudo systemctl "$cmd" "${targets[@]}"
         echo ""
         systemctl status "${targets[@]}" --no-pager -n 0
