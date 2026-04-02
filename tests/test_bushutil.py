@@ -10,6 +10,7 @@ Run from bushglue/:
 import os
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -94,29 +95,38 @@ class TestSettingsPersistence(unittest.TestCase):
 
 class TestGetMqttBroker(unittest.TestCase):
 
-    def test_returns_localhost_on_native_linux(self):
-        with patch("builtins.open", unittest.mock.mock_open(read_data="Linux 5.15 native")):
+    def test_env_var_overrides_everything(self):
+        with patch.dict(os.environ, {"MQTT_BROKER": "10.0.0.5"}):
             result = bushutil.get_mqtt_broker()
+        self.assertEqual(result, "10.0.0.5")
+
+    def test_returns_localhost_on_native_linux(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("builtins.open", unittest.mock.mock_open(read_data="Linux 5.15 native")):
+                result = bushutil.get_mqtt_broker()
         self.assertEqual(result, "localhost")
 
     def test_returns_gateway_on_wsl2(self):
         fake_route = "default via 172.26.160.1 dev eth0\n172.26.0.0/20 dev eth0\n"
-        with patch("builtins.open", unittest.mock.mock_open(read_data="Linux microsoft WSL2")):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(stdout=fake_route)
-                result = bushutil.get_mqtt_broker()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("builtins.open", unittest.mock.mock_open(read_data="Linux microsoft WSL2")):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(stdout=fake_route)
+                    result = bushutil.get_mqtt_broker()
         self.assertEqual(result, "172.26.160.1")
 
     def test_returns_localhost_when_proc_version_unreadable(self):
-        with patch("builtins.open", side_effect=OSError("no /proc")):
-            result = bushutil.get_mqtt_broker()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("builtins.open", side_effect=OSError("no /proc")):
+                result = bushutil.get_mqtt_broker()
         self.assertEqual(result, "localhost")
 
     def test_returns_localhost_when_no_default_route_on_wsl(self):
-        with patch("builtins.open", unittest.mock.mock_open(read_data="microsoft wsl")):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(stdout="192.168.1.0/24 dev eth0\n")
-                result = bushutil.get_mqtt_broker()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("builtins.open", unittest.mock.mock_open(read_data="microsoft wsl")):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(stdout="192.168.1.0/24 dev eth0\n")
+                    result = bushutil.get_mqtt_broker()
         self.assertEqual(result, "localhost")
 
 

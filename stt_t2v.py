@@ -35,6 +35,16 @@ SENTIMENT_SCRIPT = os.path.join(SENTIMENT_DIR, "bbsentimentqq.py")
 SENTIMENT_URL = "http://localhost:8585/"
 
 def _windows_host_ip() -> str:
+    """Return the WSL2 host gateway IP, or 'localhost' as fallback.
+
+    This works correctly in WSL2 where the MQTT broker runs on the Windows host
+    and is reachable at the default gateway address.
+
+    On a native Linux host (ODROID, Raspberry Pi) the gateway is the router,
+    not the broker. Override via the MQTT_BROKER environment variable instead:
+        export MQTT_BROKER=192.168.1.42   # IP of the machine running Mosquitto
+    See INSTALL.md § "Deployment targets" for details.
+    """
     try:
         result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
         for line in result.stdout.splitlines():
@@ -44,7 +54,7 @@ def _windows_host_ip() -> str:
         pass
     return "localhost"
 
-MQTT_BROKER = _windows_host_ip()
+MQTT_BROKER = os.environ.get("MQTT_BROKER") or _windows_host_ip()
 MQTT_PORT = 1883
 TOPIC_FLARE = "bush/flame/flare/pulse"
 TOPIC_BIGJET = "bush/flame/bigjet/pulse"

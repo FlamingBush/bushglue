@@ -1,5 +1,6 @@
 """Shared utilities for Bush Glue service scripts."""
 import json
+import os
 import pathlib
 import subprocess
 
@@ -95,10 +96,20 @@ def build_sox_effects(clarity: int = 0) -> list:
 def get_mqtt_broker() -> str:
     """Return the MQTT broker host.
 
-    Under WSL2 the broker runs on the Windows host; detect this via
-    /proc/version and resolve the gateway IP.  On native Linux return
-    localhost.
+    Resolution order:
+    1. ``MQTT_BROKER`` environment variable — always wins if set.
+       Use this on any native Linux host (ODROID, Raspberry Pi) where the
+       broker is on the LAN but not at the gateway address:
+           export MQTT_BROKER=192.168.1.42
+    2. WSL2 auto-detection — reads ``/proc/version``; if "microsoft" is
+       present, resolves the default gateway IP (Windows host).
+    3. Fallback: ``localhost``.
+
+    See INSTALL.md § "Deployment targets" for the full topology table.
     """
+    env = os.environ.get("MQTT_BROKER")
+    if env:
+        return env
     try:
         with open("/proc/version") as f:
             if "microsoft" not in f.read().lower():

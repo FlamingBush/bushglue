@@ -20,6 +20,36 @@ over MQTT.
 
 Backing services: `chromadb.service` (port 8000), `ollama.service` (port 11434, pre-existing).
 
+## Deployment targets
+
+Bush Glue runs on three different network topologies. MQTT broker discovery
+behaves differently in each — read this before configuring services.
+
+| Target | Broker location | How services find it |
+|--------|----------------|----------------------|
+| **WSL2 (dev)** | Windows host (Mosquitto) | `get_mqtt_broker()` reads `/proc/version`, detects WSL2, resolves the default gateway IP (e.g. `172.26.160.1`) |
+| **ODROID / Pi on LAN** | Separate host on the same network | Auto-discovery does **not** work — the gateway IP is the router, not the broker. **Set `MQTT_BROKER` in each systemd service file.** |
+| **Pi as broker** | `localhost` | `get_mqtt_broker()` falls back to `localhost` on native Linux — works correctly |
+
+### Configuring the broker IP for ODROID / Pi deployments
+
+In each `.service` file under `systemd/`:
+
+```ini
+[Service]
+Environment=MQTT_BROKER=192.168.1.42   # IP of the machine running Mosquitto
+```
+
+`stt_t2v.py` also respects `MQTT_BROKER` from the environment — set it in your shell or
+service file before starting `bush-stt`.
+
+> **Note:** The `_windows_host_ip()` function in `stt_t2v.py` and `get_mqtt_broker()` in
+> `bushutil.py` are both WSL2-specific. On any native Linux host where the broker is not
+> at the default gateway address, always set `MQTT_BROKER` explicitly rather than relying
+> on auto-detection.
+
+---
+
 ## Prerequisites
 
 ### Windows side
