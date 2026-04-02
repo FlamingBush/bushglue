@@ -35,11 +35,13 @@ SENTIMENT_SCRIPT = os.path.join(SENTIMENT_DIR, "bbsentimentqq.py")
 SENTIMENT_URL = "http://localhost:8585/"
 
 def _windows_host_ip() -> str:
-    import subprocess
-    result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("default"):
-            return line.split()[2]
+    try:
+        result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            if line.startswith("default"):
+                return line.split()[2]
+    except Exception:
+        pass
     return "localhost"
 
 MQTT_BROKER = _windows_host_ip()
