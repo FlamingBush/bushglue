@@ -26,7 +26,7 @@ import struct
 
 # ── Load secrets ────────────────────────────────────────────────────────────
 try:
-    from secrets import secrets
+    from secrets import secrets  # type: ignore[attr-defined]  # CircuitPython secrets.py convention
 except ImportError:
     raise RuntimeError("Create secrets.py — see secrets.example.py")
 
@@ -369,7 +369,7 @@ def mqtt_loop():
 wifi_connect()
 compute_scan_base()
 mqtt_open()
-if connected:
+if connected and sock is not None:
     sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
     sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
     print("Subscribed.")
@@ -405,7 +405,7 @@ while True:
                 mqtt_open(MQTT_BROKER)
             except Exception as e:
                 print("Reconnect error:", e)
-            if connected:
+            if connected and sock is not None:
                 sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
                 sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
                 print("Subscribed.")
@@ -431,7 +431,7 @@ while True:
         if scan_index > 0 and scan_index % SCAN_RETRY_INTERVAL == 0:
             service_pins()
             mqtt_open(MQTT_BROKER)
-            if connected:
+            if connected and sock is not None:
                 sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
                 sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
                 print("Configured broker back online, subscribed.")
@@ -439,6 +439,10 @@ while True:
                 configured_failures = 0
                 continue
 
+        if scan_base is None:
+            print("scan_base not set — recomputing")
+            compute_scan_base()
+            continue
         candidate = scan_base + str(scan_index)
         my_ip = str(wifi.radio.ipv4_address)
         scan_index += 1
@@ -457,7 +461,7 @@ while True:
     elif conn_state == ST_SCAN_CONNECT:
         service_pins()
         mqtt_open(scan_candidate)
-        if connected:
+        if connected and sock is not None:
             # Subscribe to the pipeline verification topic
             pipeline_verified = False
             sock.send(mqtt_subscribe_packet(PIPELINE_PONG, packet_id=10))
@@ -478,7 +482,7 @@ while True:
 
         mqtt_loop()  # drains socket; process_packets() sets pipeline_verified
 
-        if pipeline_verified:
+        if pipeline_verified and sock is not None:
             # Good broker — subscribe to fire topics and go live
             sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
             sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
@@ -487,7 +491,8 @@ while True:
         elif ticks_expired(verify_deadline_ms):
             print(f"No pipeline on {scan_candidate}, continuing scan…")
             try:
-                sock.close()
+                if sock is not None:
+                    sock.close()
             except Exception:
                 pass
             connected = False
