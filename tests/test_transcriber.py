@@ -43,7 +43,7 @@ class TestAcceptAudioFinalResult(unittest.TestCase):
         stt.recognizer.AcceptWaveform.return_value = True
         stt.recognizer.Result.return_value = json.dumps({"text": "burning bush"})
         result = stt.accept_audio(b"\x00" * 16)
-        self.assertEqual(result, {"type": "final", "text": "burning bush"})
+        self.assertEqual(result, {"type": "final", "text": "burning bush", "confidence": None})
 
     def test_final_result_strips_whitespace(self):
         stt = _make_stt()
@@ -57,7 +57,7 @@ class TestAcceptAudioFinalResult(unittest.TestCase):
         stt.recognizer.AcceptWaveform.return_value = True
         stt.recognizer.Result.return_value = json.dumps({"text": ""})
         result = stt.accept_audio(b"\x00" * 16)
-        self.assertEqual(result, {"type": "final", "text": ""})
+        self.assertEqual(result, {"type": "final", "text": "", "confidence": None})
 
     def test_final_json_error_returns_error_type(self):
         """Malformed JSON from Vosk must not crash the recognizer thread."""
@@ -83,14 +83,14 @@ class TestAcceptAudioPartialResult(unittest.TestCase):
         stt.recognizer.AcceptWaveform.return_value = False
         stt.recognizer.PartialResult.return_value = json.dumps({"partial": "speak of the"})
         result = stt.accept_audio(b"\x00" * 16)
-        self.assertEqual(result, {"type": "partial", "text": "speak of the"})
+        self.assertEqual(result, {"type": "partial", "text": "speak of the", "confidence": None})
 
     def test_partial_empty(self):
         stt = _make_stt()
         stt.recognizer.AcceptWaveform.return_value = False
         stt.recognizer.PartialResult.return_value = json.dumps({"partial": ""})
         result = stt.accept_audio(b"\x00" * 16)
-        self.assertEqual(result, {"type": "partial", "text": ""})
+        self.assertEqual(result, {"type": "partial", "text": "", "confidence": None})
 
     def test_partial_json_error_returns_error_type(self):
         stt = _make_stt()

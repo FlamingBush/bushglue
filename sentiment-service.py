@@ -2,12 +2,17 @@
 
 # For text-classificaiton
 # Requires transformers and torch
+import threading  # imported first — needed before classifier lock below
+
 import torch
 torch.set_num_threads(1)  # limit CPU parallelism to prevent power-supply brownout on RK3568
 from transformers import pipeline
 
-# For serving the http interface
-
+# For the HTTP server
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+import random
+import time
 
 # Text classifier
 # see https://huggingface.co/bhadresh-savani/distilbert-base-uncased-emotion?text=I+feel+a+bit+let+down
@@ -16,13 +21,11 @@ classifier = pipeline("text-classification",model='bhadresh-savani/distilbert-ba
 # Warm it up with a throw-away execution which gets it to download the model, and then load that model
 classifier("Weeeeee!", )
 
-
-# For the HTTP server
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
-import random
-import threading
-import time
+# ── inference lock ─────────────────────────────────────────────────────────
+# DistilBERT inference is called from both the HTTP handler thread and the
+# MQTT callback thread. Serialise access to prevent concurrent inference
+# (which can produce incorrect results or crash under torch.set_num_threads(1)).
+_classifier_lock = threading.Lock()
 
 import paho.mqtt.client as mqtt
 
@@ -115,7 +118,8 @@ def _start_fire(pattern: dict, score: float, mqttc: mqtt.Client):
 
 def _classify_and_fire(verse_text: str, mqttc: mqtt.Client):
     """Classify verse_text, start sustained fire pattern, return (scores, label, score)."""
-    scores = classifier(verse_text)  # list of {label, score} dicts
+    with _classifier_lock:
+        scores = classifier(verse_text)  # list of {label, score} dicts
     top = sorted(scores, key=lambda x: x["score"], reverse=True)[0]
     label = top["label"]
     score = top["score"]
@@ -146,6 +150,9 @@ def _start_mqtt_thread():
         client.subscribe(TOPIC_TTS_DONE)
         print(f"[sentiment] Subscribed to {TOPIC_VERSE}, {TOPIC_TTS_DONE}", flush=True)
 
+    def on_disconnect(client, userdata, flags, reason_code, properties):
+        print(f"[sentiment] MQTT disconnected (rc={reason_code}) — will reconnect automatically", flush=True)
+
     def on_message(client, userdata, msg):
         try:
             if msg.topic == TOPIC_TTS_DONE:
@@ -171,6 +178,7 @@ def _start_mqtt_thread():
             print(f"[sentiment] MQTT message error: {e}", flush=True)
 
     mqttc.on_connect = on_connect
+    mqttc.on_disconnect = on_disconnect
     mqttc.on_message = on_message
 
     def _loop():
@@ -195,6 +203,9 @@ class Server(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(body).encode())
 
+    def log_message(self, format, *args):
+        pass  # suppress default per-request access log to keep stdout clean
+
     # We only really respond to POST messages
     def do_GET(self):
         self.resp(200, {})
@@ -202,8 +213,22 @@ class Server(BaseHTTPRequestHandler):
         self.resp(200, {})
 
     def do_POST(self):
-        length = int(self.headers.get('content-length'))
-        input = json.loads(self.rfile.read(length))
+        raw_len = self.headers.get('content-length')
+        if raw_len is None:
+            self.resp(400, {'error': "Missing Content-Length header"})
+            return
+        try:
+            length = int(raw_len)
+        except ValueError:
+            self.resp(400, {'error': "Invalid Content-Length header"})
+            return
+
+        try:
+            input = json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, Exception) as e:
+            self.resp(400, {'error': f"Invalid JSON: {e}"})
+            return
+
         message = ""
         if 'text' in input:
             message = input['text']
@@ -213,7 +238,9 @@ class Server(BaseHTTPRequestHandler):
             self.resp(400, {'error': "Post must contain json object with affected_text or text key"})
             return
 
-        self.resp(200, {'message': message, 'classification': classifier(message)})
+        with _classifier_lock:
+            result = classifier(message)
+        self.resp(200, {'message': message, 'classification': result})
 
 if __name__ == "__main__":
     _start_mqtt_thread()

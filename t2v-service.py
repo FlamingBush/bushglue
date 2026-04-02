@@ -4,12 +4,17 @@ text-to-verse MQTT bridge.
 Starts the Rust text-to-verse binary as a subprocess (server mode),
 waits for it to be healthy, then subscribes to bush/pipeline/stt/transcript
 and publishes results to bush/pipeline/t2v/verse.
+
+Environment variables:
+  T2V_BIN      path to text-to-verse binary (default: ~/.cargo/bin/text-to-verse)
+  AFFECTS_DIR  path to affect template directory (required)
 """
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,11 +22,16 @@ import urllib.request
 import paho.mqtt.client as mqtt
 
 # ── text-to-verse subprocess config ────────────────────────────────────────
-T2V_BIN = os.environ.get("T2V_BIN", "/home/ubuntu/.cargo/bin/text-to-verse")
-AFFECTS_DIR = os.environ.get("AFFECTS_DIR", "/mnt/c/Users/EB/t2v/templates/affects")
-T2V_PORT = 8765
-T2V_HEALTH_URL = f"http://localhost:{T2V_PORT}/health"
-T2V_QUERY_URL = f"http://localhost:{T2V_PORT}/query"
+T2V_BIN     = os.environ.get("T2V_BIN", os.path.expanduser("~/.cargo/bin/text-to-verse"))
+AFFECTS_DIR = os.environ.get("AFFECTS_DIR")
+if not AFFECTS_DIR:
+    sys.exit(
+        "[t2v-service] FATAL: AFFECTS_DIR env var is not set. "
+        "Set it to the path of the t2v/templates/affects directory."
+    )
+T2V_PORT        = 8765
+T2V_HEALTH_URL  = f"http://localhost:{T2V_PORT}/health"
+T2V_QUERY_URL   = f"http://localhost:{T2V_PORT}/query"
 
 # ── Ollama embedding model pinning ─────────────────────────────────────────
 OLLAMA_EMBEDDINGS_URL = "http://localhost:11434/api/embeddings"
@@ -73,9 +83,17 @@ def query_t2v(text: str) -> dict:
 
 def main():
     broker = get_mqtt_broker()
-    log(f"MQTT broker: {broker}:{MQTT_PORT}")
+    log(f"MQTT broker:  {broker}:{MQTT_PORT}")
+    log(f"T2V_BIN:      {T2V_BIN}")
+    log(f"AFFECTS_DIR:  {AFFECTS_DIR}")
 
-    # Start t2v Rust binary
+    if not os.path.isfile(T2V_BIN):
+        sys.exit(
+            f"[t2v-service] FATAL: text-to-verse binary not found at {T2V_BIN!r}. "
+            "Build it with `cargo install --path .` in the t2v repo, or set T2V_BIN."
+        )
+
+    # ── Start t2v Rust binary ──────────────────────────────────────────────
     log(f"Starting text-to-verse on port {T2V_PORT}...")
     t2v_proc = subprocess.Popen(
         [
@@ -92,10 +110,19 @@ def main():
     )
     log(f"text-to-verse PID {t2v_proc.pid}")
 
-    # Ensure subprocess is cleaned up on signal
+    # ── Shutdown handler ───────────────────────────────────────────────────
+    _shutdown_called = threading.Event()
+
     def _shutdown(signum, frame):
+        if _shutdown_called.is_set():
+            return
+        _shutdown_called.set()
         log("Shutting down t2v subprocess...")
-        t2v_proc.terminate()
+        try:
+            t2v_proc.terminate()
+            t2v_proc.wait(timeout=5)
+        except Exception:
+            t2v_proc.kill()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
@@ -107,7 +134,22 @@ def main():
         log(f"ERROR: {e}")
         sys.exit(1)
 
-    # Pin embedding model in Ollama
+    # ── Watchdog: exit if t2v process dies so systemd restarts us ─────────
+    def _watchdog():
+        t2v_proc.wait()
+        if not _shutdown_called.is_set():
+            rc = t2v_proc.returncode
+            stderr = ""
+            try:
+                stderr = t2v_proc.stderr.read().decode(errors="replace").strip()
+            except Exception:
+                pass
+            log(f"FATAL: text-to-verse exited unexpectedly (rc={rc}): {stderr}")
+            sys.exit(1)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+    # ── Pin embedding model in Ollama ──────────────────────────────────────
     log("Pinning embedding model in Ollama...")
     try:
         urllib.request.urlopen(
@@ -122,8 +164,16 @@ def main():
     except Exception as e:
         log(f"Warning: could not pin embedding model: {e}")
 
-    # Connect MQTT
+    # ── MQTT ───────────────────────────────────────────────────────────────
     mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+
+    def on_connect(client, userdata, flags, reason_code, properties):
+        # Subscribe inside on_connect so subscriptions survive broker reconnects
+        client.subscribe(TOPIC_TRANSCRIPT)
+        log(f"MQTT connected — subscribed to {TOPIC_TRANSCRIPT}")
+
+    def on_disconnect(client, userdata, flags, reason_code, properties):
+        log(f"MQTT disconnected (rc={reason_code}) — will reconnect automatically")
 
     def on_message(client, userdata, msg):
         try:
@@ -144,10 +194,10 @@ def main():
         except Exception as e:
             log(f"Message handling error: {e}")
 
+    mqttc.on_connect = on_connect
+    mqttc.on_disconnect = on_disconnect
     mqttc.on_message = on_message
     mqttc.connect(broker, MQTT_PORT, 60)
-    mqttc.subscribe(TOPIC_TRANSCRIPT)
-    log(f"Subscribed to {TOPIC_TRANSCRIPT}")
 
     try:
         mqttc.loop_forever()
