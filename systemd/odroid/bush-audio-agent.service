@@ -5,9 +5,9 @@ After=network-online.target user@1000.service
 [Service]
 Type=simple
 User=odroid
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
-ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/audio-agent.py
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=PULSE_SERVER=unix:/run/user/%U/pulse/native
+ExecStart=/usr/bin/python3 %h/repos/bushglue/audio-agent.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

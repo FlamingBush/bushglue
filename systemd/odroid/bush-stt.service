@@ -5,12 +5,12 @@ After=network-online.target user@1000.service
 [Service]
 Type=simple
 User=odroid
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
-Environment=STT_DIR=/home/odroid/repos/speech-to-text
-Environment=STT_MODEL=/home/odroid/repos/speech-to-text/models/en-us
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=PULSE_SERVER=unix:/run/user/%U/pulse/native
+Environment=STT_DIR=%h/repos/speech-to-text
+Environment=STT_MODEL=%h/repos/speech-to-text/models/en-us
 Environment="STT_DEVICE=loopback-inject.monitor"
-ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/stt-service.py
+ExecStart=/usr/bin/python3 %h/repos/bushglue/stt-service.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

@@ -4,7 +4,7 @@ After=network-online.target mosquitto.service sound.target
 
 [Service]
 Type=simple
-ExecStart=/home/odroid/repos/bushglue/utils/bush-standby
+ExecStart=%h/repos/bushglue/utils/bush-standby
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

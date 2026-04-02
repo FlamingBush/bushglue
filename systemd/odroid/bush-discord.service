@@ -6,9 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=odroid
-EnvironmentFile=/home/odroid/.config/bush/discord-token.env
-ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/discord-bot.py
-WorkingDirectory=/home/odroid/repos/bushglue/scripts
+EnvironmentFile=%h/.config/bush/discord-token.env
+ExecStart=/usr/bin/python3 %h/repos/bushglue/discord-bot.py
+WorkingDirectory=%h/repos/bushglue/scripts
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=60

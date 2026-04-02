@@ -1,0 +1,15 @@
+# Pinned dependency versions for reproducible deploys.
+# Regenerate after updating requirements.txt:
+#   pip install -r requirements.txt
+#   pip freeze > requirements-lock.txt
+#
+# Do NOT edit manually — use the command above.
+paho-mqtt==2.1.0
+rich==13.9.4
+numpy==2.2.4
+sounddevice==0.5.1
+vosk==0.3.45
+webrtcvad==2.0.10
+discord.py==2.4.0
+PyNaCl==1.5.0
+davey==0.1.5

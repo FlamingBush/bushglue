@@ -6,9 +6,9 @@ After=network-online.target
 Type=simple
 User=ubuntu
 Environment=PULSE_SERVER=unix:/mnt/wslg/PulseServer
-Environment=STT_DIR=/home/ubuntu/repos/speech-to-text
-Environment=STT_MODEL=/home/ubuntu/repos/speech-to-text/models/en-us
-ExecStart=/usr/bin/python3 /home/ubuntu/repos/bushglue/stt-service.py
+Environment=STT_DIR=%h/repos/speech-to-text
+Environment=STT_MODEL=%h/repos/speech-to-text/models/en-us
+ExecStart=/usr/bin/python3 %h/repos/bushglue/stt-service.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
