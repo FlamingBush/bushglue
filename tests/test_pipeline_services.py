@@ -20,8 +20,7 @@ import os
 import sys
 import threading
 import unittest
-from http.server import HTTPServer
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import importlib.util
 
 _BUSHGLUE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,7 +106,7 @@ class _FakeRequest:
         self._sent.write(data)
 
 
-def _make_handler(body_bytes: bytes, path: str = "/") -> _Server:
+def _make_handler(body_bytes: bytes, path: str = "/") -> _Server:  # type: ignore[valid-type]
     """
     Instantiate a Server handler with a fake request for testing do_POST.
     Bypasses __init__ to avoid needing a real socket/server object.
@@ -139,7 +138,6 @@ def _make_handler(body_bytes: bytes, path: str = "/") -> _Server:
 
     # Capture resp() output
     handler._resp_calls = []
-    original_resp = _Server.resp
     def captured_resp(self, code, body):
         self._resp_calls.append((code, body))
         self._response_code = code
@@ -148,7 +146,7 @@ def _make_handler(body_bytes: bytes, path: str = "/") -> _Server:
     return handler
 
 
-@unittest.skipUnless(_SENTIMENT_AVAILABLE, f"sentiment-service import failed")
+@unittest.skipUnless(_SENTIMENT_AVAILABLE, "sentiment-service import failed")
 class TestSentimentPOSTHandler(unittest.TestCase):
 
     def test_missing_content_length_returns_400(self):
@@ -201,7 +199,7 @@ class TestSentimentPOSTHandler(unittest.TestCase):
         self.assertEqual(handler._response_code, 200)
 
 
-@unittest.skipUnless(_SENTIMENT_AVAILABLE, f"sentiment-service import failed")
+@unittest.skipUnless(_SENTIMENT_AVAILABLE, "sentiment-service import failed")
 class TestClassifierLock(unittest.TestCase):
 
     def test_classifier_lock_exists(self):
@@ -218,7 +216,6 @@ class TestClassifierLock(unittest.TestCase):
         Verify by checking that classifier is called while the lock is held.
         """
         calls_while_locked = []
-        original_lock = _sentiment_mod._classifier_lock
 
         class _SpyLock:
             def __init__(self):

@@ -21,7 +21,6 @@ Environment variables:
   MQTT_BROKER     Override MQTT broker host (default: auto-detect via bushutil)
 """
 import asyncio
-import io
 import json
 import logging
 import os
@@ -32,14 +31,14 @@ import threading
 import time
 
 logging.basicConfig(level=logging.WARNING, format="[%(name)s] %(levelname)s %(message)s")
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable, Optional
+from dataclasses import dataclass  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Callable, List, Optional, Tuple  # noqa: E402
 
-import discord
-from discord import app_commands
-import numpy as np
-import paho.mqtt.client as mqtt
+import discord  # noqa: E402
+from discord import app_commands  # noqa: E402
+import numpy as np  # noqa: E402
+import paho.mqtt.client as mqtt  # noqa: E402
 
 # Phase 2: discord-ext-voice-recv (optional — graceful degradation if absent)
 try:
@@ -70,9 +69,9 @@ TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
 MQTT_PORT   = 1883
 REPO_DIR = Path(__file__).parent
 
-import sys as _sys
+import sys as _sys  # noqa: E402
 _sys.path.insert(0, str(REPO_DIR))
-from bushutil import build_sox_effects as _build_sox_effects
+from bushutil import build_sox_effects as _build_sox_effects  # noqa: E402
 
 # ── pipeline timeouts (seconds) ───────────────────────────────────────────────
 T_TRANSCRIPT = 30
@@ -106,8 +105,8 @@ _discord_clarity: int = 0
 class PipelineResult:
     verse: Optional[str]
     transcript: Optional[str]
-    sentiment: Optional[dict]       # raw classification list from MQTT payload
-    stages: list                    # list of (name, status, elapsed_s, timeout_s)
+    sentiment: Optional[List]       # raw classification list from MQTT payload
+    stages: List[Tuple[str, str, Optional[float], int]]  # (name, status, elapsed_s, timeout_s)
     flare_count: int
     flare_total_ms: int
     bigjet_count: int
@@ -176,7 +175,8 @@ class DiscordTTSSource(discord.AudioSource):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
-            espeak.stdout.close()
+            if espeak.stdout is not None:
+                espeak.stdout.close()
             pcm, _ = sox.communicate()
             espeak.wait()
             return pcm
@@ -387,7 +387,7 @@ class PipelineSession:
         if topic == TOPIC_TRANSCRIPT:
             if not self._transcript_ev.is_set():
                 self._transcript_time = now
-                self._elapsed["stt/transcript"] = now - self._inject_start
+                self._elapsed["stt/transcript"] = now - (self._inject_start or now)
                 try:
                     self._transcript_text = json.loads(payload).get("text", "").strip()
                 except Exception:
@@ -482,7 +482,7 @@ class PipelineSession:
                 except ProcessLookupError:
                     pass
                 await proc.wait()
-                return self._build_result(inject_elapsed=time.monotonic() - self._inject_start)
+                return self._build_result(inject_elapsed=time.monotonic() - (self._inject_start or 0.0))
 
             # wait for verse
             remaining = T_VERSE - self._elapsed.get("stt/transcript", 0)
@@ -498,7 +498,7 @@ class PipelineSession:
                     print(f"[session] on_verse callback error: {e}", flush=True)
 
             # wait for tts/done (covers speaking, sentiment, flare in parallel)
-            transcript_to_now = time.monotonic() - self._transcript_time
+            transcript_to_now = time.monotonic() - (self._transcript_time or time.monotonic())
             done_timeout = max(10.0, T_DONE - transcript_to_now)
             try:
                 await asyncio.wait_for(self._done_ev.wait(), timeout=done_timeout)
@@ -506,19 +506,19 @@ class PipelineSession:
                 pass
 
             await proc.wait()
-            return self._build_result(inject_elapsed=time.monotonic() - self._inject_start)
+            return self._build_result(inject_elapsed=time.monotonic() - (self._inject_start or 0.0))
 
         finally:
             for topic in all_topics:
                 self._bridge.remove_handler(topic, self._handle)
 
     def _build_result(self, inject_elapsed: float = 0.0) -> PipelineResult:
-        stages = []
+        stages: List[Tuple[str, str, Optional[float], int]] = []
         all_passed = True
 
         # split stt/transcript into audio playback + stt recognition
         if self._inject_end is not None and self._transcript_time is not None:
-            stages.append(("audio playback",  "pass", self._inject_end - self._inject_start,    T_TRANSCRIPT))
+            stages.append(("audio playback",  "pass", self._inject_end - (self._inject_start or self._inject_end),    T_TRANSCRIPT))
             stages.append(("stt recognition", "pass", self._transcript_time - self._inject_end, T_TRANSCRIPT))
         elif self._elapsed.get("stt/transcript") is not None:
             # inject_end not recorded (e.g. timeout path) — fall back to total
@@ -570,7 +570,7 @@ def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
                 score = item.get("score", 0.0)
                 scores[label] = score
         if scores:
-            top_emotion = max(scores, key=scores.get)
+            top_emotion = max(scores, key=lambda k: scores.get(k, 0.0))
             color = EMOTION_COLORS.get(top_emotion, color)
 
     desc_parts = [f"**said** {phrase}"]
@@ -970,7 +970,7 @@ class BushBot(discord.Client):
                     print(f"[voice-recv] reader stopped with error: {error}", flush=True)
 
             vc.listen(voice_recv.BasicSink(on_audio, decode=False), after=on_listen_end)
-            print(f"[bot] Voice receive active → loopback", flush=True)
+            print("[bot] Voice receive active → loopback", flush=True)
 
             # echo mute gate: mute loopback while TTS is speaking
             self._bridge.add_handler(TOPIC_SPEAKING, self._on_speaking_mute)
@@ -1066,11 +1066,11 @@ def main():
     loop   = asyncio.new_event_loop()
     bridge = MQTTBridge(broker, loop)
 
-    print(f"[bot] Connecting to MQTT …", flush=True)
+    print("[bot] Connecting to MQTT …", flush=True)
     if not bridge.connect():
         print("Error: could not connect to MQTT broker.", file=sys.stderr)
         sys.exit(1)
-    print(f"[bot] MQTT connected.", flush=True)
+    print("[bot] MQTT connected.", flush=True)
 
     bot = BushBot(guild_id=guild_id, bridge=bridge)
 

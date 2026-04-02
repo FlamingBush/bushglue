@@ -6,13 +6,13 @@ import threading  # imported first — needed before classifier lock below
 
 import torch
 torch.set_num_threads(1)  # limit CPU parallelism to prevent power-supply brownout on RK3568
-from transformers import pipeline
+from transformers import pipeline  # noqa: E402
 
 # For the HTTP server
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
-import random
-import time
+from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
+import json  # noqa: E402
+import random  # noqa: E402
+import time  # noqa: E402
 
 # Text classifier
 # see https://huggingface.co/bhadresh-savani/distilbert-base-uncased-emotion?text=I+feel+a+bit+let+down
@@ -27,9 +27,9 @@ classifier("Weeeeee!", )
 # (which can produce incorrect results or crash under torch.set_num_threads(1)).
 _classifier_lock = threading.Lock()
 
-import paho.mqtt.client as mqtt
+import paho.mqtt.client as mqtt  # noqa: E402
 
-from bushutil import get_mqtt_broker
+from bushutil import get_mqtt_broker  # noqa: E402
 
 # ── MQTT topics ────────────────────────────────────────────────────────────
 TOPIC_VERSE    = "bush/pipeline/t2v/verse"

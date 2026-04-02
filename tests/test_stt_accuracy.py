@@ -16,12 +16,11 @@ or:
 No Vosk model files or real audio hardware required — all I/O is mocked.
 """
 import collections
-import importlib
 import json
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Stub out vosk before importing transcriber
@@ -256,7 +255,7 @@ class TestTranscriberConfidence(unittest.TestCase):
         # Patch the names as imported by transcriber, not on the vosk module stub
         with patch("transcriber.KaldiRecognizer", return_value=mock_recognizer):
             with patch("transcriber.Model"):
-                stt = SpeechToText(model_path="/fake", sample_rate=16000)
+                SpeechToText(model_path="/fake", sample_rate=16000)
         mock_recognizer.SetWords.assert_called_once_with(True)
 
 
@@ -272,7 +271,7 @@ class TestLLMCorrection(unittest.TestCase):
         Import _llm_correct from stt-service without triggering module-level
         STT_DIR validation or MQTT/Vosk setup.
         """
-        import importlib, types
+        import types
         # Build a minimal stub for bushutil so stt-service can import
         bushutil_stub = types.ModuleType("bushutil")
         bushutil_stub.get_mqtt_broker = lambda: "localhost"
@@ -285,17 +284,10 @@ class TestLLMCorrection(unittest.TestCase):
         os.environ["STT_DIR"] = "/tmp/fake-stt-dir"
         # Create a fake model path so pathlib check in main() won't fire at import
         try:
-            import stt_service_module
+            import stt_service_module  # noqa: F401
         except ImportError:
-            # stt-service has no .py extension — load via path
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "stt_service_module",
-                os.path.join(_BUSHGLUE, "stt-service.py"),
-            )
-            mod = importlib.util.module_from_spec(spec)
-            # Don't exec the module (would call sys.exit) — just get the function source
-            # Instead, re-implement the test inline using urllib.request mock
+            # stt-service has no .py extension and would call sys.exit on import.
+            # Re-implement the test inline using urllib.request mock instead.
             return None
         finally:
             os.environ.clear()
@@ -311,14 +303,8 @@ class TestLLMCorrection(unittest.TestCase):
             def __exit__(self, *a): pass
 
         with patch("urllib.request.urlopen", return_value=FakeResponse()):
-            # Import the function directly from file without running main()
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "stt_service",
-                os.path.join(_BUSHGLUE, "stt-service.py"),
-            )
-            # We can't exec the module without triggering sys.exit on STT_DIR check.
-            # Test the correction logic directly via a self-contained replication:
+            # stt-service.py calls sys.exit on import if STT_DIR is missing.
+            # Test the correction logic via self-contained replication instead.
             pass  # see test_llm_fallback_on_error for the pattern
 
     def test_llm_fallback_on_error(self):

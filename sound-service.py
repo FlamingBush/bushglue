@@ -14,7 +14,6 @@ sound plays for exactly that duration then stops.
 
 Both effects run in separate threads so they can overlap cleanly.
 """
-import json
 import queue
 import signal
 import sys
@@ -30,7 +29,7 @@ TOPIC_BIGJET = "bush/flame/bigjet/pulse"
 SR = 44100  # sample rate
 
 
-from bushutil import get_mqtt_broker
+from bushutil import get_mqtt_broker  # noqa: E402
 
 
 def log(msg: str):

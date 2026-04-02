@@ -18,6 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from typing import Optional
 
 import paho.mqtt.client as mqtt
 
@@ -44,14 +45,14 @@ TOPIC_VERSE       = "bush/pipeline/t2v/verse"
 MQTT_PORT = 1883
 
 
-from bushutil import get_mqtt_broker
+from bushutil import get_mqtt_broker  # noqa: E402
 
 
 def log(msg: str):
     print(f"[t2v-service] {msg}", flush=True)
 
 
-def wait_for_http(url: str, name: str, timeout: int = 120, proc: subprocess.Popen = None):
+def wait_for_http(url: str, name: str, timeout: int = 120, proc: Optional[subprocess.Popen] = None):
     log(f"Waiting for {name} at {url}...")
     for i in range(timeout):
         if proc and proc.poll() is not None:

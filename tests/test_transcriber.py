@@ -11,7 +11,7 @@ Vosk is mocked so no model files are needed.
 import json
 import sys
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Stub out vosk before importing transcriber so tests run without Vosk installed
@@ -22,7 +22,7 @@ vosk_stub.KaldiRecognizer = MagicMock
 sys.modules.setdefault("vosk", vosk_stub)
 
 # transcriber lives in speech-to-text/; add it to the path
-import os
+import os  # noqa: E402
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_REPO_ROOT, "speech-to-text"))
 

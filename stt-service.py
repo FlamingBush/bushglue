@@ -119,9 +119,9 @@ def _alsa_device_present(device) -> bool:
 
 def _wait_for_audio(device) -> None:
     if _is_alsa_device(device):
-        check = lambda: _alsa_device_present(device)
+        def check() -> bool: return _alsa_device_present(device)
     else:
-        check = lambda: _pa_source_present(device)
+        def check() -> bool: return _pa_source_present(device)
     while not check():
         log(f"Audio source {device!r} not yet available — retrying in {_AUDIO_RETRY_INTERVAL}s...")
         time.sleep(_AUDIO_RETRY_INTERVAL)
@@ -197,7 +197,8 @@ def _open_capture(device) -> tuple:
         stdout=_subprocess.PIPE,
         stderr=_subprocess.DEVNULL,
     )
-    capture_proc.stdout.close()  # allow capture_proc to receive SIGPIPE if filter exits
+    if capture_proc.stdout is not None:
+        capture_proc.stdout.close()  # allow capture_proc to receive SIGPIPE if filter exits
     return capture_proc, filter_proc
 
 

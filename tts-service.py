@@ -184,7 +184,7 @@ def _enqueue(text: str):
     except queue.Full:
         try:
             dropped = speech_queue.get_nowait()
-            log(f"Queue full — dropped: {dropped[:40]!r}")
+            log(f"Queue full — dropped: {dropped[:40] if dropped else '<sentinel>'!r}")
             speech_queue.task_done()
         except queue.Empty:
             pass

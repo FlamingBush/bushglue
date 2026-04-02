@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Render mqtt-architecture.svg directly — no external tools needed."""
 
-import textwrap
 
 W, H = 1100, 860
 

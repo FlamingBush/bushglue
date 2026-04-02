@@ -12,6 +12,7 @@ import time
 import urllib.request
 import urllib.error
 import json
+from typing import Optional
 import paho.mqtt.client as mqtt
 
 STT_DIR = os.path.expanduser("~/speech-to-text")
@@ -61,7 +62,7 @@ def log(msg: str):
     print(f"[stt_t2v] {msg}", flush=True)
 
 
-def wait_for_http(url: str, name: str, timeout: int = 120, proc: subprocess.Popen = None):
+def wait_for_http(url: str, name: str, timeout: int = 120, proc: Optional[subprocess.Popen] = None):
     log(f"Waiting for {name} to be ready at {url}...")
     for i in range(timeout):
         if proc and proc.poll() is not None:
@@ -75,7 +76,7 @@ def wait_for_http(url: str, name: str, timeout: int = 120, proc: subprocess.Pope
     raise RuntimeError(f"{name} did not start within {timeout} seconds")
 
 
-def start_chroma() -> subprocess.Popen:
+def start_chroma() -> Optional[subprocess.Popen]:
     # If already running, don't start another
     try:
         urllib.request.urlopen(CHROMA_URL, timeout=1)
