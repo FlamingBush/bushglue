@@ -88,7 +88,7 @@ sudo apt-get install -y espeak-ng python3-pip portaudio19-dev
 ### System Python (used by bush-stt, bush-t2v, bush-tts, monitor)
 
 ```bash
-pip3 install paho-mqtt rich numpy sounddevice vosk --break-system-packages
+pip3 install paho-mqtt rich numpy sounddevice vosk webrtcvad --break-system-packages
 ```
 
 ### bbsentimentqq venv
@@ -110,12 +110,58 @@ python3 -m venv /home/ubuntu/bbsentimentqq-venv
 
 ## Vosk Speech Model
 
+Three model tiers — pick based on available RAM and acceptable latency:
+
+| Model | Size | WER | Notes |
+|---|---|---|---|
+| `vosk-model-small-en-us-0.15` | 40 MB | ~15% | Minimum viable; use only if RAM-constrained |
+| `vosk-model-en-us-0.22-lgraph` | 128 MB | ~9% | **Recommended** — best accuracy/RAM tradeoff |
+| `vosk-model-en-us-0.22` | 1.8 GB | ~6% | Maximum accuracy; requires ~3 GB RAM peak |
+
+The ODROID M2 (8 GB RAM) can comfortably run the lgraph model. Install it:
+
 ```bash
-cd /mnt/c/Users/EB/speech-to-text
+cd $STT_DIR   # e.g. /home/odroid/repos/speech-to-text
 mkdir -p models
+wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip
+unzip vosk-model-en-us-0.22-lgraph.zip
+mv vosk-model-en-us-0.22-lgraph models/en-us
+```
+
+To use the full model instead (best accuracy, higher RAM):
+
+```bash
 wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip
 unzip vosk-model-en-us-0.22.zip
 mv vosk-model-en-us-0.22 models/en-us
+```
+
+## PulseAudio Noise Suppression
+
+`module-echo-cancel` runs RNNoise-based suppression in the PA server before `stt-service`
+ever sees the audio — effective against generator hum, fire roar, and crowd noise.
+
+Add to `/etc/pulse/default.pa` (or load at runtime with `pactl load-module`):
+
+```
+load-module module-echo-cancel \
+    use_master_source_name=1 \
+    aec_method=webrtc \
+    source_name=noise_suppressed \
+    aec_args="noise_suppression=1 analog_gain_control=0 digital_gain_control=1"
+```
+
+Then point STT at the suppressed source:
+
+```bash
+# In systemd/odroid/bush-stt.service
+Environment="STT_DEVICE=noise_suppressed"
+```
+
+Verify the source exists after reloading PA:
+
+```bash
+pactl list short sources | grep noise_suppressed
 ```
 
 ## text-to-verse Binary
@@ -278,6 +324,41 @@ python3 /mnt/c/Users/EB/bushglue/bush-firecontrol --broker 192.168.86.50 --port 
 Keyboard TUI for sending timed MQTT pulses directly to the flame relays (GP2 = flare,
 GP3 = bigjet). Left half of QWERTY = bigjet, right half = flare; rows = short/medium/long
 durations. ESC to quit.
+
+## STT Accuracy Tuning
+
+`stt-service` runs a four-stage accuracy pipeline controlled by env vars:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `STT_VAD_AGGRESSIVENESS` | `2` | webrtcvad aggressiveness 0–3 (3 = most aggressive noise filtering) |
+| `STT_VAD_SILENCE_MS` | `810` | ms of consecutive silence before auto-finalize |
+| `STT_CONFIDENCE` | `0.6` | Drop Vosk results below this mean word confidence (0.0–1.0) |
+| `STT_LLM_CORRECT` | `0` | Set to `1` to enable Ollama post-correction |
+| `STT_LLM_MODEL` | `qwen3:1.7b` | Ollama model used for post-correction |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
+
+Set in the systemd service file under `[Service]`:
+
+```ini
+Environment=STT_VAD_AGGRESSIVENESS=3
+Environment=STT_CONFIDENCE=0.65
+Environment=STT_LLM_CORRECT=1
+```
+
+**LLM post-correction** adds ~200ms latency per utterance and requires `qwen3:1.7b`
+to be loaded in Ollama. Pull it first:
+
+```bash
+ollama pull qwen3:1.7b
+```
+
+**Highpass filter** (200 Hz, gain +3 dB) is always active — implemented as a sox pipe
+between the capture process and Vosk. Requires `sox` to be installed:
+
+```bash
+sudo apt-get install -y sox
+```
 
 ## Troubleshooting
 

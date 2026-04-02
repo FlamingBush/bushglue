@@ -9,7 +9,25 @@ unmutes on bush/pipeline/tts/done, resetting the Vosk recognizer so
 any partial state from hearing TTS speech is discarded.
 
 Accepts runtime device changes via bush/audio/stt/set-device {"device": <int|str>}.
+
+Accuracy pipeline (applied in order to every final transcript):
+  1. SoX highpass filter (200 Hz) on the capture stream — removes generator/fire LF noise
+  2. VAD gating (webrtcvad) — auto-finalizes after STT_VAD_SILENCE_MS of silence
+  3. Confidence threshold — drops low-confidence Vosk results (STT_CONFIDENCE)
+  4. LLM post-correction via Ollama — optional domain-aware cleanup (STT_LLM_CORRECT=1)
+
+Environment variables:
+  STT_DIR                 path to speech-to-text repo (required)
+  STT_MODEL               path to Vosk model dir (default: $STT_DIR/models/en-us)
+  STT_DEVICE              audio device name or index (default: persisted config)
+  STT_VAD_AGGRESSIVENESS  webrtcvad aggressiveness 0-3 (default: 2)
+  STT_VAD_SILENCE_MS      ms of silence before auto-finalize (default: 810)
+  STT_CONFIDENCE          min mean word confidence 0.0-1.0 (default: 0.6)
+  STT_LLM_CORRECT         set to 1 to enable Ollama post-correction (default: off)
+  STT_LLM_MODEL           Ollama model for correction (default: qwen3:1.7b)
+  OLLAMA_URL              Ollama base URL (default: http://localhost:11434)
 """
+import collections
 import json
 import os
 import pathlib
@@ -20,6 +38,7 @@ import threading
 import time
 
 import paho.mqtt.client as mqtt
+import webrtcvad
 
 from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
 
@@ -38,6 +57,20 @@ if _dev:
 else:
     STT_DEVICE = load_audio_device("stt")  # restore last saved device (or None)
 SAMPLE_RATE = 16000
+
+# ── accuracy pipeline config ───────────────────────────────────────────────
+VAD_AGGRESSIVENESS  = int(os.environ.get("STT_VAD_AGGRESSIVENESS", "2"))    # 0–3
+VAD_SILENCE_MS      = int(os.environ.get("STT_VAD_SILENCE_MS", "810"))      # ms of silence → finalize
+VAD_FRAME_MS        = 30                                                      # webrtcvad frame size
+VAD_FRAME_BYTES     = int(SAMPLE_RATE * VAD_FRAME_MS / 1000) * 2            # 960 bytes at 16 kHz
+VAD_SILENCE_FRAMES  = VAD_SILENCE_MS // VAD_FRAME_MS                         # frames before finalize
+VAD_SPEECH_FRAMES   = 3                                                       # frames before onset
+
+CONFIDENCE_THRESHOLD = float(os.environ.get("STT_CONFIDENCE", "0.6"))
+
+LLM_CORRECT  = os.environ.get("STT_LLM_CORRECT", "0") == "1"
+LLM_MODEL    = os.environ.get("STT_LLM_MODEL", "qwen3:1.7b")
+OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT      = "bush/pipeline/stt/transcript"
@@ -59,14 +92,14 @@ def log(msg: str):
 _AUDIO_RETRY_INTERVAL = 10  # seconds between device-ready checks
 
 
+# ── audio device helpers ───────────────────────────────────────────────────
+
 def _is_alsa_device(device) -> bool:
-    """Return True if device is an ALSA hw: specifier rather than a PA source name."""
     s = str(device)
     return s.startswith("hw:") or s.startswith("plughw:")
 
 
 def _pa_source_present(device) -> bool:
-    """Check if a PulseAudio source is available via pactl."""
     try:
         result = _subprocess.run(
             ["pactl", "list", "short", "sources"],
@@ -78,7 +111,6 @@ def _pa_source_present(device) -> bool:
 
 
 def _alsa_device_present(device) -> bool:
-    """Check if an ALSA capture device is present via /proc/asound."""
     s = str(device)
     card = s.split(":")[1].split(",")[0] if ":" in s else s
     path = f"/proc/asound/card{card}" if card.isdigit() else f"/proc/asound/{card}"
@@ -86,7 +118,6 @@ def _alsa_device_present(device) -> bool:
 
 
 def _wait_for_audio(device) -> None:
-    """Block until the audio source appears, logging each retry."""
     if _is_alsa_device(device):
         check = lambda: _alsa_device_present(device)
     else:
@@ -96,14 +127,146 @@ def _wait_for_audio(device) -> None:
         time.sleep(_AUDIO_RETRY_INTERVAL)
 
 
+# ── LLM post-correction ────────────────────────────────────────────────────
+
+def _llm_correct(text: str) -> str:
+    """Post-correct a Vosk transcript via Ollama. Falls back to original on any error."""
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "model": LLM_MODEL,
+            "prompt": (
+                "Fix this speech-to-text output from a noisy outdoor art installation. "
+                "The speaker is asking about fire, scripture, wilderness, or the divine. "
+                "Return only the corrected text, nothing else.\n\n"
+                f"Raw: {text}"
+            ),
+            "stream": False,
+        }).encode()
+        req = urllib.request.Request(
+            f"{OLLAMA_URL}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            corrected = json.loads(resp.read()).get("response", "").strip()
+        if corrected:
+            log(f"LLM corrected: {text!r} → {corrected!r}")
+            return corrected
+        return text
+    except Exception as e:
+        log(f"LLM correction skipped ({e}) — using raw transcript")
+        return text
+
+
+# ── capture pipeline ───────────────────────────────────────────────────────
+
+_SOX_HIGHPASS = [
+    "sox", "-t", "raw", "-r", str(SAMPLE_RATE), "-e", "signed", "-b", "16", "-c", "1", "-",
+    "-t", "raw", "-",
+    "highpass", "200", "gain", "3",
+]
+
+
+def _open_capture(device) -> tuple:
+    """
+    Open the capture pipeline: capture_proc | sox_filter_proc.
+    Returns (capture_proc, filter_proc).
+    filter_proc.stdout is what should be read for audio.
+    """
+    if _is_alsa_device(device):
+        log(f"Opening ALSA device {device!r} at {SAMPLE_RATE} Hz (+ highpass filter)...")
+        capture_proc = _subprocess.Popen(
+            ["arecord", "-D", str(device),
+             "-f", "S16_LE", "-c", "1", f"-r{SAMPLE_RATE}", "-t", "raw"],
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.DEVNULL,
+        )
+    else:
+        log(f"Opening PA source {device!r} at {SAMPLE_RATE} Hz (+ highpass filter)...")
+        capture_proc = _subprocess.Popen(
+            ["parec", "--device", str(device),
+             "--format=s16le", f"--rate={SAMPLE_RATE}", "--channels=1"],
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.DEVNULL,
+        )
+    filter_proc = _subprocess.Popen(
+        _SOX_HIGHPASS,
+        stdin=capture_proc.stdout,
+        stdout=_subprocess.PIPE,
+        stderr=_subprocess.DEVNULL,
+    )
+    capture_proc.stdout.close()  # allow capture_proc to receive SIGPIPE if filter exits
+    return capture_proc, filter_proc
+
+
+def _close_capture(capture_proc, filter_proc) -> None:
+    for proc in (filter_proc, capture_proc):
+        if proc is not None:
+            try:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+
+
+# ── VAD state ──────────────────────────────────────────────────────────────
+
+def _make_vad_state() -> dict:
+    return {
+        "buf":      b"",
+        "history":  collections.deque(maxlen=max(VAD_SILENCE_FRAMES, VAD_SPEECH_FRAMES)),
+        "speaking": False,
+    }
+
+
+def _vad_process(vad: webrtcvad.Vad, chunk: bytes, state: dict) -> bool:
+    """
+    Feed *chunk* through VAD. Returns True if the service should auto-finalize
+    (speech→silence transition detected).
+    Mutates *state* in place.
+    """
+    state["buf"] += chunk
+    finalize = False
+
+    while len(state["buf"]) >= VAD_FRAME_BYTES:
+        frame = state["buf"][:VAD_FRAME_BYTES]
+        state["buf"] = state["buf"][VAD_FRAME_BYTES:]
+        try:
+            is_speech = vad.is_speech(frame, SAMPLE_RATE)
+        except Exception:
+            is_speech = True  # fail open — assume speech on VAD error
+
+        state["history"].append(is_speech)
+
+        if not state["speaking"]:
+            recent = list(state["history"])[-VAD_SPEECH_FRAMES:]
+            if len(recent) >= VAD_SPEECH_FRAMES and all(recent):
+                state["speaking"] = True
+                log("VAD: speech onset")
+        else:
+            recent = list(state["history"])
+            if (len(recent) >= VAD_SILENCE_FRAMES
+                    and not any(recent[-VAD_SILENCE_FRAMES:])):
+                state["speaking"] = False
+                log(f"VAD: {VAD_SILENCE_MS}ms silence — auto-finalizing")
+                finalize = True
+
+    return finalize
+
+
 def main():
     broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
     # ── startup validation ─────────────────────────────────────────────────
-    log(f"STT_DIR:    {STT_DIR}")
-    log(f"MODEL_PATH: {MODEL_PATH}")
-    log(f"STT_DEVICE: {STT_DEVICE!r}")
+    log(f"STT_DIR:             {STT_DIR}")
+    log(f"MODEL_PATH:          {MODEL_PATH}")
+    log(f"STT_DEVICE:          {STT_DEVICE!r}")
+    log(f"VAD aggressiveness:  {VAD_AGGRESSIVENESS}  silence: {VAD_SILENCE_MS}ms")
+    log(f"Confidence threshold:{CONFIDENCE_THRESHOLD}")
+    log(f"LLM post-correction: {'on (' + LLM_MODEL + ')' if LLM_CORRECT else 'off'}")
 
     if not pathlib.Path(MODEL_PATH).exists():
         sys.exit(
@@ -130,9 +293,7 @@ def main():
     next_device = [STT_DEVICE]
     _current_device = [STT_DEVICE]  # list wrapper for cross-thread read safety
 
-    # ── ALSA TTS pause/resume (take turns on hw: devices) ──────────────────
-    # When TTS speaks on an ALSA device, STT releases the capture interface
-    # so the OHCI controller doesn't get concurrent playback+capture opens.
+    # ── ALSA TTS pause/resume ──────────────────────────────────────────────
     tts_pause  = threading.Event()
     tts_resume = threading.Event()
 
@@ -169,7 +330,7 @@ def main():
         elif msg.topic == TOPIC_TTS_DONE:
             on_tts_done()
         elif msg.topic == TOPIC_FORCE_FINALIZE:
-            log("Force-finalize requested.")
+            log("Force-finalize requested (manual).")
             force_finalize.set()
         elif msg.topic == TOPIC_PIPELINE_PING:
             client.publish(TOPIC_PIPELINE_PONG, "")
@@ -188,14 +349,13 @@ def main():
                 log(f"set-device error: {e}")
 
     def on_connect(client, userdata, flags, reason_code, properties):
-        # QoS 1 on mute/unmute signals — loss causes feedback loop or permanent mute
-        # TODO: for full reliability across reconnects, use stable client ID + clean_session=False
+        # QoS 1 on mute/unmute — loss causes feedback loop or permanent mute
+        # TODO: for full reliability across reconnects use stable client ID + clean_session=False
         client.subscribe(TOPIC_TTS_SPEAKING, qos=1)
         client.subscribe(TOPIC_TTS_DONE, qos=1)
         client.subscribe(TOPIC_SET_DEVICE)
         client.subscribe(TOPIC_FORCE_FINALIZE)
         client.subscribe(TOPIC_PIPELINE_PING)
-        # Publish current device on reconnect
         client.publish(TOPIC_DEVICE_STATUS,
                        json.dumps({"device": next_device[0]}), retain=True)
 
@@ -213,13 +373,16 @@ def main():
     log("Vosk model loading...")
     stt = SpeechToText(model_path=MODEL_PATH, sample_rate=SAMPLE_RATE)
     log("Vosk model loaded. Entering audio loop.")
-    audio_queue: queue.Queue[bytes] = queue.Queue()
+
+    # ── VAD setup ──────────────────────────────────────────────────────────
+    vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
 
     # ── restartable audio loop ─────────────────────────────────────────────
-    CHUNK = 8000 * 2  # 8000 samples × 2 bytes (int16)
+    CHUNK = 8000 * 2  # 8000 samples × 2 bytes (int16), ~0.5s
+    audio_queue: queue.Queue[bytes] = queue.Queue()
 
-    def _feed_parec(proc, stop_evt):
-        """Background thread: reads parec stdout into audio_queue."""
+    def _feed_proc(proc, stop_evt):
+        """Background thread: reads filter_proc stdout into audio_queue."""
         while not stop_evt.is_set():
             try:
                 data = proc.stdout.read(CHUNK)
@@ -229,7 +392,16 @@ def main():
             except Exception:
                 break
 
-    last_partial = ""  # preserved across device sessions; cleared on device change
+    def _publish_transcript(text: str) -> None:
+        """Apply LLM correction if enabled, then publish to MQTT."""
+        if LLM_CORRECT:
+            text = _llm_correct(text)
+        rc = mqttc.publish(TOPIC_TRANSCRIPT,
+                           json.dumps({"text": text, "ts": time.time()}))
+        if rc.rc != mqtt.MQTT_ERR_SUCCESS:
+            log(f"WARNING: transcript publish failed (rc={rc.rc}) — may be lost: {text!r}")
+
+    last_partial = ""
     try:
         while True:
             device_change.clear()
@@ -237,28 +409,14 @@ def main():
             tts_resume.clear()
             _wait_for_audio(_current_device[0])
 
-            parec_proc = None
+            capture_proc = filter_proc = reader_thread = None
             reader_stop = threading.Event()
-            reader_thread = None
+            vad_state = _make_vad_state()
+
             try:
-                if _is_alsa_device(_current_device[0]):
-                    log(f"Opening ALSA device {_current_device[0]!r} at {SAMPLE_RATE} Hz...")
-                    parec_proc = _subprocess.Popen(
-                        ["arecord", "-D", str(_current_device[0]),
-                         "-f", "S16_LE", "-c", "1", f"-r{SAMPLE_RATE}", "-t", "raw"],
-                        stdout=_subprocess.PIPE,
-                        stderr=_subprocess.DEVNULL,
-                    )
-                else:
-                    log(f"Opening PA source {_current_device[0]!r} at {SAMPLE_RATE} Hz...")
-                    parec_proc = _subprocess.Popen(
-                        ["parec", "--device", str(_current_device[0]),
-                         "--format=s16le", f"--rate={SAMPLE_RATE}", "--channels=1"],
-                        stdout=_subprocess.PIPE,
-                        stderr=_subprocess.DEVNULL,
-                    )
+                capture_proc, filter_proc = _open_capture(_current_device[0])
                 reader_thread = threading.Thread(
-                    target=_feed_parec, args=(parec_proc, reader_stop), daemon=True
+                    target=_feed_proc, args=(filter_proc, reader_stop), daemon=True
                 )
                 reader_thread.start()
 
@@ -267,39 +425,45 @@ def main():
                               retain=True)
                 log("Listening. Speak a query...")
                 last_partial = ""
+
                 while not device_change.is_set() and not tts_pause.is_set():
-                    if parec_proc.poll() is not None:
-                        log("parec exited unexpectedly")
+                    if filter_proc.poll() is not None:
+                        log("audio filter process exited unexpectedly")
                         break
                     try:
                         data = audio_queue.get(timeout=0.5)
                     except queue.Empty:
                         continue
 
+                    # ── VAD: auto-finalize on silence ──────────────────────
+                    if not muted.is_set():
+                        if _vad_process(vad, data, vad_state):
+                            force_finalize.set()
+
+                    # ── force-finalize (manual or VAD-triggered) ───────────
                     if force_finalize.is_set():
                         force_finalize.clear()
                         text = stt.final_result() or last_partial
                         if not text:
                             log("Force-finalize: no speech detected, skipping publish.")
                             stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
-                            reset_recognizer.clear()  # prevent duplicate reset this iteration
+                            reset_recognizer.clear()
                             log("Recognizer reset (force-finalize, no speech).")
                             continue
                         log(f"Force-final: {text!r}")
-                        rc = mqttc.publish(TOPIC_TRANSCRIPT,
-                                           json.dumps({"text": text, "ts": time.time()}))
-                        if rc.rc != mqtt.MQTT_ERR_SUCCESS:
-                            log(f"WARNING: transcript publish failed (rc={rc.rc}) — message may be lost: {text!r}")
+                        _publish_transcript(text)
                         last_partial = ""
                         mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
                         stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
-                        reset_recognizer.clear()  # prevent duplicate reset this iteration
+                        reset_recognizer.clear()
                         log("Recognizer reset (force-finalize).")
                         continue
 
+                    # ── recognizer reset (post-TTS) ────────────────────────
                     if reset_recognizer.is_set():
                         reset_recognizer.clear()
                         last_partial = ""
+                        vad_state = _make_vad_state()
                         mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
                         stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
                         log("Recognizer reset.")
@@ -311,12 +475,18 @@ def main():
 
                     if result["type"] == "final" and result["text"]:
                         text = result["text"]
+                        conf = result.get("confidence")
+
+                        # ── confidence filter ──────────────────────────────
+                        if conf is not None and conf < CONFIDENCE_THRESHOLD:
+                            log(f"Low confidence ({conf:.2f} < {CONFIDENCE_THRESHOLD}) — skipping: {text!r}")
+                            last_partial = ""
+                            continue
+
                         last_partial = ""
-                        log(f"Final: {text!r}")
-                        rc = mqttc.publish(TOPIC_TRANSCRIPT,
-                                           json.dumps({"text": text, "ts": time.time()}))
-                        if rc.rc != mqtt.MQTT_ERR_SUCCESS:
-                            log(f"WARNING: transcript publish failed (rc={rc.rc}) — message may be lost: {text!r}")
+                        log(f"Final{f' (conf={conf:.2f})' if conf is not None else ''}: {text!r}")
+                        _publish_transcript(text)
+
                     elif result["type"] == "partial" and result["text"]:
                         last_partial = result["text"]
                         mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": result["text"]}))
@@ -328,12 +498,7 @@ def main():
                     time.sleep(2)
             finally:
                 reader_stop.set()
-                if parec_proc is not None:
-                    try:
-                        parec_proc.kill()
-                        parec_proc.wait()
-                    except Exception:
-                        pass
+                _close_capture(capture_proc, filter_proc)
                 if reader_thread is not None:
                     reader_thread.join(timeout=2)
 
@@ -343,7 +508,7 @@ def main():
                 log("Resuming capture")
             if device_change.is_set():
                 _current_device[0] = next_device[0]
-                last_partial = ""  # discard stale partial from previous device session
+                last_partial = ""
                 log(f"Switching to device {_current_device[0]!r}")
 
     except KeyboardInterrupt:
