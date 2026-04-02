@@ -1,1 +1,17 @@
 __pycache__
+*.pyc
+*.pyo
+
+# Secrets / credentials
+secrets.py
+relay-control/CIRCUITPY/secrets.py
+.env
+*.env
+
+# Virtual environments
+.venv/
+venv/
+
+# Type checker / linter caches
+.mypy_cache/
+.ruff_cache/

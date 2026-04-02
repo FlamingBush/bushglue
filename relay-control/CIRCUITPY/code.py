@@ -88,6 +88,7 @@ MQTT_USER     = secrets.get("MQTT_USER", None)
 MQTT_PASSWORD = secrets.get("MQTT_PASSWORD", None)
 KEEP_ALIVE    = 15          # seconds
 PING_INTERVAL = 10_000      # ms between PINGREQs
+MAX_PULSE_MS  = 5_000       # hard cap on any single relay pulse (safety)
 
 sock          = None
 pool          = None
@@ -299,6 +300,7 @@ def process_packets():
                 continue
 
             if duration_ms > 0:
+                duration_ms = min(duration_ms, MAX_PULSE_MS)
                 deadline = (supervisor.ticks_ms() + duration_ms) & 0x3FFFFFFF
                 if topic == TOPIC_FLARE:
                     pin_flare.value = True
