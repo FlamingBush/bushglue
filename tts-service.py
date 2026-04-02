@@ -111,7 +111,7 @@ def _speak_worker():
         log(f"Speaking: {text[:80]!r}")
         if _mqttc:
             try:
-                _mqttc.publish(TOPIC_SPEAKING, json.dumps({"text": text, "ts": time.time()}))
+                _mqttc.publish(TOPIC_SPEAKING, json.dumps({"text": text, "ts": time.time()}), qos=1)
             except Exception:
                 pass
         with _device_lock:
@@ -169,7 +169,7 @@ def _speak_worker():
                 time.sleep(DONE_TAIL_S)
             if _mqttc and not sox_failed:
                 try:
-                    _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}))
+                    _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}), qos=1)
                 except Exception:
                     pass
         except Exception as e:

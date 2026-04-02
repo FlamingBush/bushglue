@@ -20,7 +20,10 @@ import paho.mqtt.client as mqtt
 from bushutil import get_mqtt_broker
 
 # ── paths ──────────────────────────────────────────────────────────────────
-STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
+STT_DIR = os.environ.get("STT_DIR")
+if not STT_DIR:
+    print("[stt-file] FATAL: STT_DIR env var is not set.", file=sys.stderr, flush=True)
+    sys.exit(1)
 DEFAULT_MODEL = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
 
 # ── MQTT ───────────────────────────────────────────────────────────────────

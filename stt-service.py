@@ -12,16 +12,25 @@ Accepts runtime device changes via bush/audio/stt/set-device {"device": <int|str
 """
 import json
 import os
+import pathlib
 import queue
-import random
+import subprocess as _subprocess
 import sys
 import threading
 import time
 
 import paho.mqtt.client as mqtt
 
+from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
+
 # ── paths / device ─────────────────────────────────────────────────────────
-STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
+STT_DIR = os.environ.get("STT_DIR")
+if not STT_DIR:
+    sys.exit(
+        "[stt-service] FATAL: STT_DIR env var is not set. "
+        "Set it to the path of the speech-to-text repo "
+        "(e.g. STT_DIR=/home/ubuntu/repos/speech-to-text)."
+    )
 MODEL_PATH = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
 _dev = os.environ.get("STT_DEVICE")
 if _dev:
@@ -29,32 +38,6 @@ if _dev:
 else:
     STT_DEVICE = load_audio_device("stt")  # restore last saved device (or None)
 SAMPLE_RATE = 16000
-
-FALLBACK_PHRASES = [
-    "what is the fire",
-    "speak of the light",
-    "what burns in the darkness",
-    "tell me of the wilderness",
-    "who tends the flame",
-    "what is the meaning of the desert",
-    "speak of the beginning",
-    "what lives in the smoke",
-    "where does the fire come from",
-    "tell me of the burning bush",
-    "what is the voice in the wilderness",
-    "speak of water and flame",
-    "what is revealed by fire",
-    "tell me of the night",
-    "what rises from the ash",
-]
-_fallback_iter: list[str] = []
-
-
-def _next_fallback() -> str:
-    global _fallback_iter
-    if not _fallback_iter:
-        _fallback_iter = random.sample(FALLBACK_PHRASES, len(FALLBACK_PHRASES))
-    return _fallback_iter.pop()
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT      = "bush/pipeline/stt/transcript"
@@ -69,18 +52,11 @@ TOPIC_PIPELINE_PONG   = "bush/pipeline/pong"
 MQTT_PORT = 1883
 
 
-from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
-
-
 def log(msg: str):
     print(f"[stt-service] {msg}", flush=True)
 
 
 _AUDIO_RETRY_INTERVAL = 10  # seconds between device-ready checks
-
-
-import pathlib
-import subprocess as _subprocess
 
 
 def _is_alsa_device(device) -> bool:
@@ -124,6 +100,24 @@ def main():
     broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
 
+    # ── startup validation ─────────────────────────────────────────────────
+    log(f"STT_DIR:    {STT_DIR}")
+    log(f"MODEL_PATH: {MODEL_PATH}")
+    log(f"STT_DEVICE: {STT_DEVICE!r}")
+
+    if not pathlib.Path(MODEL_PATH).exists():
+        sys.exit(
+            f"[stt-service] FATAL: Vosk model not found at {MODEL_PATH!r}. "
+            "Download it and place it there, or set the STT_MODEL env var."
+        )
+
+    if STT_DEVICE is None:
+        log(
+            "WARNING: No STT_DEVICE configured and no saved device found. "
+            "Service will loop in _wait_for_audio() indefinitely. "
+            "Set STT_DEVICE env var or publish to bush/audio/stt/set-device."
+        )
+
     # ── mute gate ──────────────────────────────────────────────────────────
     MUTE_TIMEOUT_S = 30
     muted = threading.Event()
@@ -133,7 +127,8 @@ def main():
 
     # ── device change ──────────────────────────────────────────────────────
     device_change = threading.Event()
-    next_device = [STT_DEVICE]   # list so inner functions can mutate it
+    next_device = [STT_DEVICE]
+    _current_device = [STT_DEVICE]  # list wrapper for cross-thread read safety
 
     # ── ALSA TTS pause/resume (take turns on hw: devices) ──────────────────
     # When TTS speaks on an ALSA device, STT releases the capture interface
@@ -161,7 +156,7 @@ def main():
         t.daemon = True
         t.start()
         _mute_timer[0] = t
-        if _is_alsa_device(current_device):
+        if _is_alsa_device(_current_device[0]):
             tts_resume.clear()
             tts_pause.set()
 
@@ -193,8 +188,10 @@ def main():
                 log(f"set-device error: {e}")
 
     def on_connect(client, userdata, flags, reason_code, properties):
-        client.subscribe(TOPIC_TTS_SPEAKING)
-        client.subscribe(TOPIC_TTS_DONE)
+        # QoS 1 on mute/unmute signals — loss causes feedback loop or permanent mute
+        # TODO: for full reliability across reconnects, use stable client ID + clean_session=False
+        client.subscribe(TOPIC_TTS_SPEAKING, qos=1)
+        client.subscribe(TOPIC_TTS_DONE, qos=1)
         client.subscribe(TOPIC_SET_DEVICE)
         client.subscribe(TOPIC_FORCE_FINALIZE)
         client.subscribe(TOPIC_PIPELINE_PING)
@@ -213,12 +210,13 @@ def main():
     from transcriber import SpeechToText
     from vosk import KaldiRecognizer
 
+    log("Vosk model loading...")
     stt = SpeechToText(model_path=MODEL_PATH, sample_rate=SAMPLE_RATE)
+    log("Vosk model loaded. Entering audio loop.")
     audio_queue: queue.Queue[bytes] = queue.Queue()
 
     # ── restartable audio loop ─────────────────────────────────────────────
     CHUNK = 8000 * 2  # 8000 samples × 2 bytes (int16)
-    current_device = STT_DEVICE
 
     def _feed_parec(proc, stop_evt):
         """Background thread: reads parec stdout into audio_queue."""
@@ -231,29 +229,30 @@ def main():
             except Exception:
                 break
 
+    last_partial = ""  # preserved across device sessions; cleared on device change
     try:
         while True:
             device_change.clear()
             tts_pause.clear()
             tts_resume.clear()
-            _wait_for_audio(current_device)
+            _wait_for_audio(_current_device[0])
 
             parec_proc = None
             reader_stop = threading.Event()
             reader_thread = None
             try:
-                if _is_alsa_device(current_device):
-                    log(f"Opening ALSA device {current_device!r} at {SAMPLE_RATE} Hz...")
+                if _is_alsa_device(_current_device[0]):
+                    log(f"Opening ALSA device {_current_device[0]!r} at {SAMPLE_RATE} Hz...")
                     parec_proc = _subprocess.Popen(
-                        ["arecord", "-D", str(current_device),
+                        ["arecord", "-D", str(_current_device[0]),
                          "-f", "S16_LE", "-c", "1", f"-r{SAMPLE_RATE}", "-t", "raw"],
                         stdout=_subprocess.PIPE,
                         stderr=_subprocess.DEVNULL,
                     )
                 else:
-                    log(f"Opening PA source {current_device!r} at {SAMPLE_RATE} Hz...")
+                    log(f"Opening PA source {_current_device[0]!r} at {SAMPLE_RATE} Hz...")
                     parec_proc = _subprocess.Popen(
-                        ["parec", "--device", str(current_device),
+                        ["parec", "--device", str(_current_device[0]),
                          "--format=s16le", f"--rate={SAMPLE_RATE}", "--channels=1"],
                         stdout=_subprocess.PIPE,
                         stderr=_subprocess.DEVNULL,
@@ -264,7 +263,7 @@ def main():
                 reader_thread.start()
 
                 mqttc.publish(TOPIC_DEVICE_STATUS,
-                              json.dumps({"device": current_device, "status": "ok"}),
+                              json.dumps({"device": _current_device[0], "status": "ok"}),
                               retain=True)
                 log("Listening. Speak a query...")
                 last_partial = ""
@@ -279,13 +278,22 @@ def main():
 
                     if force_finalize.is_set():
                         force_finalize.clear()
-                        text = stt.final_result() or last_partial or _next_fallback()
+                        text = stt.final_result() or last_partial
+                        if not text:
+                            log("Force-finalize: no speech detected, skipping publish.")
+                            stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                            reset_recognizer.clear()  # prevent duplicate reset this iteration
+                            log("Recognizer reset (force-finalize, no speech).")
+                            continue
                         log(f"Force-final: {text!r}")
-                        mqttc.publish(TOPIC_TRANSCRIPT,
-                                      json.dumps({"text": text, "ts": time.time()}))
+                        rc = mqttc.publish(TOPIC_TRANSCRIPT,
+                                           json.dumps({"text": text, "ts": time.time()}))
+                        if rc.rc != mqtt.MQTT_ERR_SUCCESS:
+                            log(f"WARNING: transcript publish failed (rc={rc.rc}) — message may be lost: {text!r}")
                         last_partial = ""
                         mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
                         stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                        reset_recognizer.clear()  # prevent duplicate reset this iteration
                         log("Recognizer reset (force-finalize).")
                         continue
 
@@ -305,8 +313,10 @@ def main():
                         text = result["text"]
                         last_partial = ""
                         log(f"Final: {text!r}")
-                        mqttc.publish(TOPIC_TRANSCRIPT,
-                                      json.dumps({"text": text, "ts": time.time()}))
+                        rc = mqttc.publish(TOPIC_TRANSCRIPT,
+                                           json.dumps({"text": text, "ts": time.time()}))
+                        if rc.rc != mqtt.MQTT_ERR_SUCCESS:
+                            log(f"WARNING: transcript publish failed (rc={rc.rc}) — message may be lost: {text!r}")
                     elif result["type"] == "partial" and result["text"]:
                         last_partial = result["text"]
                         mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": result["text"]}))
@@ -332,8 +342,9 @@ def main():
                 tts_resume.wait()
                 log("Resuming capture")
             if device_change.is_set():
-                current_device = next_device[0]
-                log(f"Switching to device {current_device!r}")
+                _current_device[0] = next_device[0]
+                last_partial = ""  # discard stale partial from previous device session
+                log(f"Switching to device {_current_device[0]!r}")
 
     except KeyboardInterrupt:
         log("Interrupted.")
