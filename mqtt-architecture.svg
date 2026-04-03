@@ -1,109 +1,462 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
-  <defs>
-    <marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
-<marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
-<marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
-<marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
-  </defs>
-  <rect width="1100" height="860" fill="white"/>
-
-  <!-- legend -->
-  <text x="10" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">Legend:</text>
-  <line x1="70" y1="797" x2="100" y2="797" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-  <text x="105" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">MQTT pipeline</text>
-  <line x1="200" y1="797" x2="230" y2="797" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
-  <text x="235" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">feedback / mute</text>
-  <line x1="350" y1="797" x2="380" y2="797" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-  <text x="385" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
-  <line x1="450" y1="797" x2="480" y2="797" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-  <text x="485" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">device config</text>
-
-  <!-- edges (drawn first so nodes appear on top) -->
-  <path d="M 170 74 C 170 100.4 140 113.6 140 140" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-<text x="163" y="107" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio</text>
-
-<path d="M 140 660 C 140 694.0 180 711.0 180 745" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-<text x="168" y="702" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">espeak+sox</text>
-
-<path d="M 250 200 C 290.5 200 299.5 400 340 400" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-<text x="295" y="292" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">stt/transcript</text>
-<text x="295" y="305" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">{text, ts}</text>
-
-<path d="M 340 400 C 380.5 400 209.5 600 250 600" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-<text x="295" y="492" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
-<text x="295" y="505" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">{query,text,ts}</text>
-
-<path d="M 470 460 C 470 492.0 500 508.0 500 540" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-<text x="493" y="500" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
-
-<path d="M 600 400 C 658.5 400 671.5 600 730 600" fill="none" stroke="#1155cc" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-1155cc)"/>
-<text x="665" y="492" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
-
-<path d="M 140 540 C 140 652.0 140 148.0 140 260" fill="none" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
-<text x="148" y="400" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/speaking</text>
-<text x="148" y="413" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/done</text>
-
-<path d="M 250 600 C 308.5 600 321.5 600 380 600" fill="none" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
-<text x="315" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/done</text>
-
-<path d="M 620 600 C 669.5 600 680.5 600 730 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-999999)"/>
-<text x="675" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">sentiment/result</text>
-
-<path d="M 820 190 C 650 110 400 110 250 190" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="535" y="105" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="535" y="118" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
-
-<path d="M 820 190 C 200 190 200 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="285" y="390" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="285" y="403" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
-
-  <!-- nodes -->
-  <ellipse cx="170" cy="52" rx="70" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
-<text x="170" y="55" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Microphone</text>
-
-<rect x="30" y="140" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="140" y="173" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-stt</text>
-<text x="140" y="188" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">stt-service.py</text>
-<text x="140" y="203" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="140" y="218" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Vosk STT</text>
-<text x="140" y="233" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">mic input</text>
-
-<rect x="820" y="140" width="220" height="100" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="930" y="171" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">audio-agent</text>
-<text x="930" y="186" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">audio-agent.py</text>
-<text x="930" y="201" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="930" y="216" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">PortAudio discovery</text>
-
-<rect x="340" y="340" width="260" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="470" y="373" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-t2v</text>
-<text x="470" y="388" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">t2v-service.py</text>
-<text x="470" y="403" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="470" y="418" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Rust HTTP :8765</text>
-<text x="470" y="433" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Ollama embed + ChromaDB :8000</text>
-
-<rect x="30" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="140" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-tts</text>
-<text x="140" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">tts-service.py</text>
-<text x="140" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="140" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">espeak-ng</text>
-<text x="140" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sox reverb</text>
-
-<rect x="380" y="540" width="240" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="500" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-sentiment</text>
-<text x="500" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sentiment-service.py</text>
-<text x="500" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="500" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">DistilBERT emotion</text>
-<text x="500" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">fire orchestration</text>
-
-<rect x="730" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="840" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">discord-bot</text>
-<text x="840" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">discord-bot.py</text>
-<text x="840" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="840" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Discord VC bridge</text>
-<text x="840" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray injection</text>
-
-<ellipse cx="180" cy="767" rx="80" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
-<text x="180" y="770" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Speaker / output</text>
-
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Generated by graphviz version 2.43.0 (0)
+ -->
+<!-- Title: bushglue Pages: 1 -->
+<svg width="2236pt" height="959pt"
+ viewBox="0.00 0.00 2236.00 959.48" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 955.48)">
+<title>bushglue</title>
+<polygon fill="white" stroke="transparent" points="-4,4 -4,-955.48 2232,-955.48 2232,4 -4,4"/>
+<!-- MIC -->
+<g id="node1" class="node">
+<title>MIC</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="879" cy="-924.61" rx="65.52" ry="26.74"/>
+<text text-anchor="middle" x="879" y="-927.81" font-family="Helvetica,sans-Serif" font-size="11.00">Microphone</text>
+<text text-anchor="middle" x="879" y="-915.81" font-family="Helvetica,sans-Serif" font-size="11.00">(audio input)</text>
+</g>
+<!-- STT -->
+<g id="node9" class="node">
+<title>STT</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M936.5,-811.74C936.5,-811.74 821.5,-811.74 821.5,-811.74 815.5,-811.74 809.5,-805.74 809.5,-799.74 809.5,-799.74 809.5,-701.74 809.5,-701.74 809.5,-695.74 815.5,-689.74 821.5,-689.74 821.5,-689.74 936.5,-689.74 936.5,-689.74 942.5,-689.74 948.5,-695.74 948.5,-701.74 948.5,-701.74 948.5,-799.74 948.5,-799.74 948.5,-805.74 942.5,-811.74 936.5,-811.74"/>
+<text text-anchor="middle" x="879" y="-795.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;stt</text>
+<text text-anchor="middle" x="879" y="-783.94" font-family="Helvetica,sans-Serif" font-size="11.00">stt&#45;service.py</text>
+<text text-anchor="middle" x="879" y="-771.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="879" y="-759.94" font-family="Helvetica,sans-Serif" font-size="11.00">SoX highpass 200 Hz</text>
+<text text-anchor="middle" x="879" y="-747.94" font-family="Helvetica,sans-Serif" font-size="11.00">Vosk STT</text>
+<text text-anchor="middle" x="879" y="-735.94" font-family="Helvetica,sans-Serif" font-size="11.00">webrtcvad gate</text>
+<text text-anchor="middle" x="879" y="-723.94" font-family="Helvetica,sans-Serif" font-size="11.00">confidence filter</text>
+<text text-anchor="middle" x="879" y="-711.94" font-family="Helvetica,sans-Serif" font-size="11.00">(opt: Ollama correct)</text>
+<text text-anchor="middle" x="879" y="-699.94" font-family="Helvetica,sans-Serif" font-size="11.00">fallback phrases</text>
+</g>
+<!-- MIC&#45;&gt;STT -->
+<g id="edge1" class="edge">
+<title>MIC&#45;&gt;STT</title>
+<path fill="none" stroke="#38761d" d="M879,-897.44C879,-897.44 879,-821.92 879,-821.92"/>
+<polygon fill="#38761d" stroke="#38761d" points="882.5,-821.92 879,-811.92 875.5,-821.92 882.5,-821.92"/>
+<text text-anchor="middle" x="917.5" y="-857.54" font-family="Helvetica,sans-Serif" font-size="9.00">raw audio</text>
+<text text-anchor="middle" x="917.5" y="-847.54" font-family="Helvetica,sans-Serif" font-size="9.00">(arecord / parec)</text>
+</g>
+<!-- SPEAKER -->
+<g id="node2" class="node">
+<title>SPEAKER</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="1116" cy="-26.87" rx="71.34" ry="26.74"/>
+<text text-anchor="middle" x="1116" y="-30.07" font-family="Helvetica,sans-Serif" font-size="11.00">Speaker</text>
+<text text-anchor="middle" x="1116" y="-18.07" font-family="Helvetica,sans-Serif" font-size="11.00">(audio output)</text>
+</g>
+<!-- DISCORD_USER -->
+<g id="node3" class="node">
+<title>DISCORD_USER</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="2047" cy="-924.61" rx="83.38" ry="26.74"/>
+<text text-anchor="middle" x="2047" y="-927.81" font-family="Helvetica,sans-Serif" font-size="11.00">Discord User</text>
+<text text-anchor="middle" x="2047" y="-915.81" font-family="Helvetica,sans-Serif" font-size="11.00">(/pray command)</text>
+</g>
+<!-- BOT -->
+<g id="node14" class="node">
+<title>BOT</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M1724.5,-403.74C1724.5,-403.74 1627.5,-403.74 1627.5,-403.74 1621.5,-403.74 1615.5,-397.74 1615.5,-391.74 1615.5,-391.74 1615.5,-329.74 1615.5,-329.74 1615.5,-323.74 1621.5,-317.74 1627.5,-317.74 1627.5,-317.74 1724.5,-317.74 1724.5,-317.74 1730.5,-317.74 1736.5,-323.74 1736.5,-329.74 1736.5,-329.74 1736.5,-391.74 1736.5,-391.74 1736.5,-397.74 1730.5,-403.74 1724.5,-403.74"/>
+<text text-anchor="middle" x="1676" y="-387.94" font-family="Helvetica,sans-Serif" font-size="11.00">discord&#45;bot</text>
+<text text-anchor="middle" x="1676" y="-375.94" font-family="Helvetica,sans-Serif" font-size="11.00">discord&#45;bot.py</text>
+<text text-anchor="middle" x="1676" y="-363.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="1676" y="-351.94" font-family="Helvetica,sans-Serif" font-size="11.00">Discord VC bridge</text>
+<text text-anchor="middle" x="1676" y="-339.94" font-family="Helvetica,sans-Serif" font-size="11.00">/pray injection</text>
+<text text-anchor="middle" x="1676" y="-327.94" font-family="Helvetica,sans-Serif" font-size="11.00">VC audio receive</text>
+</g>
+<!-- DISCORD_USER&#45;&gt;BOT -->
+<g id="edge3" class="edge">
+<title>DISCORD_USER&#45;&gt;BOT</title>
+<path fill="none" stroke="#674ea7" d="M1991.25,-904.52C1991.25,-803.94 1991.25,-360 1991.25,-360 1991.25,-360 1746.78,-360 1746.78,-360"/>
+<polygon fill="#674ea7" stroke="#674ea7" points="1746.78,-356.5 1736.78,-360 1746.78,-363.5 1746.78,-356.5"/>
+<text text-anchor="middle" x="2076" y="-644.54" font-family="Helvetica,sans-Serif" font-size="9.00">/pray phrase</text>
+</g>
+<!-- LOOPBACK -->
+<g id="node4" class="node">
+<title>LOOPBACK</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="605" cy="-750.74" rx="75.82" ry="26.74"/>
+<text text-anchor="middle" x="605" y="-753.94" font-family="Helvetica,sans-Serif" font-size="11.00">ALSA Loopback</text>
+<text text-anchor="middle" x="605" y="-741.94" font-family="Helvetica,sans-Serif" font-size="11.00">hw:Loopback,0</text>
+</g>
+<!-- LOOPBACK&#45;&gt;STT -->
+<g id="edge5" class="edge">
+<title>LOOPBACK&#45;&gt;STT</title>
+<path fill="none" stroke="#674ea7" stroke-dasharray="5,2" d="M680.96,-750C680.96,-750 799.46,-750 799.46,-750"/>
+<polygon fill="#674ea7" stroke="#674ea7" points="799.46,-753.5 809.46,-750 799.46,-746.5 799.46,-753.5"/>
+</g>
+<!-- FLARE -->
+<g id="node5" class="node">
+<title>FLARE</title>
+<ellipse fill="#f4cccc" stroke="#cc0000" cx="1942" cy="-26.87" rx="70.01" ry="26.74"/>
+<text text-anchor="middle" x="1942" y="-30.07" font-family="Helvetica,sans-Serif" font-size="11.00">Flare solenoid</text>
+<text text-anchor="middle" x="1942" y="-18.07" font-family="Helvetica,sans-Serif" font-size="11.00">(valve)</text>
+</g>
+<!-- BIGJET -->
+<g id="node6" class="node">
+<title>BIGJET</title>
+<ellipse fill="#f4cccc" stroke="#cc0000" cx="1570" cy="-26.87" rx="75.82" ry="26.74"/>
+<text text-anchor="middle" x="1570" y="-30.07" font-family="Helvetica,sans-Serif" font-size="11.00">Big Jet solenoid</text>
+<text text-anchor="middle" x="1570" y="-18.07" font-family="Helvetica,sans-Serif" font-size="11.00">(valve)</text>
+</g>
+<!-- OLLAMA -->
+<g id="node7" class="node">
+<title>OLLAMA</title>
+<path fill="#fff2cc" stroke="#856404" d="M1958.5,-591.74C1958.5,-591.74 1845.5,-591.74 1845.5,-591.74 1839.5,-591.74 1833.5,-585.74 1833.5,-579.74 1833.5,-579.74 1833.5,-529.74 1833.5,-529.74 1833.5,-523.74 1839.5,-517.74 1845.5,-517.74 1845.5,-517.74 1958.5,-517.74 1958.5,-517.74 1964.5,-517.74 1970.5,-523.74 1970.5,-529.74 1970.5,-529.74 1970.5,-579.74 1970.5,-579.74 1970.5,-585.74 1964.5,-591.74 1958.5,-591.74"/>
+<text text-anchor="middle" x="1902" y="-575.94" font-family="Helvetica,sans-Serif" font-size="11.00">ollama</text>
+<text text-anchor="middle" x="1902" y="-563.94" font-family="Helvetica,sans-Serif" font-size="11.00">HTTP :11434</text>
+<text text-anchor="middle" x="1902" y="-551.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="1902" y="-539.94" font-family="Helvetica,sans-Serif" font-size="11.00">embedding model</text>
+<text text-anchor="middle" x="1902" y="-527.94" font-family="Helvetica,sans-Serif" font-size="11.00">(opt: STT correction)</text>
+</g>
+<!-- CHROMADB -->
+<g id="node8" class="node">
+<title>CHROMADB</title>
+<path fill="#e8d5f5" stroke="#7b2d8b" d="M1425.5,-591.74C1425.5,-591.74 1306.5,-591.74 1306.5,-591.74 1300.5,-591.74 1294.5,-585.74 1294.5,-579.74 1294.5,-579.74 1294.5,-529.74 1294.5,-529.74 1294.5,-523.74 1300.5,-517.74 1306.5,-517.74 1306.5,-517.74 1425.5,-517.74 1425.5,-517.74 1431.5,-517.74 1437.5,-523.74 1437.5,-529.74 1437.5,-529.74 1437.5,-579.74 1437.5,-579.74 1437.5,-585.74 1431.5,-591.74 1425.5,-591.74"/>
+<text text-anchor="middle" x="1366" y="-575.94" font-family="Helvetica,sans-Serif" font-size="11.00">chromadb</text>
+<text text-anchor="middle" x="1366" y="-563.94" font-family="Helvetica,sans-Serif" font-size="11.00">HTTP :8000</text>
+<text text-anchor="middle" x="1366" y="-551.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="1366" y="-539.94" font-family="Helvetica,sans-Serif" font-size="11.00">vector store</text>
+<text text-anchor="middle" x="1366" y="-527.94" font-family="Helvetica,sans-Serif" font-size="11.00">t2v_chroma collection</text>
+</g>
+<!-- STT&#45;&gt;OLLAMA -->
+<g id="edge23" class="edge">
+<title>STT&#45;&gt;OLLAMA</title>
+<path fill="none" stroke="#856404" stroke-dasharray="5,2" d="M948.68,-771C1178.58,-771 1898.53,-771 1898.53,-771 1898.53,-771 1898.53,-601.92 1898.53,-601.92"/>
+<polygon fill="#856404" stroke="#856404" points="1902.03,-601.92 1898.53,-591.92 1895.03,-601.92 1902.03,-601.92"/>
+<text text-anchor="middle" x="1906.5" y="-649.54" font-family="Helvetica,sans-Serif" font-size="9.00">HTTP correct</text>
+<text text-anchor="middle" x="1906.5" y="-639.54" font-family="Helvetica,sans-Serif" font-size="9.00">(STT_LLM_CORRECT=1 only)</text>
+</g>
+<!-- T2V -->
+<g id="node10" class="node">
+<title>T2V</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M1180.5,-603.74C1180.5,-603.74 1083.5,-603.74 1083.5,-603.74 1077.5,-603.74 1071.5,-597.74 1071.5,-591.74 1071.5,-591.74 1071.5,-517.74 1071.5,-517.74 1071.5,-511.74 1077.5,-505.74 1083.5,-505.74 1083.5,-505.74 1180.5,-505.74 1180.5,-505.74 1186.5,-505.74 1192.5,-511.74 1192.5,-517.74 1192.5,-517.74 1192.5,-591.74 1192.5,-591.74 1192.5,-597.74 1186.5,-603.74 1180.5,-603.74"/>
+<text text-anchor="middle" x="1132" y="-587.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;t2v</text>
+<text text-anchor="middle" x="1132" y="-575.94" font-family="Helvetica,sans-Serif" font-size="11.00">t2v&#45;service.py</text>
+<text text-anchor="middle" x="1132" y="-563.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="1132" y="-551.94" font-family="Helvetica,sans-Serif" font-size="11.00">Rust HTTP :8765</text>
+<text text-anchor="middle" x="1132" y="-539.94" font-family="Helvetica,sans-Serif" font-size="11.00">Ollama embed</text>
+<text text-anchor="middle" x="1132" y="-527.94" font-family="Helvetica,sans-Serif" font-size="11.00">ChromaDB lookup</text>
+<text text-anchor="middle" x="1132" y="-515.94" font-family="Helvetica,sans-Serif" font-size="11.00">watchdog thread</text>
+</g>
+<!-- STT&#45;&gt;T2V -->
+<g id="edge6" class="edge">
+<title>STT&#45;&gt;T2V</title>
+<path fill="none" stroke="#1155cc" d="M943.17,-689.64C943.17,-637.53 943.17,-571 943.17,-571 943.17,-571 1061.47,-571 1061.47,-571"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="1061.47,-574.5 1071.47,-571 1061.47,-567.5 1061.47,-574.5"/>
+<text text-anchor="middle" x="1107" y="-649.54" font-family="Helvetica,sans-Serif" font-size="9.00">stt/transcript</text>
+<text text-anchor="middle" x="1107" y="-639.54" font-family="Helvetica,sans-Serif" font-size="9.00">{text, ts}</text>
+</g>
+<!-- STT&#45;&gt;BOT -->
+<g id="edge10" class="edge">
+<title>STT&#45;&gt;BOT</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M948.61,-730C1148.89,-730 1712.3,-730 1712.3,-730 1712.3,-730 1712.3,-413.82 1712.3,-413.82"/>
+<polygon fill="#999999" stroke="#999999" points="1715.8,-413.82 1712.3,-403.82 1708.8,-413.82 1715.8,-413.82"/>
+<text text-anchor="middle" x="1761" y="-552.54" font-family="Helvetica,sans-Serif" font-size="9.00">stt/partial</text>
+</g>
+<!-- MONITOR -->
+<g id="node15" class="node">
+<title>MONITOR</title>
+<path fill="#f5f5f5" stroke="#555555" d="M891.5,-225.74C891.5,-225.74 798.5,-225.74 798.5,-225.74 792.5,-225.74 786.5,-219.74 786.5,-213.74 786.5,-213.74 786.5,-151.74 786.5,-151.74 786.5,-145.74 792.5,-139.74 798.5,-139.74 798.5,-139.74 891.5,-139.74 891.5,-139.74 897.5,-139.74 903.5,-145.74 903.5,-151.74 903.5,-151.74 903.5,-213.74 903.5,-213.74 903.5,-219.74 897.5,-225.74 891.5,-225.74"/>
+<text text-anchor="middle" x="845" y="-209.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;monitor</text>
+<text text-anchor="middle" x="845" y="-197.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="845" y="-185.94" font-family="Helvetica,sans-Serif" font-size="11.00">rich TUI</text>
+<text text-anchor="middle" x="845" y="-173.94" font-family="Helvetica,sans-Serif" font-size="11.00">live all topics</text>
+<text text-anchor="middle" x="845" y="-161.94" font-family="Helvetica,sans-Serif" font-size="11.00">device picker</text>
+<text text-anchor="middle" x="845" y="-149.94" font-family="Helvetica,sans-Serif" font-size="11.00">fire ASCII art</text>
+</g>
+<!-- STT&#45;&gt;MONITOR -->
+<g id="edge29" class="edge">
+<title>STT&#45;&gt;MONITOR</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M822.93,-689.68C822.93,-689.68 822.93,-235.81 822.93,-235.81"/>
+<polygon fill="#999999" stroke="#999999" points="826.43,-235.81 822.93,-225.81 819.43,-235.81 826.43,-235.81"/>
+<text text-anchor="middle" x="731" y="-460.54" font-family="Helvetica,sans-Serif" font-size="9.00">stt/partial</text>
+<text text-anchor="middle" x="731" y="-450.54" font-family="Helvetica,sans-Serif" font-size="9.00">stt/transcript</text>
+</g>
+<!-- T2V&#45;&gt;OLLAMA -->
+<g id="edge21" class="edge">
+<title>T2V&#45;&gt;OLLAMA</title>
+<path fill="none" stroke="#856404" stroke-dasharray="5,2" d="M1192.76,-514C1363.89,-514 1837.5,-514 1837.5,-514 1837.5,-514 1837.5,-514.35 1837.5,-514.35"/>
+<polygon fill="#856404" stroke="#856404" points="1834,-507.47 1837.5,-517.47 1841,-507.47 1834,-507.47"/>
+<text text-anchor="middle" x="1475" y="-649.54" font-family="Helvetica,sans-Serif" font-size="9.00">HTTP embed</text>
+<text text-anchor="middle" x="1475" y="-639.54" font-family="Helvetica,sans-Serif" font-size="9.00">(qwen3&#45;embedding)</text>
+</g>
+<!-- T2V&#45;&gt;CHROMADB -->
+<g id="edge22" class="edge">
+<title>T2V&#45;&gt;CHROMADB</title>
+<path fill="none" stroke="#7b2d8b" stroke-dasharray="5,2" d="M1192.57,-554C1192.57,-554 1284.46,-554 1284.46,-554"/>
+<polygon fill="#7b2d8b" stroke="#7b2d8b" points="1284.46,-557.5 1294.46,-554 1284.46,-550.5 1284.46,-557.5"/>
+</g>
+<!-- TTS -->
+<g id="node11" class="node">
+<title>TTS</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M1037.5,-397.74C1037.5,-397.74 944.5,-397.74 944.5,-397.74 938.5,-397.74 932.5,-391.74 932.5,-385.74 932.5,-385.74 932.5,-335.74 932.5,-335.74 932.5,-329.74 938.5,-323.74 944.5,-323.74 944.5,-323.74 1037.5,-323.74 1037.5,-323.74 1043.5,-323.74 1049.5,-329.74 1049.5,-335.74 1049.5,-335.74 1049.5,-385.74 1049.5,-385.74 1049.5,-391.74 1043.5,-397.74 1037.5,-397.74"/>
+<text text-anchor="middle" x="991" y="-381.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;tts</text>
+<text text-anchor="middle" x="991" y="-369.94" font-family="Helvetica,sans-Serif" font-size="11.00">tts&#45;service.py</text>
+<text text-anchor="middle" x="991" y="-357.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="991" y="-345.94" font-family="Helvetica,sans-Serif" font-size="11.00">espeak&#45;ng</text>
+<text text-anchor="middle" x="991" y="-333.94" font-family="Helvetica,sans-Serif" font-size="11.00">sox reverb</text>
+</g>
+<!-- T2V&#45;&gt;TTS -->
+<g id="edge7" class="edge">
+<title>T2V&#45;&gt;TTS</title>
+<path fill="none" stroke="#1155cc" d="M1110.14,-505.6C1110.14,-447.91 1110.14,-360 1110.14,-360 1110.14,-360 1059.52,-360 1059.52,-360"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="1059.52,-356.5 1049.52,-360 1059.52,-363.5 1059.52,-356.5"/>
+<text text-anchor="middle" x="1055.5" y="-460.54" font-family="Helvetica,sans-Serif" font-size="9.00">t2v/verse</text>
+<text text-anchor="middle" x="1055.5" y="-450.54" font-family="Helvetica,sans-Serif" font-size="9.00">{query, text, ts}</text>
+</g>
+<!-- SENT -->
+<g id="node12" class="node">
+<title>SENT</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M1417.5,-409.74C1417.5,-409.74 1302.5,-409.74 1302.5,-409.74 1296.5,-409.74 1290.5,-403.74 1290.5,-397.74 1290.5,-397.74 1290.5,-323.74 1290.5,-323.74 1290.5,-317.74 1296.5,-311.74 1302.5,-311.74 1302.5,-311.74 1417.5,-311.74 1417.5,-311.74 1423.5,-311.74 1429.5,-317.74 1429.5,-323.74 1429.5,-323.74 1429.5,-397.74 1429.5,-397.74 1429.5,-403.74 1423.5,-409.74 1417.5,-409.74"/>
+<text text-anchor="middle" x="1360" y="-393.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;sentiment</text>
+<text text-anchor="middle" x="1360" y="-381.94" font-family="Helvetica,sans-Serif" font-size="11.00">sentiment&#45;service.py</text>
+<text text-anchor="middle" x="1360" y="-369.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="1360" y="-357.94" font-family="Helvetica,sans-Serif" font-size="11.00">DistilBERT classify</text>
+<text text-anchor="middle" x="1360" y="-345.94" font-family="Helvetica,sans-Serif" font-size="11.00">HTTP :8585</text>
+<text text-anchor="middle" x="1360" y="-333.94" font-family="Helvetica,sans-Serif" font-size="11.00">fire orchestration</text>
+<text text-anchor="middle" x="1360" y="-321.94" font-family="Helvetica,sans-Serif" font-size="11.00">(inference lock)</text>
+</g>
+<!-- T2V&#45;&gt;SENT -->
+<g id="edge8" class="edge">
+<title>T2V&#45;&gt;SENT</title>
+<path fill="none" stroke="#1155cc" d="M1148.78,-505.47C1148.78,-461.17 1148.78,-403 1148.78,-403 1148.78,-403 1280.25,-403 1280.25,-403"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="1280.25,-406.5 1290.25,-403 1280.25,-399.5 1280.25,-406.5"/>
+<text text-anchor="middle" x="1331.5" y="-460.54" font-family="Helvetica,sans-Serif" font-size="9.00">t2v/verse</text>
+<text text-anchor="middle" x="1331.5" y="-450.54" font-family="Helvetica,sans-Serif" font-size="9.00">{query, text, ts}</text>
+</g>
+<!-- T2V&#45;&gt;BOT -->
+<g id="edge9" class="edge">
+<title>T2V&#45;&gt;BOT</title>
+<path fill="none" stroke="#1155cc" stroke-dasharray="5,2" d="M1192.57,-511C1336.7,-511 1688.1,-511 1688.1,-511 1688.1,-511 1688.1,-413.8 1688.1,-413.8"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="1691.6,-413.8 1688.1,-403.8 1684.6,-413.8 1691.6,-413.8"/>
+<text text-anchor="middle" x="1568.5" y="-455.54" font-family="Helvetica,sans-Serif" font-size="9.00">t2v/verse</text>
+</g>
+<!-- T2V&#45;&gt;BOT -->
+<g id="edge11" class="edge">
+<title>T2V&#45;&gt;BOT</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M1192.76,-508C1332.32,-508 1663.9,-508 1663.9,-508 1663.9,-508 1663.9,-414.13 1663.9,-414.13"/>
+<polygon fill="#999999" stroke="#999999" points="1667.4,-414.13 1663.9,-404.13 1660.4,-414.13 1667.4,-414.13"/>
+<text text-anchor="middle" x="1458.5" y="-460.54" font-family="Helvetica,sans-Serif" font-size="9.00">t2v/processing</text>
+<text text-anchor="middle" x="1458.5" y="-450.54" font-family="Helvetica,sans-Serif" font-size="9.00">{text, ts}</text>
+</g>
+<!-- T2V&#45;&gt;MONITOR -->
+<g id="edge30" class="edge">
+<title>T2V&#45;&gt;MONITOR</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M1071.46,-538C988.53,-538 849.79,-538 849.79,-538 849.79,-538 849.79,-235.95 849.79,-235.95"/>
+<polygon fill="#999999" stroke="#999999" points="853.29,-235.95 849.79,-225.95 846.29,-235.95 853.29,-235.95"/>
+<text text-anchor="middle" x="1206.5" y="-363.54" font-family="Helvetica,sans-Serif" font-size="9.00">t2v/processing</text>
+<text text-anchor="middle" x="1206.5" y="-353.54" font-family="Helvetica,sans-Serif" font-size="9.00">t2v/verse</text>
+</g>
+<!-- TTS&#45;&gt;SPEAKER -->
+<g id="edge2" class="edge">
+<title>TTS&#45;&gt;SPEAKER</title>
+<path fill="none" stroke="#38761d" d="M1049.64,-379C1056.16,-379 1060.5,-379 1060.5,-379 1060.5,-379 1060.5,-53.85 1060.5,-53.85"/>
+<polygon fill="#38761d" stroke="#38761d" points="1064,-53.85 1060.5,-43.85 1057,-53.85 1064,-53.85"/>
+<text text-anchor="middle" x="1145" y="-185.54" font-family="Helvetica,sans-Serif" font-size="9.00">espeak&#45;ng</text>
+<text text-anchor="middle" x="1145" y="-175.54" font-family="Helvetica,sans-Serif" font-size="9.00">+ sox reverb</text>
+</g>
+<!-- TTS&#45;&gt;STT -->
+<g id="edge12" class="edge">
+<title>TTS&#45;&gt;STT</title>
+<path fill="none" stroke="#cc4125" stroke-dasharray="5,2" d="M937.83,-397.78C937.83,-397.78 937.83,-679.53 937.83,-679.53"/>
+<polygon fill="#cc4125" stroke="#cc4125" points="934.33,-679.53 937.83,-689.53 941.33,-679.53 934.33,-679.53"/>
+<text text-anchor="middle" x="981.5" y="-557.54" font-family="Helvetica,sans-Serif" font-size="9.00">tts/speaking</text>
+<text text-anchor="middle" x="981.5" y="-547.54" font-family="Helvetica,sans-Serif" font-size="9.00">tts/done &#160;(QoS 1)</text>
+</g>
+<!-- TTS&#45;&gt;SENT -->
+<g id="edge13" class="edge">
+<title>TTS&#45;&gt;SENT</title>
+<path fill="none" stroke="#cc4125" stroke-dasharray="5,2" d="M1049.88,-342C1049.88,-342 1280.32,-342 1280.32,-342"/>
+<polygon fill="#cc4125" stroke="#cc4125" points="1280.32,-345.5 1290.32,-342 1280.32,-338.5 1280.32,-345.5"/>
+<text text-anchor="middle" x="1140" y="-460.54" font-family="Helvetica,sans-Serif" font-size="9.00">tts/done &#160;{ts}</text>
+<text text-anchor="middle" x="1140" y="-450.54" font-family="Helvetica,sans-Serif" font-size="9.00">(bounds fire loop)</text>
+</g>
+<!-- TTS&#45;&gt;MONITOR -->
+<g id="edge31" class="edge">
+<title>TTS&#45;&gt;MONITOR</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M932.34,-360C898.75,-360 863.21,-360 863.21,-360 863.21,-360 863.21,-236.1 863.21,-236.1"/>
+<polygon fill="#999999" stroke="#999999" points="866.71,-236.1 863.21,-226.1 859.71,-236.1 866.71,-236.1"/>
+<text text-anchor="middle" x="913" y="-271.54" font-family="Helvetica,sans-Serif" font-size="9.00">tts/speaking</text>
+<text text-anchor="middle" x="913" y="-261.54" font-family="Helvetica,sans-Serif" font-size="9.00">tts/done</text>
+</g>
+<!-- SENT&#45;&gt;FLARE -->
+<g id="edge15" class="edge">
+<title>SENT&#45;&gt;FLARE</title>
+<path fill="none" stroke="#cc0000" d="M1336.83,-311.65C1336.83,-289.41 1336.83,-268 1336.83,-268 1336.83,-268 1937.67,-268 1937.67,-268 1937.67,-268 1937.67,-64.06 1937.67,-64.06"/>
+<polygon fill="#cc0000" stroke="#cc0000" points="1941.17,-64.06 1937.67,-54.06 1934.17,-64.06 1941.17,-64.06"/>
+<text text-anchor="middle" x="1997" y="-185.54" font-family="Helvetica,sans-Serif" font-size="9.00">flame/flare/pulse</text>
+<text text-anchor="middle" x="1997" y="-175.54" font-family="Helvetica,sans-Serif" font-size="9.00">(ms, loop until tts/done)</text>
+</g>
+<!-- SENT&#45;&gt;BIGJET -->
+<g id="edge16" class="edge">
+<title>SENT&#45;&gt;BIGJET</title>
+<path fill="none" stroke="#cc0000" d="M1383.17,-311.71C1383.17,-218.73 1383.17,-26 1383.17,-26 1383.17,-26 1484.28,-26 1484.28,-26"/>
+<polygon fill="#cc0000" stroke="#cc0000" points="1484.28,-29.5 1494.28,-26 1484.28,-22.5 1484.28,-29.5"/>
+<text text-anchor="middle" x="1415" y="-185.54" font-family="Helvetica,sans-Serif" font-size="9.00">flame/bigjet/pulse</text>
+<text text-anchor="middle" x="1415" y="-175.54" font-family="Helvetica,sans-Serif" font-size="9.00">(ms, loop until tts/done)</text>
+</g>
+<!-- SENT&#45;&gt;BOT -->
+<g id="edge14" class="edge">
+<title>SENT&#45;&gt;BOT</title>
+<path fill="none" stroke="#1155cc" stroke-dasharray="5,2" d="M1429.74,-360C1429.74,-360 1605.49,-360 1605.49,-360"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="1605.49,-363.5 1615.49,-360 1605.49,-356.5 1605.49,-363.5"/>
+</g>
+<!-- SENT&#45;&gt;MONITOR -->
+<g id="edge32" class="edge">
+<title>SENT&#45;&gt;MONITOR</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M1290.41,-317C1159.59,-317 890.07,-317 890.07,-317 890.07,-317 890.07,-235.96 890.07,-235.96"/>
+<polygon fill="#999999" stroke="#999999" points="893.57,-235.96 890.07,-225.96 886.57,-235.96 893.57,-235.96"/>
+<text text-anchor="middle" x="1291.5" y="-271.54" font-family="Helvetica,sans-Serif" font-size="9.00">sentiment/result</text>
+<text text-anchor="middle" x="1291.5" y="-261.54" font-family="Helvetica,sans-Serif" font-size="9.00">flame/*/pulse</text>
+</g>
+<!-- AGENT -->
+<g id="node13" class="node">
+<title>AGENT</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M467.5,-787.74C467.5,-787.74 374.5,-787.74 374.5,-787.74 368.5,-787.74 362.5,-781.74 362.5,-775.74 362.5,-775.74 362.5,-725.74 362.5,-725.74 362.5,-719.74 368.5,-713.74 374.5,-713.74 374.5,-713.74 467.5,-713.74 467.5,-713.74 473.5,-713.74 479.5,-719.74 479.5,-725.74 479.5,-725.74 479.5,-775.74 479.5,-775.74 479.5,-781.74 473.5,-787.74 467.5,-787.74"/>
+<text text-anchor="middle" x="421" y="-771.94" font-family="Helvetica,sans-Serif" font-size="11.00">audio&#45;agent</text>
+<text text-anchor="middle" x="421" y="-759.94" font-family="Helvetica,sans-Serif" font-size="11.00">audio&#45;agent.py</text>
+<text text-anchor="middle" x="421" y="-747.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="421" y="-735.94" font-family="Helvetica,sans-Serif" font-size="11.00">PortAudio</text>
+<text text-anchor="middle" x="421" y="-723.94" font-family="Helvetica,sans-Serif" font-size="11.00">device discovery</text>
+</g>
+<!-- AGENT&#45;&gt;STT -->
+<g id="edge24" class="edge">
+<title>AGENT&#45;&gt;STT</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M479.94,-720C479.94,-720 799.44,-720 799.44,-720"/>
+<polygon fill="#999999" stroke="#999999" points="799.44,-723.5 809.44,-720 799.44,-716.5 799.44,-723.5"/>
+<text text-anchor="middle" x="645" y="-857.54" font-family="Helvetica,sans-Serif" font-size="9.00">audio/devices</text>
+<text text-anchor="middle" x="645" y="-847.54" font-family="Helvetica,sans-Serif" font-size="9.00">(retained)</text>
+</g>
+<!-- AGENT&#45;&gt;TTS -->
+<g id="edge25" class="edge">
+<title>AGENT&#45;&gt;TTS</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M437.25,-713.74C437.25,-619.71 437.25,-379 437.25,-379 437.25,-379 922.26,-379 922.26,-379"/>
+<polygon fill="#999999" stroke="#999999" points="922.26,-382.5 932.26,-379 922.26,-375.5 922.26,-382.5"/>
+<text text-anchor="middle" x="607" y="-557.54" font-family="Helvetica,sans-Serif" font-size="9.00">audio/devices</text>
+<text text-anchor="middle" x="607" y="-547.54" font-family="Helvetica,sans-Serif" font-size="9.00">(retained)</text>
+</g>
+<!-- BOT&#45;&gt;LOOPBACK -->
+<g id="edge4" class="edge">
+<title>BOT&#45;&gt;LOOPBACK</title>
+<path fill="none" stroke="#674ea7" stroke-dasharray="5,2" d="M1639.7,-403.8C1639.7,-429.43 1639.7,-457 1639.7,-457 1639.7,-457 606.83,-457 606.83,-457 606.83,-457 606.83,-713.63 606.83,-713.63"/>
+<polygon fill="#674ea7" stroke="#674ea7" points="603.33,-713.63 606.83,-723.63 610.33,-713.63 603.33,-713.63"/>
+<text text-anchor="middle" x="1588.5" y="-557.54" font-family="Helvetica,sans-Serif" font-size="9.00">espeak&#45;ng + sox</text>
+<text text-anchor="middle" x="1588.5" y="-547.54" font-family="Helvetica,sans-Serif" font-size="9.00">WAV → hw:Loopback,0</text>
+</g>
+<!-- BOT&#45;&gt;FLARE -->
+<g id="edge17" class="edge">
+<title>BOT&#45;&gt;FLARE</title>
+<path fill="none" stroke="#cc0000" stroke-dasharray="5,2" d="M1674.08,-317.66C1674.08,-227.26 1674.08,-26 1674.08,-26 1674.08,-26 1861.96,-26 1861.96,-26"/>
+<polygon fill="#cc0000" stroke="#cc0000" points="1861.96,-29.5 1871.96,-26 1861.96,-22.5 1861.96,-29.5"/>
+<text text-anchor="middle" x="2190" y="-185.54" font-family="Helvetica,sans-Serif" font-size="9.00">flame/flare/pulse</text>
+<text text-anchor="middle" x="2190" y="-175.54" font-family="Helvetica,sans-Serif" font-size="9.00">(/fire command)</text>
+</g>
+<!-- BOT&#45;&gt;BIGJET -->
+<g id="edge18" class="edge">
+<title>BOT&#45;&gt;BIGJET</title>
+<path fill="none" stroke="#cc0000" stroke-dasharray="5,2" d="M1625.55,-317.43C1625.55,-317.43 1625.55,-55.2 1625.55,-55.2"/>
+<polygon fill="#cc0000" stroke="#cc0000" points="1629.05,-55.2 1625.55,-45.2 1622.05,-55.2 1629.05,-55.2"/>
+<text text-anchor="middle" x="1611" y="-185.54" font-family="Helvetica,sans-Serif" font-size="9.00">flame/bigjet/pulse</text>
+<text text-anchor="middle" x="1611" y="-175.54" font-family="Helvetica,sans-Serif" font-size="9.00">(/fire command)</text>
+</g>
+<!-- MONITOR&#45;&gt;STT -->
+<g id="edge27" class="edge">
+<title>MONITOR&#45;&gt;STT</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M836.36,-225.9C836.36,-225.9 836.36,-679.63 836.36,-679.63"/>
+<polygon fill="#999999" stroke="#999999" points="832.86,-679.63 836.36,-689.63 839.86,-679.63 832.86,-679.63"/>
+<text text-anchor="middle" x="860.5" y="-455.54" font-family="Helvetica,sans-Serif" font-size="9.00">audio/stt/set&#45;device</text>
+</g>
+<!-- MONITOR&#45;&gt;TTS -->
+<g id="edge28" class="edge">
+<title>MONITOR&#45;&gt;TTS</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M876.64,-225.84C876.64,-273 876.64,-342 876.64,-342 876.64,-342 922.48,-342 922.48,-342"/>
+<polygon fill="#999999" stroke="#999999" points="922.48,-345.5 932.48,-342 922.48,-338.5 922.48,-345.5"/>
+<text text-anchor="middle" x="1040.5" y="-271.54" font-family="Helvetica,sans-Serif" font-size="9.00">audio/tts/set&#45;device</text>
+<text text-anchor="middle" x="1040.5" y="-261.54" font-family="Helvetica,sans-Serif" font-size="9.00">audio/tts/clarity</text>
+</g>
+<!-- MONITOR&#45;&gt;AGENT -->
+<g id="edge26" class="edge">
+<title>MONITOR&#45;&gt;AGENT</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M798,-226.01C798,-353.2 798,-717 798,-717 798,-717 489.91,-717 489.91,-717"/>
+<polygon fill="#999999" stroke="#999999" points="489.91,-713.5 479.91,-717 489.91,-720.5 489.91,-713.5"/>
+<text text-anchor="middle" x="244" y="-455.54" font-family="Helvetica,sans-Serif" font-size="9.00">audio/discover</text>
+</g>
+<!-- INTTEST -->
+<g id="node16" class="node">
+<title>INTTEST</title>
+<path fill="#f5f5f5" stroke="#555555" d="M521,-225.74C521,-225.74 407,-225.74 407,-225.74 401,-225.74 395,-219.74 395,-213.74 395,-213.74 395,-151.74 395,-151.74 395,-145.74 401,-139.74 407,-139.74 407,-139.74 521,-139.74 521,-139.74 527,-139.74 533,-145.74 533,-151.74 533,-151.74 533,-213.74 533,-213.74 533,-219.74 527,-225.74 521,-225.74"/>
+<text text-anchor="middle" x="464" y="-209.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;integration&#45;test</text>
+<text text-anchor="middle" x="464" y="-197.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="464" y="-185.94" font-family="Helvetica,sans-Serif" font-size="11.00">loopback inject</text>
+<text text-anchor="middle" x="464" y="-173.94" font-family="Helvetica,sans-Serif" font-size="11.00">or transcript&#45;only</text>
+<text text-anchor="middle" x="464" y="-161.94" font-family="Helvetica,sans-Serif" font-size="11.00">stage pass / fail</text>
+<text text-anchor="middle" x="464" y="-149.94" font-family="Helvetica,sans-Serif" font-size="11.00">pulse counts</text>
+</g>
+<!-- INTTEST&#45;&gt;LOOPBACK -->
+<g id="edge33" class="edge">
+<title>INTTEST&#45;&gt;LOOPBACK</title>
+<path fill="none" stroke="#555555" stroke-dasharray="5,2" d="M496.11,-225.84C496.11,-358.22 496.11,-750 496.11,-750 496.11,-750 519.08,-750 519.08,-750"/>
+<polygon fill="#555555" stroke="#555555" points="519.08,-753.5 529.08,-750 519.08,-746.5 519.08,-753.5"/>
+<text text-anchor="middle" x="370.5" y="-460.54" font-family="Helvetica,sans-Serif" font-size="9.00">bush&#45;pray inject</text>
+<text text-anchor="middle" x="370.5" y="-450.54" font-family="Helvetica,sans-Serif" font-size="9.00">(full stack mode)</text>
+</g>
+<!-- INTTEST&#45;&gt;STT -->
+<g id="edge34" class="edge">
+<title>INTTEST&#45;&gt;STT</title>
+<path fill="none" stroke="#555555" stroke-dasharray="5,2" d="M512.73,-226.04C512.73,-350.59 512.73,-701 512.73,-701 512.73,-701 799.24,-701 799.24,-701"/>
+<polygon fill="#555555" stroke="#555555" points="799.24,-704.5 809.24,-701 799.24,-697.5 799.24,-704.5"/>
+<text text-anchor="middle" x="504.5" y="-465.54" font-family="Helvetica,sans-Serif" font-size="9.00">stt/force&#45;finalize</text>
+<text text-anchor="middle" x="504.5" y="-455.54" font-family="Helvetica,sans-Serif" font-size="9.00">or transcript pub</text>
+<text text-anchor="middle" x="504.5" y="-445.54" font-family="Helvetica,sans-Serif" font-size="9.00">(&#45;&#45;transcript&#45;only)</text>
+</g>
+<!-- INTTEST&#45;&gt;MONITOR -->
+<g id="edge35" class="edge">
+<title>INTTEST&#45;&gt;MONITOR</title>
+<path fill="none" stroke="#555555" stroke-dasharray="1,5" d="M533.44,-182C533.44,-182 776.34,-182 776.34,-182"/>
+<polygon fill="#555555" stroke="#555555" points="776.34,-185.5 786.34,-182 776.34,-178.5 776.34,-185.5"/>
+</g>
+<!-- FIRECONTROL -->
+<g id="node17" class="node">
+<title>FIRECONTROL</title>
+<path fill="#f5f5f5" stroke="#555555" d="M1829.5,-219.74C1829.5,-219.74 1714.5,-219.74 1714.5,-219.74 1708.5,-219.74 1702.5,-213.74 1702.5,-207.74 1702.5,-207.74 1702.5,-157.74 1702.5,-157.74 1702.5,-151.74 1708.5,-145.74 1714.5,-145.74 1714.5,-145.74 1829.5,-145.74 1829.5,-145.74 1835.5,-145.74 1841.5,-151.74 1841.5,-157.74 1841.5,-157.74 1841.5,-207.74 1841.5,-207.74 1841.5,-213.74 1835.5,-219.74 1829.5,-219.74"/>
+<text text-anchor="middle" x="1772" y="-203.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;firecontrol&#45;web</text>
+<text text-anchor="middle" x="1772" y="-191.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="1772" y="-179.94" font-family="Helvetica,sans-Serif" font-size="11.00">HTTP :8080</text>
+<text text-anchor="middle" x="1772" y="-167.94" font-family="Helvetica,sans-Serif" font-size="11.00">phone&#45;friendly UI</text>
+<text text-anchor="middle" x="1772" y="-155.94" font-family="Helvetica,sans-Serif" font-size="11.00">manual valve control</text>
+</g>
+<!-- FIRECONTROL&#45;&gt;FLARE -->
+<g id="edge19" class="edge">
+<title>FIRECONTROL&#45;&gt;FLARE</title>
+<path fill="none" stroke="#cc0000" stroke-dasharray="5,2" d="M1841.53,-182C1873.67,-182 1904.83,-182 1904.83,-182 1904.83,-182 1904.83,-59.76 1904.83,-59.76"/>
+<polygon fill="#cc0000" stroke="#cc0000" points="1908.33,-59.76 1904.83,-49.76 1901.33,-59.76 1908.33,-59.76"/>
+<text text-anchor="middle" x="1861" y="-99.54" font-family="Helvetica,sans-Serif" font-size="9.00">flame/flare/pulse</text>
+<text text-anchor="middle" x="1861" y="-89.54" font-family="Helvetica,sans-Serif" font-size="9.00">(manual tap)</text>
+</g>
+<!-- FIRECONTROL&#45;&gt;BIGJET -->
+<g id="edge20" class="edge">
+<title>FIRECONTROL&#45;&gt;BIGJET</title>
+<path fill="none" stroke="#cc0000" stroke-dasharray="5,2" d="M1702.21,-182C1668.65,-182 1635.61,-182 1635.61,-182 1635.61,-182 1635.61,-50.37 1635.61,-50.37"/>
+<polygon fill="#cc0000" stroke="#cc0000" points="1639.11,-50.37 1635.61,-40.37 1632.11,-50.37 1639.11,-50.37"/>
+<text text-anchor="middle" x="1715" y="-99.54" font-family="Helvetica,sans-Serif" font-size="9.00">flame/bigjet/pulse</text>
+<text text-anchor="middle" x="1715" y="-89.54" font-family="Helvetica,sans-Serif" font-size="9.00">(manual tap)</text>
+</g>
+<!-- AUDIOFIX -->
+<g id="node18" class="node">
+<title>AUDIOFIX</title>
+<path fill="#f5f5f5" stroke="#555555" d="M120,-219.74C120,-219.74 12,-219.74 12,-219.74 6,-219.74 0,-213.74 0,-207.74 0,-207.74 0,-157.74 0,-157.74 0,-151.74 6,-145.74 12,-145.74 12,-145.74 120,-145.74 120,-145.74 126,-145.74 132,-151.74 132,-157.74 132,-157.74 132,-207.74 132,-207.74 132,-213.74 126,-219.74 120,-219.74"/>
+<text text-anchor="middle" x="66" y="-203.94" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;audio&#45;fix</text>
+<text text-anchor="middle" x="66" y="-191.94" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text text-anchor="middle" x="66" y="-179.94" font-family="Helvetica,sans-Serif" font-size="11.00">device health check</text>
+<text text-anchor="middle" x="66" y="-167.94" font-family="Helvetica,sans-Serif" font-size="11.00">USB codec state</text>
+<text text-anchor="middle" x="66" y="-155.94" font-family="Helvetica,sans-Serif" font-size="11.00">remediation steps</text>
+</g>
+<!-- AUDIOFIX&#45;&gt;AGENT -->
+<g id="edge36" class="edge">
+<title>AUDIOFIX&#45;&gt;AGENT</title>
+<path fill="none" stroke="#555555" stroke-dasharray="1,5" d="M132.33,-182C224.13,-182 378.75,-182 378.75,-182 378.75,-182 378.75,-703.42 378.75,-703.42"/>
+<polygon fill="#555555" stroke="#555555" points="375.25,-703.42 378.75,-713.42 382.25,-703.42 375.25,-703.42"/>
+<text text-anchor="middle" x="111" y="-460.54" font-family="Helvetica,sans-Serif" font-size="9.00">reads audio/devices</text>
+<text text-anchor="middle" x="111" y="-450.54" font-family="Helvetica,sans-Serif" font-size="9.00">checks USB state</text>
+</g>
+</g>
 </svg>
