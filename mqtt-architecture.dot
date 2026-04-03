@@ -4,8 +4,8 @@ digraph bushglue {
         fontname="Helvetica"
         fontsize=12
         splines=ortho
-        nodesep=0.6
-        ranksep=0.8
+        nodesep=0.7
+        ranksep=0.9
         bgcolor="white"
     ]
     node [
@@ -24,50 +24,124 @@ digraph bushglue {
         labeldistance=2
     ]
 
-    // Hardware / external inputs
-    MIC [label="Microphone\n(audio input)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
-    SPEAKER [label="Speaker\n(audio output)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
-    DISCORD_USER [label="Discord User\n(/pray command)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    // ── Physical I/O ──────────────────────────────────────────────────────
+    MIC          [label="Microphone\n(audio input)"          shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    SPEAKER      [label="Speaker\n(audio output)"            shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    DISCORD_USER [label="Discord User\n(/pray command)"      shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    LOOPBACK     [label="ALSA Loopback\nhw:Loopback,0"       shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    FLARE        [label="Flare solenoid\n(valve)"            shape=ellipse fillcolor="#f4cccc" color="#cc0000"]
+    BIGJET       [label="Big Jet solenoid\n(valve)"          shape=ellipse fillcolor="#f4cccc" color="#cc0000"]
 
-    // Services
-    STT [label="bush-stt\nstt-service.py\n──────────────\nVosk STT\nmic input" fillcolor="#cfe2f3" color="#1155cc"]
-    T2V [label="bush-t2v\nt2v-service.py\n──────────────\nRust HTTP :8765\nOllama embed\nChromaDB :8000" fillcolor="#cfe2f3" color="#1155cc"]
-    TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
-    SENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nemotion classify\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
-    AGENT [label="audio-agent\naudio-agent.py\n──────────────\nPortAudio\ndevice discovery" fillcolor="#cfe2f3" color="#1155cc"]
-    BOT [label="discord-bot\ndiscord-bot.py\n──────────────\nDiscord VC bridge\n/pray injection" fillcolor="#cfe2f3" color="#1155cc"]
+    // ── Infrastructure ────────────────────────────────────────────────────
+    OLLAMA   [label="ollama\nHTTP :11434\n──────────────\nembedding model\n(opt: STT correction)"
+              fillcolor="#fff2cc" color="#856404"]
+    CHROMADB [label="chromadb\nHTTP :8000\n──────────────\nvector store\nt2v_chroma collection"
+              fillcolor="#e8d5f5" color="#7b2d8b"]
 
-    // Layout hints
+    // ── Pipeline services ─────────────────────────────────────────────────
+    STT  [label="bush-stt\nstt-service.py\n──────────────\nSoX highpass 200 Hz\nVosk STT\nwebrtcvad gate\nconfidence filter\n(opt: Ollama correct)\nfallback phrases"
+          fillcolor="#cfe2f3" color="#1155cc"]
+    T2V  [label="bush-t2v\nt2v-service.py\n──────────────\nRust HTTP :8765\nOllama embed\nChromaDB lookup\nwatchdog thread"
+          fillcolor="#cfe2f3" color="#1155cc"]
+    TTS  [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb"
+          fillcolor="#cfe2f3" color="#1155cc"]
+    SENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT classify\nHTTP :8585\nfire orchestration\n(inference lock)"
+          fillcolor="#cfe2f3" color="#1155cc"]
+    AGENT [label="audio-agent\naudio-agent.py\n──────────────\nPortAudio\ndevice discovery"
+           fillcolor="#cfe2f3" color="#1155cc"]
+    BOT  [label="discord-bot\ndiscord-bot.py\n──────────────\nDiscord VC bridge\n/pray injection\nVC audio receive"
+          fillcolor="#cfe2f3" color="#1155cc"]
+
+    // ── Operator tools ────────────────────────────────────────────────────
+    subgraph cluster_ops {
+        label="Ops & QA"
+        fontname="Helvetica"
+        fontsize=10
+        color="#aaaaaa"
+        style=dashed
+        fillcolor="transparent"
+        margin=12
+
+        MONITOR  [label="bush-monitor\n──────────────\nrich TUI\nlive all topics\ndevice picker\nfire ASCII art"
+                  fillcolor="#f5f5f5" color="#555555"]
+        INTTEST  [label="bush-integration-test\n──────────────\nloopback inject\nor transcript-only\nstage pass / fail\npulse counts"
+                  fillcolor="#f5f5f5" color="#555555"]
+        FIRECONTROL [label="bush-firecontrol-web\n──────────────\nHTTP :8080\nphone-friendly UI\nmanual valve control"
+                     fillcolor="#f5f5f5" color="#555555"]
+        AUDIOFIX [label="bush-audio-fix\n──────────────\ndevice health check\nUSB codec state\nremediation steps"
+                  fillcolor="#f5f5f5" color="#555555"]
+    }
+
+    // ── Layout hints ──────────────────────────────────────────────────────
     { rank=source; MIC; DISCORD_USER }
-    { rank=same; STT; AGENT }
-    { rank=same; T2V }
-    { rank=same; TTS; SENT; BOT }
-    { rank=sink; SPEAKER }
+    { rank=same;   STT; AGENT; LOOPBACK }
+    { rank=same;   T2V; OLLAMA; CHROMADB }
+    { rank=same;   TTS; SENT; BOT }
+    { rank=same;   MONITOR; INTTEST; FIRECONTROL; AUDIOFIX }
+    { rank=sink;   SPEAKER; FLARE; BIGJET }
 
-    // Audio I/O
-    MIC -> STT [label="audio" color="#38761d"]
-    TTS -> SPEAKER [label="espeak+sox" color="#38761d"]
+    // ── Audio I/O ─────────────────────────────────────────────────────────
+    MIC -> STT      [label="raw audio\n(arecord / parec)" color="#38761d"]
+    TTS -> SPEAKER  [label="espeak-ng\n+ sox reverb"       color="#38761d"]
 
-    // Discord /pray loop
-    DISCORD_USER -> BOT [label="/pray phrase" color="#674ea7"]
-    BOT -> STT [label="ALSA loopback\nhw:Loopback,0" color="#674ea7" style=dashed]
+    // ── /pray injection loop ──────────────────────────────────────────────
+    // BOT synthesizes phrase → ALSA loopback → STT captures as if spoken aloud
+    DISCORD_USER -> BOT      [label="/pray phrase"           color="#674ea7"]
+    BOT -> LOOPBACK          [label="espeak-ng + sox\nWAV → hw:Loopback,0"  color="#674ea7" style=dashed]
+    LOOPBACK -> STT          [label="loopback capture"       color="#674ea7" style=dashed]
 
-    // Main pipeline (MQTT)
-    STT -> T2V [label="stt/transcript\n{text, ts}" color="#1155cc"]
-    T2V -> TTS [label="t2v/verse\n{query, text, ts}" color="#1155cc"]
-    T2V -> SENT [label="t2v/verse\n{query, text, ts}" color="#1155cc"]
-    T2V -> BOT [label="t2v/verse" color="#1155cc" style=dashed]
+    // ── Main pipeline (MQTT) ──────────────────────────────────────────────
+    STT  -> T2V   [label="stt/transcript\n{text, ts}"            color="#1155cc"]
+    T2V  -> TTS   [label="t2v/verse\n{query, text, ts}"          color="#1155cc"]
+    T2V  -> SENT  [label="t2v/verse\n{query, text, ts}"          color="#1155cc"]
+    T2V  -> BOT   [label="t2v/verse"                             color="#1155cc" style=dashed]
 
-    // TTS feedback
-    TTS -> STT [label="tts/speaking\ntts/done" color="#cc4125" style=dashed]
+    // ── Partial / processing side-channel ─────────────────────────────────
+    // Not on the critical path; observers only
+    STT  -> BOT    [label="stt/partial"                          color="#999999" style=dotted]
+    T2V  -> BOT    [label="t2v/processing\n{text, ts}"           color="#999999" style=dotted]
 
-    // TTS / sentiment
-    TTS -> SENT [label="tts/done\n{ts}" color="#cc4125" style=dashed]
+    // ── TTS feedback (QoS 1 both ends) ───────────────────────────────────
+    TTS  -> STT   [label="tts/speaking\ntts/done  (QoS 1)"      color="#cc4125" style=dashed]
+    TTS  -> SENT  [label="tts/done  {ts}\n(bounds fire loop)"   color="#cc4125" style=dashed]
 
-    // Sentiment result
-    SENT -> BOT [label="sentiment/result\n{classification[], flare, bigjet}" color="#1155cc" style=dashed]
+    // ── Sentiment result ──────────────────────────────────────────────────
+    SENT -> BOT   [label="sentiment/result\n{classification[], flare, bigjet}" color="#1155cc" style=dashed]
 
-    // Audio device management
-    AGENT -> STT [label="audio/devices\n(retained)" color="#999999" style=dotted]
-    AGENT -> TTS [label="audio/devices\n(retained)" color="#999999" style=dotted]
+    // ── Fire control ──────────────────────────────────────────────────────
+    // SENT pulses fire on loop from verse→tts/done; BOT and FIRECONTROL publish ad-hoc
+    SENT        -> FLARE   [label="flame/flare/pulse\n(ms, loop until tts/done)"  color="#cc0000"]
+    SENT        -> BIGJET  [label="flame/bigjet/pulse\n(ms, loop until tts/done)" color="#cc0000"]
+    BOT         -> FLARE   [label="flame/flare/pulse\n(/fire command)"             color="#cc0000" style=dashed]
+    BOT         -> BIGJET  [label="flame/bigjet/pulse\n(/fire command)"            color="#cc0000" style=dashed]
+    FIRECONTROL -> FLARE   [label="flame/flare/pulse\n(manual tap)"                color="#cc0000" style=dashed]
+    FIRECONTROL -> BIGJET  [label="flame/bigjet/pulse\n(manual tap)"               color="#cc0000" style=dashed]
+
+    // ── AI backends ───────────────────────────────────────────────────────
+    T2V -> OLLAMA   [label="HTTP embed\n(qwen3-embedding)"          color="#856404" style=dashed]
+    T2V -> CHROMADB [label="HTTP query\n:8000"                       color="#7b2d8b" style=dashed]
+    STT -> OLLAMA   [label="HTTP correct\n(STT_LLM_CORRECT=1 only)" color="#856404" style=dashed]
+
+    // ── Audio device management ───────────────────────────────────────────
+    AGENT -> STT     [label="audio/devices\n(retained)"              color="#999999" style=dotted]
+    AGENT -> TTS     [label="audio/devices\n(retained)"              color="#999999" style=dotted]
+    MONITOR -> AGENT [label="audio/discover"                         color="#999999" style=dotted]
+    MONITOR -> STT   [label="audio/stt/set-device"                   color="#999999" style=dotted]
+    MONITOR -> TTS   [label="audio/tts/set-device\naudio/tts/clarity" color="#999999" style=dotted]
+
+    // ── Monitor bus tap ───────────────────────────────────────────────────
+    // bush-monitor subscribes to every topic for the live TUI
+    STT  -> MONITOR [label="stt/partial\nstt/transcript"              color="#999999" style=dotted]
+    T2V  -> MONITOR [label="t2v/processing\nt2v/verse"                color="#999999" style=dotted]
+    TTS  -> MONITOR [label="tts/speaking\ntts/done"                   color="#999999" style=dotted]
+    SENT -> MONITOR [label="sentiment/result\nflame/*/pulse"          color="#999999" style=dotted]
+
+    // ── Integration test harness ──────────────────────────────────────────
+    // Injects via loopback (full stack) or direct MQTT transcript (bypass STT hw)
+    INTTEST -> LOOPBACK [label="bush-pray inject\n(full stack mode)"   color="#555555" style=dashed]
+    INTTEST -> STT      [label="stt/force-finalize\nor transcript pub\n(--transcript-only)" color="#555555" style=dashed]
+    INTTEST -> MONITOR  [label="subscribes all\nstage topics\n(pass/fail timing)" color="#555555" style=dotted]
+
+    // ── Audio diagnostic ──────────────────────────────────────────────────
+    AUDIOFIX -> AGENT [label="reads audio/devices\nchecks USB state"   color="#555555" style=dotted]
 }

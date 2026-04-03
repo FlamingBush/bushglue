@@ -32,6 +32,7 @@ import json
 import os
 import pathlib
 import queue
+import random
 import subprocess as _subprocess
 import sys
 import threading
@@ -71,6 +72,37 @@ CONFIDENCE_THRESHOLD = float(os.environ.get("STT_CONFIDENCE", "0.6"))
 LLM_CORRECT  = os.environ.get("STT_LLM_CORRECT", "0") == "1"
 LLM_MODEL    = os.environ.get("STT_LLM_MODEL", "qwen3:1.7b")
 OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+
+# ── Fallback phrases ───────────────────────────────────────────────────────
+# Used when a manual force-finalize produces no speech. Cycles through all
+# phrases before repeating (shuffled reservoir). VAD-triggered silence does
+# NOT use these — they're reserved for intentional finalize requests.
+FALLBACK_PHRASES = [
+    "what is the fire",
+    "speak of the light",
+    "what burns in the darkness",
+    "tell me of the wilderness",
+    "who tends the flame",
+    "what is the meaning of the desert",
+    "speak of the beginning",
+    "what lives in the smoke",
+    "where does the fire come from",
+    "tell me of the burning bush",
+    "what is the voice in the wilderness",
+    "speak of water and flame",
+    "what is revealed by fire",
+    "tell me of the night",
+    "what rises from the ash",
+]
+_fallback_iter: list[str] = []
+
+
+def _next_fallback() -> str:
+    global _fallback_iter
+    if not _fallback_iter:
+        _fallback_iter = random.sample(FALLBACK_PHRASES, len(FALLBACK_PHRASES))
+    return _fallback_iter.pop()
+
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT      = "bush/pipeline/stt/transcript"
@@ -287,6 +319,7 @@ def main():
     muted = threading.Event()
     reset_recognizer = threading.Event()
     force_finalize = threading.Event()
+    manual_finalize = threading.Event()  # set only on MQTT trigger, not VAD
     _mute_timer: list[threading.Timer | None] = [None]
 
     # ── device change ──────────────────────────────────────────────────────
@@ -323,7 +356,13 @@ def main():
             tts_pause.set()
 
     # ── MQTT setup ─────────────────────────────────────────────────────────
-    mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    # Stable client ID + clean_session=False so QoS 1 messages queued while
+    # briefly disconnected (e.g. tts/speaking) are delivered on reconnect.
+    mqttc = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        client_id="bush-stt",
+        clean_session=False,
+    )
 
     def on_message(client, userdata, msg):
         if msg.topic == TOPIC_TTS_SPEAKING:
@@ -332,6 +371,7 @@ def main():
             on_tts_done()
         elif msg.topic == TOPIC_FORCE_FINALIZE:
             log("Force-finalize requested (manual).")
+            manual_finalize.set()
             force_finalize.set()
         elif msg.topic == TOPIC_PIPELINE_PING:
             client.publish(TOPIC_PIPELINE_PONG, "")
@@ -350,8 +390,8 @@ def main():
                 log(f"set-device error: {e}")
 
     def on_connect(client, userdata, flags, reason_code, properties):
-        # QoS 1 on mute/unmute — loss causes feedback loop or permanent mute
-        # TODO: for full reliability across reconnects use stable client ID + clean_session=False
+        # QoS 1 on mute/unmute — loss causes feedback loop or permanent mute.
+        # Re-subscribe on every connect (handles reconnects after network drops).
         client.subscribe(TOPIC_TTS_SPEAKING, qos=1)
         client.subscribe(TOPIC_TTS_DONE, qos=1)
         client.subscribe(TOPIC_SET_DEVICE)
@@ -443,14 +483,19 @@ def main():
 
                     # ── force-finalize (manual or VAD-triggered) ───────────
                     if force_finalize.is_set():
+                        is_manual = manual_finalize.is_set()
                         force_finalize.clear()
+                        manual_finalize.clear()
                         text = stt.final_result() or last_partial
                         if not text:
-                            log("Force-finalize: no speech detected, skipping publish.")
-                            stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
-                            reset_recognizer.clear()
-                            log("Recognizer reset (force-finalize, no speech).")
-                            continue
+                            if is_manual:
+                                text = _next_fallback()
+                                log(f"Force-finalize: no speech — using fallback: {text!r}")
+                            else:
+                                log("VAD silence: no speech detected, skipping publish.")
+                                stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                                reset_recognizer.clear()
+                                continue
                         log(f"Force-final: {text!r}")
                         _publish_transcript(text)
                         last_partial = ""
