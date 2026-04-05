@@ -152,25 +152,35 @@ def build_edge(e):
     if abs(sx - dx) < 60:
         # Mostly vertical
         if sy < dy:
+            # downward: exit bottom of src, enter top of dst
             x1, y1 = cx(src_n), bottom(src_n)
             x2, y2 = cx(dst_n), dst_n["y"]
+            ctrl_dy = abs(y2 - y1) * 0.4
+            path = f"M {x1} {y1} C {x1} {y1+ctrl_dy} {x2} {y2-ctrl_dy} {x2} {y2}"
         else:
+            # upward: exit top of src, enter bottom of dst
             x1, y1 = cx(src_n), src_n["y"]
             x2, y2 = cx(dst_n), bottom(dst_n)
-        ctrl_dy = abs(y2 - y1) * 0.4
-        path = f"M {x1} {y1} C {x1} {y1+ctrl_dy} {x2} {y2-ctrl_dy} {x2} {y2}"
+            ctrl_dy = abs(y2 - y1) * 0.4
+            # control points pull upward so path arrives at dst going upward
+            path = f"M {x1} {y1} C {x1} {y1-ctrl_dy} {x2} {y2+ctrl_dy} {x2} {y2}"
         lx = (x1 + x2) / 2 + 8
         ly = (y1 + y2) / 2
     else:
         # More horizontal — use side attachment
         if sx < dx:
+            # left-to-right: exit right side of src, enter left side of dst
             x1, y1 = right(src_n), cy(src_n)
             x2, y2 = dst_n["x"], cy(dst_n)
+            ctrl_dx = abs(x2 - x1) * 0.45
+            path = f"M {x1} {y1} C {x1+ctrl_dx} {y1} {x2-ctrl_dx} {y2} {x2} {y2}"
         else:
+            # right-to-left: exit left side of src, enter right side of dst
             x1, y1 = src_n["x"], cy(src_n)
             x2, y2 = right(dst_n), cy(dst_n)
-        ctrl_dx = abs(x2 - x1) * 0.45
-        path = f"M {x1} {y1} C {x1+ctrl_dx} {y1} {x2-ctrl_dx} {y2} {x2} {y2}"
+            ctrl_dx = abs(x2 - x1) * 0.45
+            # control points pull leftward so path arrives at dst going left
+            path = f"M {x1} {y1} C {x1-ctrl_dx} {y1} {x2+ctrl_dx} {y2} {x2} {y2}"
         lx = (x1 + x2) / 2
         ly = (y1 + y2) / 2 - 8
 
