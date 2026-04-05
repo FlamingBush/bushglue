@@ -1,6 +1,6 @@
 [Unit]
 Description=Sentiment Analysis with MQTT Fire Control
-After=network.target bush-t2v.service
+After=network.target
 
 [Service]
 Type=simple

@@ -4,17 +4,22 @@
 # Requires transformers and torch
 import torch
 torch.set_num_threads(1)  # limit CPU parallelism to prevent power-supply brownout on RK3568
-from transformers import pipeline
+from transformers import pipeline as hf_pipeline
 
 # For serving the http interface
 
 
-# Text classifier
-# see https://huggingface.co/bhadresh-savani/distilbert-base-uncased-emotion?text=I+feel+a+bit+let+down
-# Create the classifier
-classifier = pipeline("text-classification",model='bhadresh-savani/distilbert-base-uncased-emotion', return_all_scores=True)
-# Warm it up with a throw-away execution which gets it to download the model, and then load that model
-classifier("Weeeeee!", )
+# Classifier is loaded lazily in main() so MQTT can connect first and queue
+# messages while the model loads (~20s on ODROID).
+classifier = None
+
+
+def _load_model():
+    global classifier
+    print("[sentiment] Loading DistilBERT model...", flush=True)
+    classifier = hf_pipeline("text-classification", model='bhadresh-savani/distilbert-base-uncased-emotion', return_all_scores=True)
+    classifier("Weeeeee!")  # warmup
+    print("[sentiment] Model ready.", flush=True)
 
 
 # For the HTTP server
@@ -153,6 +158,10 @@ def _start_mqtt_thread():
                 _stop_fire()
                 return
 
+            if classifier is None:
+                print("[sentiment] Model not ready — dropping verse", flush=True)
+                return
+
             data = json.loads(msg.payload)
             verse_text = data.get("text", "").strip()
             if not verse_text:
@@ -216,7 +225,8 @@ class Server(BaseHTTPRequestHandler):
         self.resp(200, {'message': message, 'classification': classifier(message)})
 
 if __name__ == "__main__":
-    _start_mqtt_thread()
+    _start_mqtt_thread()   # subscribe first — messages queue while model loads
+    _load_model()          # now load DistilBERT (~20s on ODROID)
     address = ("0.0.0.0", 8585)
     httpd = HTTPServer(address, Server)
     print("Starting server ...")
