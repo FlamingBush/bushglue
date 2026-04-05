@@ -108,14 +108,19 @@ def svg_node(n):
     total = len(n["lines"]) * line_h
     start_y = y + (h - total) // 2 + 11
     for i, line in enumerate(n["lines"]):
-        bold = i == 0
-        weight = ' font-weight="bold"' if bold else ''
-        mono = ' font-family="monospace" font-size="10"' if line.startswith("──") else ''
-        parts.append(
-            f'<text x="{x + w//2}" y="{start_y + i*line_h}" '
-            f'text-anchor="middle" font-family="Helvetica,Arial,sans-serif" '
-            f'font-size="11"{weight}{mono}>{line}</text>'
-        )
+        if line.startswith("──"):
+            parts.append(
+                f'<text x="{x + w//2}" y="{start_y + i*line_h}" '
+                f'text-anchor="middle" font-family="monospace" font-size="10">{line}</text>'
+            )
+        else:
+            bold = i == 0
+            weight = ' font-weight="bold"' if bold else ''
+            parts.append(
+                f'<text x="{x + w//2}" y="{start_y + i*line_h}" '
+                f'text-anchor="middle" font-family="Helvetica,Arial,sans-serif" '
+                f'font-size="11"{weight}>{line}</text>'
+            )
     return "\n".join(parts)
 
 
@@ -253,3 +258,11 @@ out = "/home/user/bushglue/mqtt-architecture.svg"
 with open(out, "w") as f:
     f.write(svg)
 print(f"Written: {out}")
+
+try:
+    import cairosvg
+    png_out = "/home/user/bushglue/mqtt-architecture.png"
+    cairosvg.svg2png(url=out, write_to=png_out, scale=2)
+    print(f"Written: {png_out}")
+except ImportError:
+    print("cairosvg not installed — skipping PNG export (pip install cairosvg)")

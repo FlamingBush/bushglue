@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
   <defs>
-    <marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
-<marker id="arrow-674ea7" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#674ea7"/></marker>
-<marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
+    <marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
 <marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
+<marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
 <marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
+<marker id="arrow-674ea7" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#674ea7"/></marker>
   </defs>
   <rect width="1100" height="860" fill="white"/>
 
@@ -78,41 +78,41 @@
 <rect x="30" y="140" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="140" y="173" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-stt</text>
 <text x="140" y="188" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">stt-service.py</text>
-<text x="140" y="203" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
+<text x="140" y="203" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
 <text x="140" y="218" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Vosk STT</text>
 <text x="140" y="233" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">mic input</text>
 
 <rect x="820" y="140" width="220" height="100" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="930" y="171" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">audio-agent</text>
 <text x="930" y="186" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">audio-agent.py</text>
-<text x="930" y="201" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
+<text x="930" y="201" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
 <text x="930" y="216" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">PortAudio discovery</text>
 
 <rect x="340" y="340" width="260" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="470" y="373" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-t2v</text>
 <text x="470" y="388" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">t2v-service.py</text>
-<text x="470" y="403" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
+<text x="470" y="403" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
 <text x="470" y="418" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Rust HTTP :8765</text>
 <text x="470" y="433" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Ollama embed + ChromaDB :8000</text>
 
 <rect x="30" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="140" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-tts</text>
 <text x="140" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">tts-service.py</text>
-<text x="140" y="603" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
+<text x="140" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
 <text x="140" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">espeak-ng</text>
 <text x="140" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sox reverb</text>
 
 <rect x="380" y="540" width="240" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="500" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-sentiment</text>
 <text x="500" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sentiment-service.py</text>
-<text x="500" y="603" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
+<text x="500" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
 <text x="500" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">DistilBERT emotion</text>
 <text x="500" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">fire orchestration</text>
 
 <rect x="730" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="840" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">discord-bot</text>
 <text x="840" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">discord-bot.py</text>
-<text x="840" y="603" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
+<text x="840" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
 <text x="840" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Discord VC bridge</text>
 <text x="840" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray injection</text>
 

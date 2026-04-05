@@ -2,7 +2,7 @@
 
 ## Component Diagram
 
-![MQTT architecture diagram](mqtt-architecture.svg)
+![MQTT architecture diagram](mqtt-architecture.png)
 
 > Source: [`mqtt-architecture.dot`](mqtt-architecture.dot) — regenerate with `python3 render-diagram.py`
 
