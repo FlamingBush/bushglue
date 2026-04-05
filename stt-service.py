@@ -243,9 +243,14 @@ def main():
             reader_thread = None
             try:
                 if _is_alsa_device(current_device):
-                    log(f"Opening ALSA device {current_device!r} at {SAMPLE_RATE} Hz...")
+                    # Use plughw: so ALSA handles resampling/channel conversion
+                    # (e.g. Yeti only supports stereo 48kHz on hw:)
+                    alsa_dev = str(current_device)
+                    if alsa_dev.startswith("hw:"):
+                        alsa_dev = "plug" + alsa_dev
+                    log(f"Opening ALSA device {alsa_dev!r} at {SAMPLE_RATE} Hz...")
                     parec_proc = _subprocess.Popen(
-                        ["arecord", "-D", str(current_device),
+                        ["arecord", "-D", alsa_dev,
                          "-f", "S16_LE", "-c", "1", f"-r{SAMPLE_RATE}", "-t", "raw"],
                         stdout=_subprocess.PIPE,
                         stderr=_subprocess.DEVNULL,
