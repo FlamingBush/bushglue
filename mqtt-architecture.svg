@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
   <defs>
-    <marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
+    <marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
+<marker id="arrow-674ea7" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#674ea7"/></marker>
 <marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
 <marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
-<marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
+<marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
   </defs>
   <rect width="1100" height="860" fill="white"/>
 
@@ -16,8 +17,10 @@
   <text x="235" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">feedback / mute</text>
   <line x1="350" y1="797" x2="380" y2="797" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
   <text x="385" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
-  <line x1="450" y1="797" x2="480" y2="797" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-  <text x="485" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">device config</text>
+  <line x1="560" y1="797" x2="590" y2="797" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
+  <text x="595" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">Discord /pray</text>
+  <line x1="675" y1="797" x2="705" y2="797" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
+  <text x="710" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">device config</text>
 
   <!-- edges (drawn first so nodes appear on top) -->
   <path d="M 170 74 C 170 100.4 140 113.6 140 140" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
@@ -26,11 +29,17 @@
 <path d="M 140 660 C 140 694.0 180 711.0 180 745" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
 <text x="168" y="702" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">espeak+sox</text>
 
+<path d="M 900 52 C 877.5 52 972.5 600 950 600" fill="none" stroke="#674ea7" stroke-width="1.5" marker-end="url(#arrow-674ea7)"/>
+<text x="925" y="318" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">/pray phrase</text>
+
+<path d="M 730 600 C 514.0 600 466.0 200 250 200" fill="none" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
+<text x="490" y="392" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">ALSA loopback</text>
+
 <path d="M 250 200 C 290.5 200 299.5 400 340 400" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
 <text x="295" y="292" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">stt/transcript</text>
 <text x="295" y="305" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">{text, ts}</text>
 
-<path d="M 340 400 C 380.5 400 209.5 600 250 600" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
+<path d="M 340 400 C 299.5 400 290.5 600 250 600" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
 <text x="295" y="492" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
 <text x="295" y="505" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">{query,text,ts}</text>
 
@@ -40,7 +49,7 @@
 <path d="M 600 400 C 658.5 400 671.5 600 730 600" fill="none" stroke="#1155cc" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-1155cc)"/>
 <text x="665" y="492" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
 
-<path d="M 140 540 C 140 652.0 140 148.0 140 260" fill="none" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
+<path d="M 140 540 C 140 428.0 140 372.0 140 260" fill="none" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
 <text x="148" y="400" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/speaking</text>
 <text x="148" y="413" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/done</text>
 
@@ -50,56 +59,60 @@
 <path d="M 620 600 C 669.5 600 680.5 600 730 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-999999)"/>
 <text x="675" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">sentiment/result</text>
 
-<path d="M 820 190 C 650 110 400 110 250 190" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="535" y="105" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="535" y="118" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
+<path d="M 820 190 C 563.5 190 506.5 200 250 200" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
+<text x="535" y="187" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
+<text x="535" y="200" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
 
-<path d="M 820 190 C 200 190 200 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="285" y="390" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="285" y="403" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
+<path d="M 820 190 C 563.5 190 506.5 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
+<text x="535" y="387" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
+<text x="535" y="400" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
 
   <!-- nodes -->
   <ellipse cx="170" cy="52" rx="70" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
 <text x="170" y="55" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Microphone</text>
 
+<ellipse cx="980" cy="52" rx="80" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
+<text x="980" y="48" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Discord User</text>
+<text x="980" y="63" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray command</text>
+
 <rect x="30" y="140" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="140" y="173" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-stt</text>
 <text x="140" y="188" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">stt-service.py</text>
-<text x="140" y="203" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
+<text x="140" y="203" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
 <text x="140" y="218" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Vosk STT</text>
 <text x="140" y="233" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">mic input</text>
 
 <rect x="820" y="140" width="220" height="100" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="930" y="171" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">audio-agent</text>
 <text x="930" y="186" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">audio-agent.py</text>
-<text x="930" y="201" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
+<text x="930" y="201" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
 <text x="930" y="216" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">PortAudio discovery</text>
 
 <rect x="340" y="340" width="260" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="470" y="373" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-t2v</text>
 <text x="470" y="388" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">t2v-service.py</text>
-<text x="470" y="403" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
+<text x="470" y="403" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
 <text x="470" y="418" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Rust HTTP :8765</text>
 <text x="470" y="433" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Ollama embed + ChromaDB :8000</text>
 
 <rect x="30" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="140" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-tts</text>
 <text x="140" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">tts-service.py</text>
-<text x="140" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
+<text x="140" y="603" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
 <text x="140" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">espeak-ng</text>
 <text x="140" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sox reverb</text>
 
 <rect x="380" y="540" width="240" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="500" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-sentiment</text>
 <text x="500" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sentiment-service.py</text>
-<text x="500" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
+<text x="500" y="603" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
 <text x="500" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">DistilBERT emotion</text>
 <text x="500" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">fire orchestration</text>
 
 <rect x="730" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
 <text x="840" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">discord-bot</text>
 <text x="840" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">discord-bot.py</text>
-<text x="840" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
+<text x="840" y="603" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-family="monospace" font-size="10">──────────────</text>
 <text x="840" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Discord VC bridge</text>
 <text x="840" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray injection</text>
 
