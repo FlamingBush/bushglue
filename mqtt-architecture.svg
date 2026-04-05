@@ -2,10 +2,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
   <defs>
     <marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
-<marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
-<marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
 <marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
 <marker id="arrow-674ea7" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#674ea7"/></marker>
+<marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
+<marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
   </defs>
   <rect width="1100" height="860" fill="white"/>
 
@@ -29,11 +29,11 @@
 <path d="M 140 660 C 140 694.0 180 711.0 180 745" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
 <text x="168" y="702" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">espeak+sox</text>
 
-<path d="M 900 52 C 877.5 52 972.5 600 950 600" fill="none" stroke="#674ea7" stroke-width="1.5" marker-end="url(#arrow-674ea7)"/>
-<text x="925" y="318" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">/pray phrase</text>
+<path d="M 1060 52 C 1095 52 1095 600 950 600" fill="none" stroke="#674ea7" stroke-width="1.5" marker-end="url(#arrow-674ea7)"/>
+<text x="1055" y="320" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">/pray phrase</text>
 
-<path d="M 730 600 C 514.0 600 466.0 200 250 200" fill="none" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
-<text x="490" y="392" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">ALSA loopback</text>
+<path d="M 730 600 C 730 80 320 200 250 200" fill="none" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
+<text x="490" y="160" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">ALSA loopback</text>
 
 <path d="M 250 200 C 290.5 200 299.5 400 340 400" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
 <text x="295" y="292" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">stt/transcript</text>
@@ -63,9 +63,9 @@
 <text x="535" y="187" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
 <text x="535" y="200" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
 
-<path d="M 820 190 C 563.5 190 506.5 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="535" y="387" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="535" y="400" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
+<path d="M 820 190 C 500 190 20 300 20 400 C 20 500 430 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
+<text x="75" y="390" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
+<text x="75" y="403" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
 
   <!-- nodes -->
   <ellipse cx="170" cy="52" rx="70" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>

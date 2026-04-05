@@ -64,9 +64,14 @@ EDGES = [
     dict(src="MIC",    dst="STT",   label="audio",                  color="#38761d", dash=""),
     dict(src="TTS",    dst="SPKR",  label="espeak+sox",             color="#38761d", dash=""),
 
-    # discord /pray
-    dict(src="DISC_U", dst="BOT",   label="/pray phrase",           color="#674ea7", dash=""),
-    dict(src="BOT",    dst="STT",   label="ALSA loopback",          color="#674ea7", dash="6,4"),
+    # discord /pray  — route DISC_U→BOT down the right margin (clear of AGENT),
+    #                   route BOT→STT over the top (clear of T2V)
+    dict(src="DISC_U", dst="BOT",   label="/pray phrase",           color="#674ea7", dash="",
+         path="M 1060 52 C 1095 52 1095 600 950 600",
+         label_pos=(1055, 320)),
+    dict(src="BOT",    dst="STT",   label="ALSA loopback",          color="#674ea7", dash="6,4",
+         path="M 730 600 C 730 80 320 200 250 200",
+         label_pos=(490, 160)),
 
     # main pipeline
     dict(src="STT",    dst="T2V",   label="stt/transcript\n{text, ts}", color="#1155cc", dash=""),
@@ -83,7 +88,10 @@ EDGES = [
 
     # audio device management
     dict(src="AGENT",  dst="STT",   label="audio/devices\n(retained)", color="#999999", dash="3,3"),
-    dict(src="AGENT",  dst="TTS",   label="audio/devices\n(retained)", color="#999999", dash="3,3"),
+    # route AGENT→TTS down the left margin (clear of T2V/SENT)
+    dict(src="AGENT",  dst="TTS",   label="audio/devices\n(retained)", color="#999999", dash="3,3",
+         path="M 820 190 C 500 190 20 300 20 400 C 20 500 430 600 250 600",
+         label_pos=(75, 390)),
 ]
 
 # ── SVG helpers ──────────────────────────────────────────────────────
@@ -150,44 +158,49 @@ def build_edge(e):
     dash = e["dash"]
     label = e["label"]
 
-    sx, sy = cx(src_n), cy(src_n)
-    dx, dy = cx(dst_n), cy(dst_n)
-
-    # Determine attachment points based on relative position
-    if abs(sx - dx) < 60:
-        # Mostly vertical
-        if sy < dy:
-            # downward: exit bottom of src, enter top of dst
-            x1, y1 = cx(src_n), bottom(src_n)
-            x2, y2 = cx(dst_n), dst_n["y"]
-            ctrl_dy = abs(y2 - y1) * 0.4
-            path = f"M {x1} {y1} C {x1} {y1+ctrl_dy} {x2} {y2-ctrl_dy} {x2} {y2}"
-        else:
-            # upward: exit top of src, enter bottom of dst
-            x1, y1 = cx(src_n), src_n["y"]
-            x2, y2 = cx(dst_n), bottom(dst_n)
-            ctrl_dy = abs(y2 - y1) * 0.4
-            # control points pull upward so path arrives at dst going upward
-            path = f"M {x1} {y1} C {x1} {y1-ctrl_dy} {x2} {y2+ctrl_dy} {x2} {y2}"
-        lx = (x1 + x2) / 2 + 8
-        ly = (y1 + y2) / 2
+    if "path" in e:
+        # Custom routed path — avoids routing through other nodes
+        path = e["path"]
+        lx, ly = e.get("label_pos", (0, 0))
     else:
-        # More horizontal — use side attachment
-        if sx < dx:
-            # left-to-right: exit right side of src, enter left side of dst
-            x1, y1 = right(src_n), cy(src_n)
-            x2, y2 = dst_n["x"], cy(dst_n)
-            ctrl_dx = abs(x2 - x1) * 0.45
-            path = f"M {x1} {y1} C {x1+ctrl_dx} {y1} {x2-ctrl_dx} {y2} {x2} {y2}"
+        sx, sy = cx(src_n), cy(src_n)
+        dx, dy = cx(dst_n), cy(dst_n)
+
+        # Determine attachment points based on relative position
+        if abs(sx - dx) < 60:
+            # Mostly vertical
+            if sy < dy:
+                # downward: exit bottom of src, enter top of dst
+                x1, y1 = cx(src_n), bottom(src_n)
+                x2, y2 = cx(dst_n), dst_n["y"]
+                ctrl_dy = abs(y2 - y1) * 0.4
+                path = f"M {x1} {y1} C {x1} {y1+ctrl_dy} {x2} {y2-ctrl_dy} {x2} {y2}"
+            else:
+                # upward: exit top of src, enter bottom of dst
+                x1, y1 = cx(src_n), src_n["y"]
+                x2, y2 = cx(dst_n), bottom(dst_n)
+                ctrl_dy = abs(y2 - y1) * 0.4
+                # control points pull upward so path arrives at dst going upward
+                path = f"M {x1} {y1} C {x1} {y1-ctrl_dy} {x2} {y2+ctrl_dy} {x2} {y2}"
+            lx = (x1 + x2) / 2 + 8
+            ly = (y1 + y2) / 2
         else:
-            # right-to-left: exit left side of src, enter right side of dst
-            x1, y1 = src_n["x"], cy(src_n)
-            x2, y2 = right(dst_n), cy(dst_n)
-            ctrl_dx = abs(x2 - x1) * 0.45
-            # control points pull leftward so path arrives at dst going left
-            path = f"M {x1} {y1} C {x1-ctrl_dx} {y1} {x2+ctrl_dx} {y2} {x2} {y2}"
-        lx = (x1 + x2) / 2
-        ly = (y1 + y2) / 2 - 8
+            # More horizontal — use side attachment
+            if sx < dx:
+                # left-to-right: exit right side of src, enter left side of dst
+                x1, y1 = right(src_n), cy(src_n)
+                x2, y2 = dst_n["x"], cy(dst_n)
+                ctrl_dx = abs(x2 - x1) * 0.45
+                path = f"M {x1} {y1} C {x1+ctrl_dx} {y1} {x2-ctrl_dx} {y2} {x2} {y2}"
+            else:
+                # right-to-left: exit left side of src, enter right side of dst
+                x1, y1 = src_n["x"], cy(src_n)
+                x2, y2 = right(dst_n), cy(dst_n)
+                ctrl_dx = abs(x2 - x1) * 0.45
+                # control points pull leftward so path arrives at dst going left
+                path = f"M {x1} {y1} C {x1-ctrl_dx} {y1} {x2+ctrl_dx} {y2} {x2} {y2}"
+            lx = (x1 + x2) / 2
+            ly = (y1 + y2) / 2 - 8
 
     dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
     parts = []
