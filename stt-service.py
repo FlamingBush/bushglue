@@ -66,6 +66,7 @@ TOPIC_DEVICE_STATUS   = "bush/audio/stt/device"
 TOPIC_FORCE_FINALIZE  = "bush/pipeline/stt/force-finalize"
 TOPIC_PIPELINE_PING   = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG   = "bush/pipeline/pong"
+TOPIC_TTS_DEVICE      = "bush/audio/tts/device"
 MQTT_PORT = 1883
 
 
@@ -87,6 +88,15 @@ def _is_alsa_device(device) -> bool:
     """Return True if device is an ALSA hw: specifier rather than a PA source name."""
     s = str(device)
     return s.startswith("hw:") or s.startswith("plughw:")
+
+
+def _alsa_card(device) -> str | None:
+    """Extract card name from an ALSA device string, e.g. 'hw:Microphone' -> 'Microphone'."""
+    s = str(device)
+    for prefix in ("plughw:", "hw:"):
+        if s.startswith(prefix):
+            return s[len(prefix):].split(",")[0]
+    return None
 
 
 def _pa_source_present(device) -> bool:
@@ -135,11 +145,13 @@ def main():
     device_change = threading.Event()
     next_device = [STT_DEVICE]   # list so inner functions can mutate it
 
-    # ── ALSA TTS pause/resume (take turns on hw: devices) ──────────────────
-    # When TTS speaks on an ALSA device, STT releases the capture interface
-    # so the OHCI controller doesn't get concurrent playback+capture opens.
+    # ── ALSA TTS pause/resume (take turns on shared hw: devices) ────────────
+    # When TTS speaks on the *same* ALSA card as STT, release the capture
+    # interface so the OHCI controller doesn't get concurrent opens.
+    # If they're on different cards (e.g. Yeti vs C-Media), no pause needed.
     tts_pause  = threading.Event()
     tts_resume = threading.Event()
+    tts_device = [None]  # tracked via MQTT retained message
 
     def on_tts_done():
         if _mute_timer[0] is not None:
@@ -161,7 +173,9 @@ def main():
         t.daemon = True
         t.start()
         _mute_timer[0] = t
-        if _is_alsa_device(current_device):
+        stt_card = _alsa_card(current_device)
+        tts_card = _alsa_card(tts_device[0]) if tts_device[0] else None
+        if stt_card and stt_card == tts_card:
             tts_resume.clear()
             tts_pause.set()
 
@@ -178,6 +192,12 @@ def main():
             force_finalize.set()
         elif msg.topic == TOPIC_PIPELINE_PING:
             client.publish(TOPIC_PIPELINE_PONG, "")
+        elif msg.topic == TOPIC_TTS_DEVICE:
+            try:
+                data = json.loads(msg.payload)
+                tts_device[0] = data.get("device")
+            except Exception:
+                pass
         elif msg.topic == TOPIC_SET_DEVICE:
             try:
                 data = json.loads(msg.payload)
@@ -198,6 +218,7 @@ def main():
         client.subscribe(TOPIC_SET_DEVICE)
         client.subscribe(TOPIC_FORCE_FINALIZE)
         client.subscribe(TOPIC_PIPELINE_PING)
+        client.subscribe(TOPIC_TTS_DEVICE)
         # Publish current device on reconnect
         client.publish(TOPIC_DEVICE_STATUS,
                        json.dumps({"device": next_device[0]}), retain=True)
