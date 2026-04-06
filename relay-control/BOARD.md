@@ -7,8 +7,6 @@
 | Board | Raspberry Pi Pico 2 W |
 | Board ID | `raspberry_pi_pico2_w` |
 | CircuitPython | 10.0.3 (2025-10-17) |
-| UID | `77FD8A1B8F89874F` |
-| MAC | `88:A2:9E:45:94:A3` |
 
 ## Pin Assignments
 
@@ -24,10 +22,6 @@
 | `bush/flame/flare/pulse` | integer ms | Fire flare for N ms |
 | `bush/flame/bigjet/pulse` | integer ms | Fire big jet for N ms |
 
-Pulses are safe by design: the deadline is always set on the board and the pin turns
-off even if the network drops. Sending a longer pulse extends the deadline; a shorter
-pulse never shortens an active one.
-
 ## Required CircuitPython Libraries
 
 Install from the [CircuitPython Library Bundle](https://circuitpython.org/libraries)
@@ -40,16 +34,14 @@ matching CircuitPython 10.x:
 
 Copy the above into `CIRCUITPY/lib/`.
 
+TODO bundle these
+
 ## Firmware Files (CIRCUITPY root)
 
 | File | Purpose |
 |---|---|
 | `code.py` | **Active firmware** — non-blocking MQTT GPIO pulse controller |
 | `secrets.py` | WiFi + MQTT credentials (copy from `secrets.example.py`, do not commit) |
-
-## Fire Control TUI
-
-See `INSTALL.md` — run as `bush-firecontrol`.
 
 ## Rebuild Steps
 

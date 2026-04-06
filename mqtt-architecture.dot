@@ -35,16 +35,12 @@ digraph bushglue {
     T2V [label="bush-t2v\nt2v-service.py\n──────────────\nRust HTTP :8765\nOllama embed\nChromaDB :8000" fillcolor="#cfe2f3" color="#1155cc"]
     TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
     SENTIMENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nemotion classify\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
-    AUDIOAGENT [label="audio-agent\naudio-agent.py\n──────────────\nPortAudio\ndevice discovery" fillcolor="#cfe2f3" color="#1155cc"]
     RELAYS [label="Relay Box" fillcolor="#cfe2f3" color="#1155cc"]
 
     // Layout hints
     { rank=source; MIC }
-    { rank=same; STT; AUDIOAGENT }
-    { rank=same; T2V }
     { rank=same; TTS; SENTIMENT }
     { rank=sink; SPEAKER; FLAME }
-    //{ rank=same; FIRECONTROL; BUTTONS }
 
     // Audio I/O (no MQTT)
     MIC -> STT [color="#38761d"]
@@ -66,8 +62,4 @@ digraph bushglue {
     FIRECONTROL -> RELAYS [label="bush/flame/flare/pulse\nbush/flame/bigjet/pulse"]
     BUTTONS -> RELAYS [label="bush/flame/flare/pulse\nbush/flame/bigjet/pulse"]
     RELAYS -> FLAME [color="#38761d"]
-
-    // Audio device management
-    AUDIOAGENT -> STT [label="bush/audio/devices" color="#999999" style=dotted]
-    AUDIOAGENT -> TTS [label="bush/audio/devices" color="#999999" style=dotted]
 }

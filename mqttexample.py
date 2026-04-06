@@ -1,3 +1,5 @@
+#TODO fold this into readme
+
 import time
 import paho.mqtt.client as mqtt
 client = mqtt.Client()
