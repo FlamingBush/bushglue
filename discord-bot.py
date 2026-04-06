@@ -64,8 +64,7 @@ TOPIC_VERSE      = "bush/pipeline/t2v/verse"
 TOPIC_SPEAKING   = "bush/pipeline/tts/speaking"
 TOPIC_DONE       = "bush/pipeline/tts/done"
 TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
-TOPIC_FLARE      = "bush/flame/flare/pulse"
-TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
+TOPIC_FLAME      = "bush/flame/pulse"
 
 MQTT_PORT   = 1883
 REPO_DIR = Path(__file__).parent
@@ -420,21 +419,21 @@ class PipelineSession:
             self._elapsed["sentiment/result"] = now - t0
             self._sentiment_ev.set()
 
-        elif topic == TOPIC_FLARE and not self._done_ev.is_set():
-            if not self._flare_ev.is_set():
-                self._elapsed["flare pulse"] = now - t0
-                self._flare_ev.set()
+        elif topic == TOPIC_FLAME and not self._done_ev.is_set():
             try:
-                self._flare_count    += 1
-                self._flare_total_ms += int(payload)
-            except (ValueError, TypeError):
-                pass
-
-        elif topic == TOPIC_BIGJET and not self._done_ev.is_set():
-            try:
-                self._bigjet_count    += 1
-                self._bigjet_total_ms += int(payload)
-            except (ValueError, TypeError):
+                data = json.loads(payload)
+                valve = data["valve"]
+                ms = int(data["ms"])
+                if valve == "flare":
+                    if not self._flare_ev.is_set():
+                        self._elapsed["flare pulse"] = now - t0
+                        self._flare_ev.set()
+                    self._flare_count    += 1
+                    self._flare_total_ms += ms
+                elif valve == "bigjet":
+                    self._bigjet_count    += 1
+                    self._bigjet_total_ms += ms
+            except (ValueError, KeyError, TypeError):
                 pass
 
         elif topic == TOPIC_DONE and not self._done_ev.is_set():
@@ -449,7 +448,7 @@ class PipelineSession:
         """
         all_topics = [
             TOPIC_TRANSCRIPT, TOPIC_VERSE, TOPIC_SPEAKING,
-            TOPIC_SENTIMENT, TOPIC_FLARE, TOPIC_BIGJET, TOPIC_DONE,
+            TOPIC_SENTIMENT, TOPIC_FLAME, TOPIC_DONE,
         ]
         for topic in all_topics:
             self._bridge.add_handler(topic, self._handle)

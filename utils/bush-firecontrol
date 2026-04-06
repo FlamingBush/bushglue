@@ -13,54 +13,54 @@ Within each half the keys are ordered left→right = shorter→longer.
 
 import argparse
 import curses
+import json
 import subprocess
 import time
 import threading
 import collections
 import paho.mqtt.client as mqtt
 
-TOPIC_FLARE  = "bush/flame/flare/pulse"
-TOPIC_BIGJET = "bush/flame/bigjet/pulse"
+TOPIC_FLAME  = "bush/flame/pulse"
 
 BIGJET_COLOR = 1
 FLARE_COLOR  = 2
 
 KEY_MAP = {
     # ── TOP ROW — short pulses ───────────────────────────────────────────────
-    ord('q'): (TOPIC_BIGJET,  50,   "Q",  "50ms",  BIGJET_COLOR),
-    ord('w'): (TOPIC_BIGJET,  100,  "W",  "100ms", BIGJET_COLOR),
-    ord('e'): (TOPIC_BIGJET,  150,  "E",  "150ms", BIGJET_COLOR),
-    ord('r'): (TOPIC_BIGJET,  200,  "R",  "200ms", BIGJET_COLOR),
-    ord('t'): (TOPIC_BIGJET,  300,  "T",  "300ms", BIGJET_COLOR),
-    ord('y'): (TOPIC_FLARE,   50,   "Y",  "50ms",  FLARE_COLOR),
-    ord('u'): (TOPIC_FLARE,   100,  "U",  "100ms", FLARE_COLOR),
-    ord('i'): (TOPIC_FLARE,   150,  "I",  "150ms", FLARE_COLOR),
-    ord('o'): (TOPIC_FLARE,   200,  "O",  "200ms", FLARE_COLOR),
-    ord('p'): (TOPIC_FLARE,   300,  "P",  "300ms", FLARE_COLOR),
+    ord('q'): ("bigjet",  50,   "Q",  "50ms",  BIGJET_COLOR),
+    ord('w'): ("bigjet",  100,  "W",  "100ms", BIGJET_COLOR),
+    ord('e'): ("bigjet",  150,  "E",  "150ms", BIGJET_COLOR),
+    ord('r'): ("bigjet",  200,  "R",  "200ms", BIGJET_COLOR),
+    ord('t'): ("bigjet",  300,  "T",  "300ms", BIGJET_COLOR),
+    ord('y'): ("flare",   50,   "Y",  "50ms",  FLARE_COLOR),
+    ord('u'): ("flare",   100,  "U",  "100ms", FLARE_COLOR),
+    ord('i'): ("flare",   150,  "I",  "150ms", FLARE_COLOR),
+    ord('o'): ("flare",   200,  "O",  "200ms", FLARE_COLOR),
+    ord('p'): ("flare",   300,  "P",  "300ms", FLARE_COLOR),
 
     # ── HOME ROW — medium pulses ─────────────────────────────────────────────
-    ord('a'): (TOPIC_BIGJET,  400,  "A",  "400ms", BIGJET_COLOR),
-    ord('s'): (TOPIC_BIGJET,  600,  "S",  "600ms", BIGJET_COLOR),
-    ord('d'): (TOPIC_BIGJET,  800,  "D",  "800ms", BIGJET_COLOR),
-    ord('f'): (TOPIC_BIGJET,  1000, "F",  "1.0s",  BIGJET_COLOR),
-    ord('g'): (TOPIC_BIGJET,  1500, "G",  "1.5s",  BIGJET_COLOR),
-    ord('h'): (TOPIC_FLARE,   400,  "H",  "400ms", FLARE_COLOR),
-    ord('j'): (TOPIC_FLARE,   600,  "J",  "600ms", FLARE_COLOR),
-    ord('k'): (TOPIC_FLARE,   800,  "K",  "800ms", FLARE_COLOR),
-    ord('l'): (TOPIC_FLARE,   1000, "L",  "1.0s",  FLARE_COLOR),
-    ord(';'): (TOPIC_FLARE,   1500, ";",  "1.5s",  FLARE_COLOR),
+    ord('a'): ("bigjet",  400,  "A",  "400ms", BIGJET_COLOR),
+    ord('s'): ("bigjet",  600,  "S",  "600ms", BIGJET_COLOR),
+    ord('d'): ("bigjet",  800,  "D",  "800ms", BIGJET_COLOR),
+    ord('f'): ("bigjet",  1000, "F",  "1.0s",  BIGJET_COLOR),
+    ord('g'): ("bigjet",  1500, "G",  "1.5s",  BIGJET_COLOR),
+    ord('h'): ("flare",   400,  "H",  "400ms", FLARE_COLOR),
+    ord('j'): ("flare",   600,  "J",  "600ms", FLARE_COLOR),
+    ord('k'): ("flare",   800,  "K",  "800ms", FLARE_COLOR),
+    ord('l'): ("flare",   1000, "L",  "1.0s",  FLARE_COLOR),
+    ord(';'): ("flare",   1500, ";",  "1.5s",  FLARE_COLOR),
 
     # ── BOTTOM ROW — long pulses ─────────────────────────────────────────────
-    ord('z'): (TOPIC_BIGJET,  2000, "Z",  "2.0s",  BIGJET_COLOR),
-    ord('x'): (TOPIC_BIGJET,  3000, "X",  "3.0s",  BIGJET_COLOR),
-    ord('c'): (TOPIC_BIGJET,  4000, "C",  "4.0s",  BIGJET_COLOR),
-    ord('v'): (TOPIC_BIGJET,  5000, "V",  "5.0s",  BIGJET_COLOR),
-    ord('b'): (TOPIC_BIGJET,  8000, "B",  "8.0s",  BIGJET_COLOR),
-    ord('n'): (TOPIC_FLARE,   2000, "N",  "2.0s",  FLARE_COLOR),
-    ord('m'): (TOPIC_FLARE,   3000, "M",  "3.0s",  FLARE_COLOR),
-    ord(','): (TOPIC_FLARE,   4000, ",",  "4.0s",  FLARE_COLOR),
-    ord('.'): (TOPIC_FLARE,   5000, ".",  "5.0s",  FLARE_COLOR),
-    ord('/'): (TOPIC_FLARE,   8000, "/",  "8.0s",  FLARE_COLOR),
+    ord('z'): ("bigjet",  2000, "Z",  "2.0s",  BIGJET_COLOR),
+    ord('x'): ("bigjet",  3000, "X",  "3.0s",  BIGJET_COLOR),
+    ord('c'): ("bigjet",  4000, "C",  "4.0s",  BIGJET_COLOR),
+    ord('v'): ("bigjet",  5000, "V",  "5.0s",  BIGJET_COLOR),
+    ord('b'): ("bigjet",  8000, "B",  "8.0s",  BIGJET_COLOR),
+    ord('n'): ("flare",   2000, "N",  "2.0s",  FLARE_COLOR),
+    ord('m'): ("flare",   3000, "M",  "3.0s",  FLARE_COLOR),
+    ord(','): ("flare",   4000, ",",  "4.0s",  FLARE_COLOR),
+    ord('.'): ("flare",   5000, ".",  "5.0s",  FLARE_COLOR),
+    ord('/'): ("flare",   8000, "/",  "8.0s",  FLARE_COLOR),
 }
 
 ROWS = [
@@ -75,8 +75,8 @@ log_entries = collections.deque(maxlen=MAX_LOG)
 log_lock    = threading.Lock()
 
 active = {
-    TOPIC_FLARE:  {"until": 0.0, "duration": 0, "key": ""},
-    TOPIC_BIGJET: {"until": 0.0, "duration": 0, "key": ""},
+    "flare":  {"until": 0.0, "duration": 0, "key": ""},
+    "bigjet": {"until": 0.0, "duration": 0, "key": ""},
 }
 active_lock = threading.Lock()
 
@@ -98,19 +98,19 @@ def on_disconnect(client, userdata, rc, props=None, *args):
     mqtt_status["msg"] = "Disconnected — reconnecting…"
 
 
-def fire(mq, topic, duration_ms, key_label):
+def fire(mq, valve, duration_ms, key_label):
     if not mqtt_status["connected"]:
         with log_lock:
-            log_entries.appendleft((time.time(), key_label, topic, duration_ms, False))
+            log_entries.appendleft((time.time(), key_label, valve, duration_ms, False))
         return
-    mq.publish(topic, str(duration_ms), qos=0)
+    mq.publish(TOPIC_FLAME, json.dumps({"valve": valve, "ms": duration_ms}), qos=0)
     now = time.time()
     with active_lock:
-        active[topic]["until"]    = now + duration_ms / 1000.0
-        active[topic]["duration"] = duration_ms
-        active[topic]["key"]      = key_label
+        active[valve]["until"]    = now + duration_ms / 1000.0
+        active[valve]["duration"] = duration_ms
+        active[valve]["key"]      = key_label
     with log_lock:
-        log_entries.appendleft((now, key_label, topic, duration_ms, True))
+        log_entries.appendleft((now, key_label, valve, duration_ms, True))
 
 
 def safe_addstr(win, y, x, text, attr=0):
@@ -187,10 +187,10 @@ def tui(stdscr, mq):
                 info = KEY_MAP.get(ord(ch))
                 if info is None:
                     continue
-                topic, dur, key_lbl, dur_lbl, side = info
+                valve, dur, key_lbl, dur_lbl, side = info
                 color = C_BIGJET if side == BIGJET_COLOR else C_FLARE
                 with active_lock:
-                    a         = active[topic]
+                    a         = active[valve]
                     is_active = (a["until"] - now) > 0 and a["key"] == key_lbl
                 box_attr = color | curses.A_REVERSE if is_active else color
                 safe_addstr(stdscr, y,     x, f"┌─{key_lbl:^3}─┐", box_attr)
@@ -205,12 +205,12 @@ def tui(stdscr, mq):
         safe_addstr(stdscr, bar_y, 0, "─" * w, C_DIM)
         bar_y += 1
         bar_w  = mid - 6
-        for label, topic, color, cx in [
-            ("BIGJET", TOPIC_BIGJET, 1, 1),
-            ("FLARE",  TOPIC_FLARE,  2, mid + 1),
+        for label, valve, color, cx in [
+            ("BIGJET", "bigjet", 1, 1),
+            ("FLARE",  "flare",  2, mid + 1),
         ]:
             with active_lock:
-                a         = active[topic]
+                a         = active[valve]
                 remaining = max(0.0, a["until"] - now)
                 dur       = a["duration"]
                 frac      = (remaining / (dur / 1000.0)) if dur > 0 else 0.0
@@ -231,8 +231,8 @@ def tui(stdscr, mq):
         log_y += 1
         with log_lock:
             entries = list(log_entries)
-        for i, (ts, key, topic, dur, ok) in enumerate(entries[:h - log_y - 2]):
-            is_flare = topic == TOPIC_FLARE
+        for i, (ts, key, valve, dur, ok) in enumerate(entries[:h - log_y - 2]):
+            is_flare = valve == "flare"
             line = f"  {time.strftime('%H:%M:%S', time.localtime(ts))}  [{key}]  "
             safe_addstr(stdscr, log_y + i, 0, line, C_DIM)
             xo = len(line)
@@ -253,8 +253,8 @@ def tui(stdscr, mq):
         if ch == 27:
             break
         if ch in KEY_MAP:
-            topic, dur, key_lbl, *_ = KEY_MAP[ch]
-            fire(mq, topic, dur, key_lbl)
+            valve, dur, key_lbl, *_ = KEY_MAP[ch]
+            fire(mq, valve, dur, key_lbl)
 
     mq.disconnect()
 

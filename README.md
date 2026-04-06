@@ -31,8 +31,7 @@ No PRs allowed, just keep main up to date with the odroid mmmkay?
 
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
-| `bush/flame/flare/pulse` | → | bush-sentiment, discord-bot | (fire hardware) |
-| `bush/flame/bigjet/pulse` | → | bush-sentiment, discord-bot | (fire hardware) |
+| `bush/flame/pulse` | → | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control, sound-service |
 
 ### Audio Management Topics (all retained)
 
@@ -100,13 +99,14 @@ No PRs allowed, just keep main up to date with the odroid mmmkay?
 ```
 Labels are one of: `anger` `joy` `love` `surprise` `fear` `sadness`
 
-### `bush/flame/flare/pulse` and `bush/flame/bigjet/pulse`
+### `bush/flame/pulse`
+```json
+{"valve": "flare", "ms": 350}
 ```
-350
-```
-Raw integer (milliseconds). Duration to open the solenoid valve. Typical range:
+`valve` is one of: `flare`, `bigjet`, `poof`. `ms` is the duration to open the solenoid valve. Typical ranges:
 - flare: 50–2000 ms
 - bigjet: 100–1000 ms
+- poof: 20–450 ms
 
 ### `bush/audio/devices` (retained)
 ```json
@@ -171,8 +171,7 @@ Empty payload. Forces bush-stt to finalize the current recognition window immedi
     bush-tts  PUB  bush/pipeline/tts/done      at finish
 5b. bush-sentiment SUB bush/pipeline/t2v/verse → DistilBERT classify
     bush-sentiment PUB bush/pipeline/sentiment/result
-    bush-sentiment PUB bush/flame/flare/pulse  (loop until bush/pipeline/tts/done)
-    bush-sentiment PUB bush/flame/bigjet/pulse (loop until bush/pipeline/tts/done)
+    bush-sentiment PUB bush/flame/pulse  {valve,ms}  (loop until bush/pipeline/tts/done)
 6. bush-stt    SUB  bush/pipeline/tts/speaking  →  mute mic
    bush-stt    SUB  bush/pipeline/tts/done      →  unmute + reset Vosk
 ```

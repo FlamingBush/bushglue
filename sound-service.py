@@ -2,8 +2,8 @@
 """
 Sound effects service for Bush Glue.
 
-Subscribes to bush/flame/flare/pulse and bush/flame/bigjet/pulse.
-Each message carries valve on-time in milliseconds; the corresponding
+Subscribes to bush/flame/pulse.
+Each message carries valve name and on-time in milliseconds; the corresponding
 sound plays for exactly that duration then stops.
 
   Flare  — warm low hum: 80 Hz fundamental + harmonics, soft-clip warmth,
@@ -25,8 +25,7 @@ import paho.mqtt.client as mqtt
 import sounddevice as sd
 
 MQTT_PORT  = 1883
-TOPIC_FLARE  = "bush/flame/flare/pulse"
-TOPIC_BIGJET = "bush/flame/bigjet/pulse"
+TOPIC_FLAME = "bush/flame/pulse"
 SR = 44100  # sample rate
 
 
@@ -185,20 +184,21 @@ _engine = AudioEngine()
 
 def on_connect(client, userdata, flags, reason_code, properties):
     log(f"MQTT connected (rc={reason_code})")
-    client.subscribe(TOPIC_FLARE)
-    client.subscribe(TOPIC_BIGJET)
-    log(f"Subscribed to {TOPIC_FLARE}, {TOPIC_BIGJET}")
+    client.subscribe(TOPIC_FLAME)
+    log(f"Subscribed to {TOPIC_FLAME}")
 
 
 def on_message(client, userdata, msg):
     try:
-        ms = int(msg.payload.decode())
+        data = json.loads(msg.payload.decode())
+        valve = data["valve"]
+        ms = int(data["ms"])
         if ms <= 0:
             return
-        if msg.topic == TOPIC_FLARE:
+        if valve == "flare":
             log(f"Flare {ms} ms")
             _engine.play("flare", ms, _make_flare)
-        elif msg.topic == TOPIC_BIGJET:
+        elif valve == "bigjet":
             log(f"BigJet {ms} ms")
             _engine.play("bigjet", ms, _make_bigjet)
     except Exception as e:

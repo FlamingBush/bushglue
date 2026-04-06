@@ -36,8 +36,7 @@ from bushutil import get_mqtt_broker
 # ── MQTT topics ────────────────────────────────────────────────────────────
 TOPIC_VERSE    = "bush/pipeline/t2v/verse"
 TOPIC_SENTIMENT = "bush/pipeline/sentiment/result"
-TOPIC_FLARE    = "bush/flame/flare/pulse"
-TOPIC_BIGJET   = "bush/flame/bigjet/pulse"
+TOPIC_FLAME    = "bush/flame/pulse"
 TOPIC_TTS_DONE = "bush/pipeline/tts/done"
 MQTT_PORT = 1883
 
@@ -79,14 +78,14 @@ def _fire_loop(pattern: dict, score: float, mqttc: mqtt.Client, stop: threading.
         # flare pulse
         if flare_ms > 0:
             v = flare_ms * (1 + jitter * (random.random() * 2 - 1))
-            mqttc.publish(TOPIC_FLARE, max(50, int(v)))
+            mqttc.publish(TOPIC_FLAME, json.dumps({"valve": "flare", "ms": max(50, int(v))}))
 
         # bigjet pulse on its own slower clock
         if bigjet_ms > 0 and bigjet_period > 0:
             now = time.monotonic()
             if (now - last_bigjet) * 1000 >= bigjet_period:
                 v = bigjet_ms * (1 + jitter * (random.random() * 2 - 1))
-                mqttc.publish(TOPIC_BIGJET, max(100, int(v)))
+                mqttc.publish(TOPIC_FLAME, json.dumps({"valve": "bigjet", "ms": max(100, int(v))}))
                 last_bigjet = now
 
         # wait for next flare period (with jitter), or until stopped

@@ -45,8 +45,7 @@ TOPIC_VERSE      = "bush/pipeline/t2v/verse"
 TOPIC_SPEAKING   = "bush/pipeline/tts/speaking"
 TOPIC_DONE       = "bush/pipeline/tts/done"
 TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
-TOPIC_FLARE      = "bush/flame/flare/pulse"
-TOPIC_BIGJET     = "bush/flame/bigjet/pulse"
+TOPIC_FLAME      = "bush/flame/pulse"
 
 MQTT_PORT = 1883
 
@@ -134,7 +133,7 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
         TOPIC_VERSE:     Stage("t2v/verse",        T_VERSE),
         TOPIC_SPEAKING:  Stage("tts/speaking",     T_SPEAKING),
         TOPIC_SENTIMENT: Stage("sentiment/result", T_SENTIMENT),
-        TOPIC_FLARE:     Stage("flare pulse",      T_PULSE),
+        TOPIC_FLAME:     Stage("flare pulse",      T_PULSE),
         TOPIC_DONE:      Stage("tts/done",         T_DONE),
     }
 
@@ -148,7 +147,7 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
     bigjet_count    = [0]
     bigjet_total_ms = [0]
 
-    subscribe_topics = list(downstream.keys()) + [TOPIC_BIGJET]
+    subscribe_topics = list(downstream.keys())
     if not transcript_only:
         subscribe_topics.append(TOPIC_TRANSCRIPT)
 
@@ -167,17 +166,18 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
 
         # pulse counting (outside the Stage mechanism)
         window_open = transcript_time[0] is not None and not downstream[TOPIC_DONE].event.is_set()
-        if msg.topic == TOPIC_FLARE and window_open:
+        if msg.topic == TOPIC_FLAME and window_open:
             try:
-                flare_count[0]    += 1
-                flare_total_ms[0] += int(msg.payload)
-            except (ValueError, TypeError):
-                pass
-        elif msg.topic == TOPIC_BIGJET and window_open:
-            try:
-                bigjet_count[0]    += 1
-                bigjet_total_ms[0] += int(msg.payload)
-            except (ValueError, TypeError):
+                data = json.loads(msg.payload)
+                valve = data["valve"]
+                ms = int(data["ms"])
+                if valve == "flare":
+                    flare_count[0]    += 1
+                    flare_total_ms[0] += ms
+                elif valve == "bigjet":
+                    bigjet_count[0]    += 1
+                    bigjet_total_ms[0] += ms
+            except (ValueError, KeyError, TypeError):
                 pass
 
         stage = downstream.get(msg.topic)
@@ -235,7 +235,7 @@ def run_pipeline(broker: str, phrase: str, transcript_only: bool) -> PipelineRes
     if not transcript_only:
         pending.append((transcript_stage, inject_time))   # base time = inject
     for topic in [TOPIC_VERSE, TOPIC_SPEAKING, TOPIC_SENTIMENT,
-                  TOPIC_FLARE, TOPIC_DONE]:
+                  TOPIC_FLAME, TOPIC_DONE]:
         pending.append((downstream[topic], transcript_time))  # base time = transcript
 
     raw_results = []   # list of (stage, ok)  where ok is True/False/None/str

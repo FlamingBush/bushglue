@@ -46,8 +46,7 @@ TOPICS = [
     "bush/pipeline/t2v/processing",
     "bush/pipeline/t2v/verse",
     "bush/pipeline/sentiment/result",
-    "bush/flame/flare/pulse",
-    "bush/flame/bigjet/pulse",
+    "bush/flame/pulse",
     "bush/pipeline/tts/speaking",
     "bush/pipeline/tts/done",
     "bush/audio/devices",
@@ -346,7 +345,7 @@ def build_fire_panel(s: State) -> Panel:
     text.append(f"  {s.bigjet_ms:>5} ms", style=f"bold dark_orange {bigjet_style}")
     text.append(f"   max {BIGJET_MAX} ms", style="dim")
 
-    return Panel(text, title="[bold]FIRE CONTROL[/bold]  [dim]bush/flame/*/pulse  (valve on-time ms)[/dim]",
+    return Panel(text, title="[bold]FIRE CONTROL[/bold]  [dim]bush/flame/pulse  (valve on-time ms)[/dim]",
                  box=box.ROUNDED, border_style="red")
 
 
@@ -817,17 +816,23 @@ def on_message(client, userdata, msg):
                     state.log.append((now, "SENTIMENT",
                                       f"{label} {score:.2f}  flare={flare}ms  bigjet={bigjet}ms"))
 
-            elif topic == "bush/flame/flare/pulse":
-                ms = int(msg.payload.decode())
-                state.flare_ms = ms
-                state.flare_ts = now
-                state.log.append((now, "FLARE", f"{ms} ms"))
-
-            elif topic == "bush/flame/bigjet/pulse":
-                ms = int(msg.payload.decode())
-                state.bigjet_ms = ms
-                state.bigjet_ts = now
-                state.log.append((now, "BIGJET", f"{ms} ms"))
+            elif topic == "bush/flame/pulse":
+                try:
+                    data = json.loads(msg.payload.decode())
+                    valve = data["valve"]
+                    ms = int(data["ms"])
+                    if valve == "flare":
+                        state.flare_ms = ms
+                        state.flare_ts = now
+                        state.log.append((now, "FLARE", f"{ms} ms"))
+                    elif valve == "bigjet":
+                        state.bigjet_ms = ms
+                        state.bigjet_ts = now
+                        state.log.append((now, "BIGJET", f"{ms} ms"))
+                    elif valve == "poof":
+                        state.log.append((now, "POOF", f"{ms} ms"))
+                except (ValueError, KeyError):
+                    pass
 
             elif topic == "bush/pipeline/tts/speaking":
                 data = json.loads(msg.payload)

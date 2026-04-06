@@ -19,6 +19,7 @@
 
 import board
 import digitalio
+import json
 import wifi
 import socketpool
 import supervisor
@@ -49,9 +50,7 @@ off_ms_flare  = None
 off_ms_bigjet = None
 off_ms_poof   = None
 
-TOPIC_FLARE        = b"bush/flame/flare/pulse"
-TOPIC_BIGJET       = b"bush/flame/bigjet/pulse"
-TOPIC_POOF         = b"bush/flame/poof/pulse"
+TOPIC_FLAME        = b"bush/flame/pulse"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -301,16 +300,22 @@ def process_packets():
                 pos = pkt_end
                 continue
 
+            if topic != TOPIC_FLAME:
+                pos = pkt_end
+                continue
+
             try:
-                duration_ms = int(payload)
-            except ValueError:
+                data = json.loads(payload)
+                valve = data["valve"]
+                duration_ms = int(data["ms"])
+            except (ValueError, KeyError):
                 print("Bad payload:", payload)
                 pos = pkt_end
                 continue
 
             if duration_ms > 0:
                 deadline = (supervisor.ticks_ms() + duration_ms) & 0x3FFFFFFF
-                if topic == TOPIC_FLARE:
+                if valve == "flare":
                     pin_flare.value = True
                     # Extend deadline; never shorten an active pulse
                     if off_ms_flare is None:
@@ -320,7 +325,7 @@ def process_packets():
                         if ticks_diff(deadline, off_ms_flare) < 0x1FFFFFFF:
                             off_ms_flare = deadline
                     print(f"Flare ON {duration_ms}ms")
-                elif topic == TOPIC_BIGJET:
+                elif valve == "bigjet":
                     pin_bigjet.value = True
                     if off_ms_bigjet is None:
                         off_ms_bigjet = deadline
@@ -328,7 +333,7 @@ def process_packets():
                         if ticks_diff(deadline, off_ms_bigjet) < 0x1FFFFFFF:
                             off_ms_bigjet = deadline
                     print(f"Bigjet ON {duration_ms}ms")
-                elif topic == TOPIC_POOF:
+                elif valve == "poof":
                     pin_poof.value = True
                     if off_ms_poof is None:
                         off_ms_poof = deadline
@@ -388,9 +393,7 @@ wifi_connect()
 compute_scan_base()
 mqtt_open()
 if connected:
-    sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
-    sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
-    sock.send(mqtt_subscribe_packet(TOPIC_POOF,   packet_id=3))
+    sock.send(mqtt_subscribe_packet(TOPIC_FLAME, packet_id=1))
     print("Subscribed.")
     conn_state = ST_CONNECTED
 else:
@@ -425,8 +428,7 @@ while True:
             except Exception as e:
                 print("Reconnect error:", e)
             if connected:
-                sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
-                sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+                sock.send(mqtt_subscribe_packet(TOPIC_FLAME, packet_id=1))
                 print("Subscribed.")
                 conn_state = ST_CONNECTED
                 configured_failures = 0
@@ -451,8 +453,7 @@ while True:
             service_pins()
             mqtt_open(MQTT_BROKER)
             if connected:
-                sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
-                sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+                sock.send(mqtt_subscribe_packet(TOPIC_FLAME, packet_id=1))
                 print("Configured broker back online, subscribed.")
                 conn_state = ST_CONNECTED
                 configured_failures = 0
@@ -499,8 +500,7 @@ while True:
 
         if pipeline_verified:
             # Good broker — subscribe to fire topics and go live
-            sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
-            sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+            sock.send(mqtt_subscribe_packet(TOPIC_FLAME, packet_id=1))
             print(f"Pipeline verified on {scan_candidate}, subscribed.")
             conn_state = ST_CONNECTED
         elif ticks_expired(verify_deadline_ms):

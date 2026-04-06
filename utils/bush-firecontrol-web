@@ -10,9 +10,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import paho.mqtt.client as mqtt
 
-TOPIC_FLARE         = "bush/flame/flare/pulse"
-TOPIC_BIGJET        = "bush/flame/bigjet/pulse"
-TOPIC_POOF          = "bush/flame/poof/pulse"
+TOPIC_FLAME         = "bush/flame/pulse"
 TOPIC_PIPELINE_PING = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG = "bush/pipeline/pong"
 
@@ -25,11 +23,11 @@ _state_lock = threading.Lock()
 _mqttc = None
 
 
-def _fire(topic, ms):
+def _fire(valve, ms):
     if _mqttc and _state["connected"]:
-        _mqttc.publish(topic, str(ms), qos=0)
+        _mqttc.publish(TOPIC_FLAME, json.dumps({"valve": valve, "ms": ms}), qos=0)
         with _state_lock:
-            _state["last"] = {"topic": topic, "ms": ms, "t": time.time()}
+            _state["last"] = {"valve": valve, "ms": ms, "t": time.time()}
         return True
     return False
 
@@ -38,11 +36,11 @@ def _fmt(ms):
     return f"{ms/1000:.1g}s" if ms >= 1000 else f"{ms}ms"
 
 
-def _buttons(durations, topic, css_class):
+def _buttons(durations, valve, css_class):
     return "\n".join(
         f'<button class="btn {css_class}" '
-        f'ontouchstart="fire(\'{topic}\',{ms})" '
-        f'onclick="fire(\'{topic}\',{ms})">'
+        f'ontouchstart="fire(\'{valve}\',{ms})" '
+        f'onclick="fire(\'{valve}\',{ms})">'
         f'{_fmt(ms)}</button>'
         for ms in durations
     )
@@ -106,10 +104,10 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
 </div>
 <div id="log">tap a button to fire</div>
 <script>
-function fire(topic,ms){{
-  const label=(topic.includes('flare')?'FLARE':topic.includes('poof')?'POOF':'BIGJET')+' '+fmtMs(ms);
+function fire(valve,ms){{
+  const label=(valve==='flare'?'FLARE':valve==='poof'?'POOF':'BIGJET')+' '+fmtMs(ms);
   fetch('/fire',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{topic,ms}})}})
+    body:JSON.stringify({{valve,ms}})}})
   .then(r=>r.json()).then(d=>{{
     document.getElementById('log').textContent=d.ok?'fired: '+label:'not connected';
   }}).catch(()=>document.getElementById('log').textContent='error');
@@ -128,9 +126,9 @@ poll();
 </body>
 </html>
 """.format(
-    bigjet=_buttons(BIGJET_DURATIONS, TOPIC_BIGJET, "bigjet"),
-    flare=_buttons(FLARE_DURATIONS,  TOPIC_FLARE,  "flare"),
-    poof=_buttons(POOF_DURATIONS,    TOPIC_POOF,   "poof"),
+    bigjet=_buttons(BIGJET_DURATIONS, "bigjet", "bigjet"),
+    flare=_buttons(FLARE_DURATIONS,  "flare",  "flare"),
+    poof=_buttons(POOF_DURATIONS,    "poof",   "poof"),
 )
 
 
@@ -161,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             try:
                 data = json.loads(self.rfile.read(length))
-                ok = _fire(data["topic"], int(data["ms"]))
+                ok = _fire(data["valve"], int(data["ms"]))
                 self._send(200, "application/json", json.dumps({"ok": ok}))
             except Exception as e:
                 self._send(400, "application/json", json.dumps({"ok": False, "err": str(e)}))

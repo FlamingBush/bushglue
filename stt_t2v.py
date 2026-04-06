@@ -43,8 +43,7 @@ def _windows_host_ip() -> str:
 
 MQTT_BROKER = _windows_host_ip()
 MQTT_PORT = 1883
-TOPIC_FLARE = "bush/flame/flare/pulse"
-TOPIC_BIGJET = "bush/flame/bigjet/pulse"
+TOPIC_FLAME = "bush/flame/pulse"
 
 # Base flare and bigjet pulse values per emotion (scaled by confidence score)
 EMOTION_MAP = {
@@ -179,9 +178,9 @@ def fire_mqtt(scores: list, mqtt_client: mqtt.Client):
     bigjet = int(mapping["bigjet"] * score)
     log(f"MQTT fire: emotion={label} score={score:.2f} flare={flare} bigjet={bigjet}")
     if flare:
-        mqtt_client.publish(TOPIC_FLARE, flare)
+        mqtt_client.publish(TOPIC_FLAME, json.dumps({"valve": "flare", "ms": flare}))
     if bigjet:
-        mqtt_client.publish(TOPIC_BIGJET, bigjet)
+        mqtt_client.publish(TOPIC_FLAME, json.dumps({"valve": "bigjet", "ms": bigjet}))
 
 
 def main():

@@ -19,8 +19,7 @@
 
 | Topic | Payload | Effect |
 |---|---|---|
-| `bush/flame/flare/pulse` | integer ms | Fire flare for N ms |
-| `bush/flame/bigjet/pulse` | integer ms | Fire big jet for N ms |
+| `bush/flame/pulse` | `{"valve":"flare","ms":350}` | Fire named valve for N ms. Valid valves: `flare`, `bigjet`, `poof` |
 
 ## Required CircuitPython Libraries
 
