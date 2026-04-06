@@ -27,39 +27,38 @@ digraph bushglue {
     MIC [label="Microphone\n(audio input)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
     SPEAKER [label="Speaker\n(audio output)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
     FLAME [label="Solenoids\n(propane output)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
-    BUTTONS [label="Buttons\n(physical input)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    BUTTONS [label="Buttons\n(electrical input)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
     FIRECONTROL [label="FireControl\n(website input)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
+    //MONITOR [label="bush-monitor\n(terminal input)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
 
     // Services
     STT [label="bush-stt\nstt-service.py\n──────────────\nVosk STT\nmic input" fillcolor="#cfe2f3" color="#1155cc"]
     T2V [label="bush-t2v\nt2v-service.py\n──────────────\nRust HTTP :8765\nOllama embed\nChromaDB :8000" fillcolor="#cfe2f3" color="#1155cc"]
     TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
-    SENTIMENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nemotion classify\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
-    RELAYS [label="Relay Box" fillcolor="#cfe2f3" color="#1155cc"]
+    SENTIMENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nsentiment analysis\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
+    RELAYS [label="relay-control/\nCIRCUITPY/code.py\n──────────────\nrpi pico 2\nlives in orange box" fillcolor="#cfe2f3" color="#1155cc"]
 
     // Layout hints
-    { rank=source; MIC }
+    { rank=source; MIC; BUTTONS; FIRECONTROL }
     { rank=same; TTS; SENTIMENT }
     { rank=sink; SPEAKER; FLAME }
 
-    // Audio I/O (no MQTT)
+    // Audio paths
     MIC -> STT [color="#38761d"]
     TTS -> SPEAKER [color="#38761d"]
 
-    // Main pipeline (MQTT)
+    // Main pipeline
     STT -> T2V [label="bush/pipeline/stt/transcript" color="#1155cc"]
     T2V -> TTS [label="bush/pipeline/t2v/verse" color="#1155cc"]
     T2V -> SENTIMENT [label="bush/pipeline/t2v/verse" color="#1155cc"]
 
     // TTS feedback
-    TTS -> STT [label="bush/pipeline/tts/speaking\nbush/pipeline/tts/done" color="#cc4125" style=dashed]
-
-    // TTS / sentiment
-    TTS -> SENTIMENT [label="bush/pipeline/tts/done" color="#cc4125" style=dashed]
+    TTS -> STT [label="bush/pipeline/tts/speaking\nbush/pipeline/tts/done" color="#1155cc"]
+    TTS -> SENTIMENT [label="bush/pipeline/tts/done" color="#1155cc"]
 
     // Flame effects
-    SENTIMENT -> RELAYS [label="bush/flame/flare/pulse\nbush/flame/bigjet/pulse"]
-    FIRECONTROL -> RELAYS [label="bush/flame/flare/pulse\nbush/flame/bigjet/pulse"]
-    BUTTONS -> RELAYS [label="bush/flame/flare/pulse\nbush/flame/bigjet/pulse"]
+    SENTIMENT -> RELAYS [label="bush/flame/pulse" color="#1155cc"]
+    FIRECONTROL -> RELAYS [label="bush/flame/pulse" color="#1155cc"]
+    BUTTONS -> FLAME [color="#38761d"]
     RELAYS -> FLAME [color="#38761d"]
 }
