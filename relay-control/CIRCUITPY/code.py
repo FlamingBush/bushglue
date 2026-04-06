@@ -39,13 +39,19 @@ pin_bigjet = digitalio.DigitalInOut(board.GP3)
 pin_bigjet.direction = digitalio.Direction.OUTPUT
 pin_bigjet.value = False
 
+pin_poof = digitalio.DigitalInOut(board.GP7)
+pin_poof.direction = digitalio.Direction.OUTPUT
+pin_poof.value = False
+
 # ── Scheduled off-times in ms (supervisor.ticks_ms) ─────────────────────────
 # None = not scheduled
 off_ms_flare  = None
 off_ms_bigjet = None
+off_ms_poof   = None
 
 TOPIC_FLARE        = b"bush/flame/flare/pulse"
 TOPIC_BIGJET       = b"bush/flame/bigjet/pulse"
+TOPIC_POOF         = b"bush/flame/poof/pulse"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -69,6 +75,10 @@ def service_pins():
         pin_bigjet.value = False
         off_ms_bigjet = None
         print("Bigjet OFF")
+    if off_ms_poof is not None and ticks_expired(off_ms_poof):
+        pin_poof.value = False
+        off_ms_poof = None
+        print("Poof OFF")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Minimal hand-rolled MQTT client over a non-blocking raw socket.
@@ -261,7 +271,7 @@ def decode_remaining(buf, pos):
 
 def process_packets():
     """Parse and dispatch all complete MQTT packets sitting in rx_buf."""
-    global off_ms_flare, off_ms_bigjet, rx_buf, pipeline_verified
+    global off_ms_flare, off_ms_bigjet, off_ms_poof, rx_buf, pipeline_verified
     pos = 0
     while pos < len(rx_buf):
         if pos + 2 > len(rx_buf):
@@ -318,6 +328,14 @@ def process_packets():
                         if ticks_diff(deadline, off_ms_bigjet) < 0x1FFFFFFF:
                             off_ms_bigjet = deadline
                     print(f"Bigjet ON {duration_ms}ms")
+                elif topic == TOPIC_POOF:
+                    pin_poof.value = True
+                    if off_ms_poof is None:
+                        off_ms_poof = deadline
+                    else:
+                        if ticks_diff(deadline, off_ms_poof) < 0x1FFFFFFF:
+                            off_ms_poof = deadline
+                    print(f"Poof ON {duration_ms}ms")
 
         elif pkt_type == 0xD0:  # PINGRESP — nothing to do
             pass
@@ -372,6 +390,7 @@ mqtt_open()
 if connected:
     sock.send(mqtt_subscribe_packet(TOPIC_FLARE,  packet_id=1))
     sock.send(mqtt_subscribe_packet(TOPIC_BIGJET, packet_id=2))
+    sock.send(mqtt_subscribe_packet(TOPIC_POOF,   packet_id=3))
     print("Subscribed.")
     conn_state = ST_CONNECTED
 else:
