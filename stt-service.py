@@ -20,6 +20,8 @@ import time
 
 import paho.mqtt.client as mqtt
 
+from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
+
 # ── paths / device ─────────────────────────────────────────────────────────
 STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
 MODEL_PATH = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
@@ -68,9 +70,6 @@ TOPIC_PIPELINE_PING   = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG   = "bush/pipeline/pong"
 TOPIC_TTS_DEVICE      = "bush/audio/tts/device"
 MQTT_PORT = 1883
-
-
-from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
 
 
 def log(msg: str):
