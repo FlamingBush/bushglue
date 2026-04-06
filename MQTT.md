@@ -4,7 +4,7 @@
 
 ![MQTT architecture diagram](mqtt-architecture.png)
 
-> Source: [`mqtt-architecture.dot`](mqtt-architecture.dot) — regenerate with `python3 render-diagram.py`
+> Source: [`mqtt-architecture.dot`](mqtt-architecture.dot) — regenerate with `dot -Tsvg mqtt-architecture.dot -o mqtt-architecture.svg`
 
 ---
 
@@ -159,18 +159,18 @@ Empty payload. Forces bush-stt to finalize the current recognition window immedi
 ```
 1. Mic audio  →  bush-stt (Vosk)
 2. bush-stt   PUB  bush/pipeline/stt/transcript   {text, ts}
-3. bush-t2v   SUB  transcript  →  HTTP GET localhost:8765/query
-                                  (Ollama embed → ChromaDB lookup)
+3. bush-t2v   SUB  bush/pipeline/stt/transcript  →  HTTP GET localhost:8765/query
+                                                     (Ollama embed → ChromaDB lookup)
 4. bush-t2v   PUB  bush/pipeline/t2v/verse        {query, text, ts}
-5a. bush-tts  SUB  verse  →  espeak-ng + sox reverb  →  speaker
+5a. bush-tts  SUB  bush/pipeline/t2v/verse  →  espeak-ng + sox reverb  →  speaker
     bush-tts  PUB  bush/pipeline/tts/speaking  at start
     bush-tts  PUB  bush/pipeline/tts/done      at finish
-5b. bush-sentiment SUB verse → DistilBERT classify
+5b. bush-sentiment SUB bush/pipeline/t2v/verse → DistilBERT classify
     bush-sentiment PUB bush/pipeline/sentiment/result
-    bush-sentiment PUB bush/flame/flare/pulse  (loop until tts/done)
-    bush-sentiment PUB bush/flame/bigjet/pulse (loop until tts/done)
-6. bush-stt    SUB  tts/speaking  →  mute mic
-   bush-stt    SUB  tts/done      →  unmute + reset Vosk
+    bush-sentiment PUB bush/flame/flare/pulse  (loop until bush/pipeline/tts/done)
+    bush-sentiment PUB bush/flame/bigjet/pulse (loop until bush/pipeline/tts/done)
+6. bush-stt    SUB  bush/pipeline/tts/speaking  →  mute mic
+   bush-stt    SUB  bush/pipeline/tts/done      →  unmute + reset Vosk
 ```
 
 Steps 5a and 5b run in parallel from the same `t2v/verse` message.
@@ -189,8 +189,8 @@ The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s safety timeou
 ```
 1. audio-agent PUB bush/audio/devices (retained, updated on bush/audio/discover)
 2. Operator     PUB bush/audio/stt/set-device  {device: N}
-3. bush-stt     validates  →  PUB bush/audio/stt/device {device, status} (retained)
-   (same flow for tts/set-device, tts/set-clarity)
+3. bush-stt     validates  →  PUB bush/audio/stt/device  {device, status} (retained)
+   (same flow for bush/audio/tts/set-device, bush/audio/tts/set-clarity)
 ```
 
 ---

@@ -1,122 +1,198 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="860" viewBox="0 0 1100 860">
-  <defs>
-    <marker id="arrow-999999" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#999999"/></marker>
-<marker id="arrow-1155cc" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#1155cc"/></marker>
-<marker id="arrow-674ea7" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#674ea7"/></marker>
-<marker id="arrow-38761d" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38761d"/></marker>
-<marker id="arrow-cc4125" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#cc4125"/></marker>
-  </defs>
-  <rect width="1100" height="860" fill="white"/>
-
-  <!-- legend -->
-  <text x="10" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">Legend:</text>
-  <line x1="70" y1="797" x2="100" y2="797" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-  <text x="105" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">MQTT pipeline</text>
-  <line x1="200" y1="797" x2="230" y2="797" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
-  <text x="235" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">feedback / mute</text>
-  <line x1="350" y1="797" x2="380" y2="797" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-  <text x="385" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">audio I/O</text>
-  <line x1="560" y1="797" x2="590" y2="797" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
-  <text x="595" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">Discord /pray</text>
-  <line x1="675" y1="797" x2="705" y2="797" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-  <text x="710" y="800" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#333">device config</text>
-
-  <!-- edges (drawn first so nodes appear on top) -->
-  <path d="M 170 74 C 170 100.4 140 113.6 140 140" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-<text x="163" y="107" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio</text>
-
-<path d="M 140 660 C 140 694.0 180 711.0 180 745" fill="none" stroke="#38761d" stroke-width="1.5" marker-end="url(#arrow-38761d)"/>
-<text x="168" y="702" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#38761d" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">espeak+sox</text>
-
-<path d="M 1060 52 C 1095 52 1095 600 950 600" fill="none" stroke="#674ea7" stroke-width="1.5" marker-end="url(#arrow-674ea7)"/>
-<text x="1055" y="320" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">/pray phrase</text>
-
-<path d="M 730 600 C 730 80 320 200 250 200" fill="none" stroke="#674ea7" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-674ea7)"/>
-<text x="490" y="160" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#674ea7" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">ALSA loopback</text>
-
-<path d="M 250 200 C 290.5 200 299.5 400 340 400" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-<text x="295" y="292" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">stt/transcript</text>
-<text x="295" y="305" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">{text, ts}</text>
-
-<path d="M 340 400 C 299.5 400 290.5 600 250 600" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-<text x="295" y="492" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
-<text x="295" y="505" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">{query,text,ts}</text>
-
-<path d="M 470 460 C 470 492.0 500 508.0 500 540" fill="none" stroke="#1155cc" stroke-width="1.5" marker-end="url(#arrow-1155cc)"/>
-<text x="493" y="500" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
-
-<path d="M 600 400 C 658.5 400 671.5 600 730 600" fill="none" stroke="#1155cc" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-1155cc)"/>
-<text x="665" y="492" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#1155cc" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">t2v/verse</text>
-
-<path d="M 140 540 C 140 428.0 140 372.0 140 260" fill="none" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
-<text x="148" y="400" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/speaking</text>
-<text x="148" y="413" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/done</text>
-
-<path d="M 250 600 C 308.5 600 321.5 600 380 600" fill="none" stroke="#cc4125" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-cc4125)"/>
-<text x="315" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#cc4125" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">tts/done</text>
-
-<path d="M 620 600 C 669.5 600 680.5 600 730 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow-999999)"/>
-<text x="675" y="592" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">sentiment/result</text>
-
-<path d="M 820 190 C 563.5 190 506.5 200 250 200" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="535" y="187" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="535" y="200" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
-
-<path d="M 820 190 C 500 190 20 300 20 400 C 20 500 430 600 250 600" fill="none" stroke="#999999" stroke-width="1.5" stroke-dasharray="3,3" marker-end="url(#arrow-999999)"/>
-<text x="75" y="390" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">audio/devices</text>
-<text x="75" y="403" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" fill="#999999" paint-order="stroke" stroke="white" stroke-width="3" stroke-linejoin="round">(retained)</text>
-
-  <!-- nodes -->
-  <ellipse cx="170" cy="52" rx="70" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
-<text x="170" y="55" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Microphone</text>
-
-<ellipse cx="980" cy="52" rx="80" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
-<text x="980" y="48" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Discord User</text>
-<text x="980" y="63" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray command</text>
-
-<rect x="30" y="140" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="140" y="173" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-stt</text>
-<text x="140" y="188" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">stt-service.py</text>
-<text x="140" y="203" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="140" y="218" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Vosk STT</text>
-<text x="140" y="233" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">mic input</text>
-
-<rect x="820" y="140" width="220" height="100" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="930" y="171" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">audio-agent</text>
-<text x="930" y="186" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">audio-agent.py</text>
-<text x="930" y="201" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="930" y="216" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">PortAudio discovery</text>
-
-<rect x="340" y="340" width="260" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="470" y="373" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-t2v</text>
-<text x="470" y="388" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">t2v-service.py</text>
-<text x="470" y="403" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="470" y="418" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Rust HTTP :8765</text>
-<text x="470" y="433" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Ollama embed + ChromaDB :8000</text>
-
-<rect x="30" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="140" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-tts</text>
-<text x="140" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">tts-service.py</text>
-<text x="140" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="140" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">espeak-ng</text>
-<text x="140" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sox reverb</text>
-
-<rect x="380" y="540" width="240" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="500" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">bush-sentiment</text>
-<text x="500" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">sentiment-service.py</text>
-<text x="500" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="500" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">DistilBERT emotion</text>
-<text x="500" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">fire orchestration</text>
-
-<rect x="730" y="540" width="220" height="120" rx="6" ry="6" fill="#cfe2f3" stroke="#1155cc" stroke-width="1.5"/>
-<text x="840" y="573" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">discord-bot</text>
-<text x="840" y="588" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">discord-bot.py</text>
-<text x="840" y="603" text-anchor="middle" font-family="monospace" font-size="10">──────────────</text>
-<text x="840" y="618" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">Discord VC bridge</text>
-<text x="840" y="633" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11">/pray injection</text>
-
-<ellipse cx="180" cy="767" rx="80" ry="22" fill="#d9ead3" stroke="#38761d" stroke-width="1.5"/>
-<text x="180" y="770" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="11" font-weight="bold">Speaker / output</text>
-
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Generated by graphviz version 14.1.2 (20260124.0452)
+ -->
+<!-- Title: bushglue Pages: 1 -->
+<svg width="995pt" height="731pt"
+ viewBox="0.00 0.00 995.00 731.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 726.81)">
+<title>bushglue</title>
+<polygon fill="white" stroke="none" points="-4,4 -4,-726.81 990.67,-726.81 990.67,4 -4,4"/>
+<!-- MIC -->
+<g id="node1" class="node">
+<title>MIC</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="391.55" cy="-695.66" rx="57.7" ry="27.15"/>
+<text xml:space="preserve" text-anchor="middle" x="391.55" y="-697.21" font-family="Helvetica,sans-Serif" font-size="11.00">Microphone</text>
+<text xml:space="preserve" text-anchor="middle" x="391.55" y="-685.21" font-family="Helvetica,sans-Serif" font-size="11.00">(audio input)</text>
+</g>
+<!-- STT -->
+<g id="node6" class="node">
+<title>STT</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M469.1,-609.51C469.1,-609.51 314,-609.51 314,-609.51 308,-609.51 302,-603.51 302,-597.51 302,-597.51 302,-547.11 302,-547.11 302,-541.11 308,-535.11 314,-535.11 314,-535.11 469.1,-535.11 469.1,-535.11 475.1,-535.11 481.1,-541.11 481.1,-547.11 481.1,-547.11 481.1,-597.51 481.1,-597.51 481.1,-603.51 475.1,-609.51 469.1,-609.51"/>
+<text xml:space="preserve" text-anchor="middle" x="391.55" y="-591.86" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;stt</text>
+<text xml:space="preserve" text-anchor="middle" x="391.55" y="-579.86" font-family="Helvetica,sans-Serif" font-size="11.00">stt&#45;service.py</text>
+<text xml:space="preserve" text-anchor="middle" x="391.55" y="-567.86" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text xml:space="preserve" text-anchor="middle" x="391.55" y="-555.86" font-family="Helvetica,sans-Serif" font-size="11.00">Vosk STT</text>
+<text xml:space="preserve" text-anchor="middle" x="391.55" y="-543.86" font-family="Helvetica,sans-Serif" font-size="11.00">mic input</text>
+</g>
+<!-- MIC&#45;&gt;STT -->
+<g id="edge1" class="edge">
+<title>MIC&#45;&gt;STT</title>
+<path fill="none" stroke="#38761d" d="M391.55,-668.03C391.55,-654.33 391.55,-637.21 391.55,-621.3"/>
+<polygon fill="#38761d" stroke="#38761d" points="395.05,-621.51 391.55,-611.51 388.05,-621.51 395.05,-621.51"/>
+</g>
+<!-- SPEAKER -->
+<g id="node2" class="node">
+<title>SPEAKER</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="236.55" cy="-27.15" rx="62.47" ry="27.15"/>
+<text xml:space="preserve" text-anchor="middle" x="236.55" y="-28.7" font-family="Helvetica,sans-Serif" font-size="11.00">Speaker</text>
+<text xml:space="preserve" text-anchor="middle" x="236.55" y="-16.7" font-family="Helvetica,sans-Serif" font-size="11.00">(audio output)</text>
+</g>
+<!-- FLAME -->
+<g id="node3" class="node">
+<title>FLAME</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="747.55" cy="-27.15" rx="72.02" ry="27.15"/>
+<text xml:space="preserve" text-anchor="middle" x="747.55" y="-28.7" font-family="Helvetica,sans-Serif" font-size="11.00">Solenoids</text>
+<text xml:space="preserve" text-anchor="middle" x="747.55" y="-16.7" font-family="Helvetica,sans-Serif" font-size="11.00">(propane output)</text>
+</g>
+<!-- BUTTONS -->
+<g id="node4" class="node">
+<title>BUTTONS</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="747.55" cy="-270.01" rx="66.19" ry="27.15"/>
+<text xml:space="preserve" text-anchor="middle" x="747.55" y="-271.56" font-family="Helvetica,sans-Serif" font-size="11.00">Buttons</text>
+<text xml:space="preserve" text-anchor="middle" x="747.55" y="-259.56" font-family="Helvetica,sans-Serif" font-size="11.00">(physical input)</text>
+</g>
+<!-- RELAYS -->
+<g id="node11" class="node">
+<title>RELAYS</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M771.1,-149.31C771.1,-149.31 724,-149.31 724,-149.31 718,-149.31 712,-143.31 712,-137.31 712,-137.31 712,-125.31 712,-125.31 712,-119.31 718,-113.31 724,-113.31 724,-113.31 771.1,-113.31 771.1,-113.31 777.1,-113.31 783.1,-119.31 783.1,-125.31 783.1,-125.31 783.1,-137.31 783.1,-137.31 783.1,-143.31 777.1,-149.31 771.1,-149.31"/>
+<text xml:space="preserve" text-anchor="middle" x="747.55" y="-126.86" font-family="Helvetica,sans-Serif" font-size="11.00">Relay Box</text>
+</g>
+<!-- BUTTONS&#45;&gt;RELAYS -->
+<g id="edge10" class="edge">
+<title>BUTTONS&#45;&gt;RELAYS</title>
+<path fill="none" stroke="#444444" d="M747.55,-242.65C747.55,-219.15 747.55,-184.85 747.55,-160.74"/>
+<polygon fill="#444444" stroke="#444444" points="751.05,-161.01 747.55,-151.01 744.05,-161.01 751.05,-161.01"/>
+<text xml:space="preserve" text-anchor="middle" x="794.8" y="-189.26" font-family="Helvetica,sans-Serif" font-size="9.00">bush/flame/flare/pulse</text>
+<text xml:space="preserve" text-anchor="middle" x="794.8" y="-179.51" font-family="Helvetica,sans-Serif" font-size="9.00">bush/flame/bigjet/pulse</text>
+</g>
+<!-- FIRECONTROL -->
+<g id="node5" class="node">
+<title>FIRECONTROL</title>
+<ellipse fill="#d9ead3" stroke="#38761d" cx="921.55" cy="-270.01" rx="65.12" ry="27.15"/>
+<text xml:space="preserve" text-anchor="middle" x="921.55" y="-271.56" font-family="Helvetica,sans-Serif" font-size="11.00">FireControl</text>
+<text xml:space="preserve" text-anchor="middle" x="921.55" y="-259.56" font-family="Helvetica,sans-Serif" font-size="11.00">(website input)</text>
+</g>
+<!-- FIRECONTROL&#45;&gt;RELAYS -->
+<g id="edge9" class="edge">
+<title>FIRECONTROL&#45;&gt;RELAYS</title>
+<path fill="none" stroke="#444444" d="M907.11,-243.46C894.77,-223.53 875.41,-196.29 852.55,-178.31 835.34,-164.77 813.53,-154.37 794.25,-146.91"/>
+<polygon fill="#444444" stroke="#444444" points="795.56,-143.66 784.97,-143.49 793.14,-150.23 795.56,-143.66"/>
+<text xml:space="preserve" text-anchor="middle" x="920.15" y="-189.26" font-family="Helvetica,sans-Serif" font-size="9.00">bush/flame/flare/pulse</text>
+<text xml:space="preserve" text-anchor="middle" x="920.15" y="-179.51" font-family="Helvetica,sans-Serif" font-size="9.00">bush/flame/bigjet/pulse</text>
+</g>
+<!-- T2V -->
+<g id="node7" class="node">
+<title>T2V</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M572.1,-467.36C572.1,-467.36 417,-467.36 417,-467.36 411,-467.36 405,-461.36 405,-455.36 405,-455.36 405,-392.96 405,-392.96 405,-386.96 411,-380.96 417,-380.96 417,-380.96 572.1,-380.96 572.1,-380.96 578.1,-380.96 584.1,-386.96 584.1,-392.96 584.1,-392.96 584.1,-455.36 584.1,-455.36 584.1,-461.36 578.1,-467.36 572.1,-467.36"/>
+<text xml:space="preserve" text-anchor="middle" x="494.55" y="-449.71" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;t2v</text>
+<text xml:space="preserve" text-anchor="middle" x="494.55" y="-437.71" font-family="Helvetica,sans-Serif" font-size="11.00">t2v&#45;service.py</text>
+<text xml:space="preserve" text-anchor="middle" x="494.55" y="-425.71" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text xml:space="preserve" text-anchor="middle" x="494.55" y="-413.71" font-family="Helvetica,sans-Serif" font-size="11.00">Rust HTTP :8765</text>
+<text xml:space="preserve" text-anchor="middle" x="494.55" y="-401.71" font-family="Helvetica,sans-Serif" font-size="11.00">Ollama embed</text>
+<text xml:space="preserve" text-anchor="middle" x="494.55" y="-389.71" font-family="Helvetica,sans-Serif" font-size="11.00">ChromaDB :8000</text>
+</g>
+<!-- STT&#45;&gt;T2V -->
+<g id="edge3" class="edge">
+<title>STT&#45;&gt;T2V</title>
+<path fill="none" stroke="#1155cc" d="M417.28,-534.8C429.62,-517.29 444.62,-496.01 458.11,-476.87"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="460.82,-479.09 463.72,-468.9 455.1,-475.06 460.82,-479.09"/>
+<text xml:space="preserve" text-anchor="middle" x="496.3" y="-497.56" font-family="Helvetica,sans-Serif" font-size="9.00">bush/pipeline/stt/transcript</text>
+</g>
+<!-- TTS -->
+<g id="node8" class="node">
+<title>TTS</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M314.1,-307.21C314.1,-307.21 159,-307.21 159,-307.21 153,-307.21 147,-301.21 147,-295.21 147,-295.21 147,-244.81 147,-244.81 147,-238.81 153,-232.81 159,-232.81 159,-232.81 314.1,-232.81 314.1,-232.81 320.1,-232.81 326.1,-238.81 326.1,-244.81 326.1,-244.81 326.1,-295.21 326.1,-295.21 326.1,-301.21 320.1,-307.21 314.1,-307.21"/>
+<text xml:space="preserve" text-anchor="middle" x="236.55" y="-289.56" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;tts</text>
+<text xml:space="preserve" text-anchor="middle" x="236.55" y="-277.56" font-family="Helvetica,sans-Serif" font-size="11.00">tts&#45;service.py</text>
+<text xml:space="preserve" text-anchor="middle" x="236.55" y="-265.56" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text xml:space="preserve" text-anchor="middle" x="236.55" y="-253.56" font-family="Helvetica,sans-Serif" font-size="11.00">espeak&#45;ng</text>
+<text xml:space="preserve" text-anchor="middle" x="236.55" y="-241.56" font-family="Helvetica,sans-Serif" font-size="11.00">sox reverb</text>
+</g>
+<!-- T2V&#45;&gt;TTS -->
+<g id="edge4" class="edge">
+<title>T2V&#45;&gt;TTS</title>
+<path fill="none" stroke="#1155cc" d="M422.34,-380.57C386.78,-359.6 344.02,-334.38 308.49,-313.43"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="310.37,-310.47 299.97,-308.41 306.81,-316.5 310.37,-310.47"/>
+<text xml:space="preserve" text-anchor="middle" x="420.54" y="-343.41" font-family="Helvetica,sans-Serif" font-size="9.00">bush/pipeline/t2v/verse</text>
+</g>
+<!-- SENTIMENT -->
+<g id="node9" class="node">
+<title>SENTIMENT</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M626.1,-313.21C626.1,-313.21 471,-313.21 471,-313.21 465,-313.21 459,-307.21 459,-301.21 459,-301.21 459,-238.81 459,-238.81 459,-232.81 465,-226.81 471,-226.81 471,-226.81 626.1,-226.81 626.1,-226.81 632.1,-226.81 638.1,-232.81 638.1,-238.81 638.1,-238.81 638.1,-301.21 638.1,-301.21 638.1,-307.21 632.1,-313.21 626.1,-313.21"/>
+<text xml:space="preserve" text-anchor="middle" x="548.55" y="-295.56" font-family="Helvetica,sans-Serif" font-size="11.00">bush&#45;sentiment</text>
+<text xml:space="preserve" text-anchor="middle" x="548.55" y="-283.56" font-family="Helvetica,sans-Serif" font-size="11.00">sentiment&#45;service.py</text>
+<text xml:space="preserve" text-anchor="middle" x="548.55" y="-271.56" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text xml:space="preserve" text-anchor="middle" x="548.55" y="-259.56" font-family="Helvetica,sans-Serif" font-size="11.00">DistilBERT</text>
+<text xml:space="preserve" text-anchor="middle" x="548.55" y="-247.56" font-family="Helvetica,sans-Serif" font-size="11.00">emotion classify</text>
+<text xml:space="preserve" text-anchor="middle" x="548.55" y="-235.56" font-family="Helvetica,sans-Serif" font-size="11.00">fire orchestration</text>
+</g>
+<!-- T2V&#45;&gt;SENTIMENT -->
+<g id="edge5" class="edge">
+<title>T2V&#45;&gt;SENTIMENT</title>
+<path fill="none" stroke="#1155cc" d="M509.59,-380.77C515.8,-363.28 523.07,-342.81 529.63,-324.31"/>
+<polygon fill="#1155cc" stroke="#1155cc" points="532.85,-325.71 532.9,-315.11 526.25,-323.37 532.85,-325.71"/>
+<text xml:space="preserve" text-anchor="middle" x="570.42" y="-343.41" font-family="Helvetica,sans-Serif" font-size="9.00">bush/pipeline/t2v/verse</text>
+</g>
+<!-- TTS&#45;&gt;SPEAKER -->
+<g id="edge2" class="edge">
+<title>TTS&#45;&gt;SPEAKER</title>
+<path fill="none" stroke="#38761d" d="M236.55,-232.43C236.55,-187.49 236.55,-111.62 236.55,-66.08"/>
+<polygon fill="#38761d" stroke="#38761d" points="240.05,-66.15 236.55,-56.15 233.05,-66.15 240.05,-66.15"/>
+</g>
+<!-- TTS&#45;&gt;STT -->
+<g id="edge6" class="edge">
+<title>TTS&#45;&gt;STT</title>
+<path fill="none" stroke="#cc4125" stroke-dasharray="5,2" d="M237.39,-307.39C239.78,-348.7 248.24,-416.87 277.05,-467.36 290.09,-490.21 309.93,-510.8 329.44,-527.51"/>
+<polygon fill="#cc4125" stroke="#cc4125" points="326.97,-530 336.9,-533.7 331.44,-524.62 326.97,-530"/>
+<text xml:space="preserve" text-anchor="middle" x="330.3" y="-425.36" font-family="Helvetica,sans-Serif" font-size="9.00">bush/pipeline/tts/speaking</text>
+<text xml:space="preserve" text-anchor="middle" x="330.3" y="-415.61" font-family="Helvetica,sans-Serif" font-size="9.00">bush/pipeline/tts/done</text>
+</g>
+<!-- TTS&#45;&gt;SENTIMENT -->
+<g id="edge7" class="edge">
+<title>TTS&#45;&gt;SENTIMENT</title>
+<path fill="none" stroke="#cc4125" stroke-dasharray="5,2" d="M326.37,-270.01C364.14,-270.01 408.26,-270.01 447.19,-270.01"/>
+<polygon fill="#cc4125" stroke="#cc4125" points="447.04,-273.51 457.04,-270.01 447.04,-266.51 447.04,-273.51"/>
+<text xml:space="preserve" text-anchor="middle" x="392.55" y="-274.21" font-family="Helvetica,sans-Serif" font-size="9.00">bush/pipeline/tts/done</text>
+</g>
+<!-- SENTIMENT&#45;&gt;RELAYS -->
+<g id="edge8" class="edge">
+<title>SENTIMENT&#45;&gt;RELAYS</title>
+<path fill="none" stroke="#444444" d="M586.77,-226.35C603,-209.9 622.83,-191.84 643.05,-178.31 660.81,-166.42 682.16,-156.38 700.91,-148.75"/>
+<polygon fill="#444444" stroke="#444444" points="702.17,-152.01 710.19,-145.09 699.61,-145.5 702.17,-152.01"/>
+<text xml:space="preserve" text-anchor="middle" x="690.3" y="-189.26" font-family="Helvetica,sans-Serif" font-size="9.00">bush/flame/flare/pulse</text>
+<text xml:space="preserve" text-anchor="middle" x="690.3" y="-179.51" font-family="Helvetica,sans-Serif" font-size="9.00">bush/flame/bigjet/pulse</text>
+</g>
+<!-- AUDIOAGENT -->
+<g id="node10" class="node">
+<title>AUDIOAGENT</title>
+<path fill="#cfe2f3" stroke="#1155cc" d="M167.1,-609.51C167.1,-609.51 12,-609.51 12,-609.51 6,-609.51 0,-603.51 0,-597.51 0,-597.51 0,-547.11 0,-547.11 0,-541.11 6,-535.11 12,-535.11 12,-535.11 167.1,-535.11 167.1,-535.11 173.1,-535.11 179.1,-541.11 179.1,-547.11 179.1,-547.11 179.1,-597.51 179.1,-597.51 179.1,-603.51 173.1,-609.51 167.1,-609.51"/>
+<text xml:space="preserve" text-anchor="middle" x="89.55" y="-591.86" font-family="Helvetica,sans-Serif" font-size="11.00">audio&#45;agent</text>
+<text xml:space="preserve" text-anchor="middle" x="89.55" y="-579.86" font-family="Helvetica,sans-Serif" font-size="11.00">audio&#45;agent.py</text>
+<text xml:space="preserve" text-anchor="middle" x="89.55" y="-567.86" font-family="Helvetica,sans-Serif" font-size="11.00">──────────────</text>
+<text xml:space="preserve" text-anchor="middle" x="89.55" y="-555.86" font-family="Helvetica,sans-Serif" font-size="11.00">PortAudio</text>
+<text xml:space="preserve" text-anchor="middle" x="89.55" y="-543.86" font-family="Helvetica,sans-Serif" font-size="11.00">device discovery</text>
+</g>
+<!-- AUDIOAGENT&#45;&gt;STT -->
+<g id="edge12" class="edge">
+<title>AUDIOAGENT&#45;&gt;STT</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M179.34,-572.31C214.17,-572.31 254.23,-572.31 290.1,-572.31"/>
+<polygon fill="#999999" stroke="#999999" points="290.07,-575.81 300.07,-572.31 290.07,-568.81 290.07,-575.81"/>
+<text xml:space="preserve" text-anchor="middle" x="240.55" y="-576.51" font-family="Helvetica,sans-Serif" font-size="9.00">bush/audio/devices</text>
+</g>
+<!-- AUDIOAGENT&#45;&gt;TTS -->
+<g id="edge13" class="edge">
+<title>AUDIOAGENT&#45;&gt;TTS</title>
+<path fill="none" stroke="#999999" stroke-dasharray="1,5" d="M89.4,-534.79C90.69,-494.8 97.1,-429.87 123.05,-380.96 136.32,-355.93 157.35,-333.21 177.72,-315"/>
+<polygon fill="#999999" stroke="#999999" points="179.99,-317.67 185.25,-308.47 175.4,-312.38 179.99,-317.67"/>
+<text xml:space="preserve" text-anchor="middle" x="162.8" y="-420.48" font-family="Helvetica,sans-Serif" font-size="9.00">bush/audio/devices</text>
+</g>
+<!-- RELAYS&#45;&gt;FLAME -->
+<g id="edge11" class="edge">
+<title>RELAYS&#45;&gt;FLAME</title>
+<path fill="none" stroke="#38761d" d="M747.55,-112.98C747.55,-100.15 747.55,-82.19 747.55,-66.09"/>
+<polygon fill="#38761d" stroke="#38761d" points="751.05,-66.31 747.55,-56.31 744.05,-66.31 751.05,-66.31"/>
+</g>
+</g>
 </svg>
