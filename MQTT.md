@@ -4,7 +4,7 @@
 
 ![MQTT architecture diagram](mqtt-architecture.png)
 
-> Source: [`mqtt-architecture.dot`](mqtt-architecture.dot) — regenerate with `dot -Tsvg mqtt-architecture.dot -o mqtt-architecture.svg`
+> Source: [`mqtt-architecture.dot`](mqtt-architecture.dot) — regenerate with `dot -Tpng mqtt-architecture.dot -o mqtt-architecture.png`
 
 ---
 
