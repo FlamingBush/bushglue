@@ -1,0 +1,19 @@
+[project]
+name = "bush-audio-agent"
+version = "0.1.0"
+description = "Audio device discovery agent"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.0",
+    "bushutil",
+]
+
+[project.scripts]
+bush-audio-agent = "bush_audio_agent:main"
+
+[tool.uv.sources]
+bushutil = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

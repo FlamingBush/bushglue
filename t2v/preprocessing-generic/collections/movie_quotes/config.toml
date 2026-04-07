@@ -1,0 +1,41 @@
+[llm.preprocessing]
+api_type = "openai"
+endpoint = "https://api.anthropic.com"
+api_key_file = "~/.claude/burning_bush.txt"
+model = "claude-sonnet-4-5-20250929"
+max_requests_per_minute = 45
+
+[llm.embedding]
+api_type = "ollama"
+endpoint = "http://localhost:11434"
+api_key_file = ""
+model = "qwen3-embedding:0.6b"
+
+[pipeline]
+batch_size = 4
+output_dir = "output"
+input_csv = "data/snippets.csv"
+modernize_enabled = false
+num_questions_per_item = 3
+
+[collection]
+name = "movie_quotes"
+display_name = "Movie Quotes"
+description = "Famous quotes from movies, useful for finding cinematic wisdom, cultural references, or memorable lines"
+schema = "generic"
+
+[chromadb]
+persist_dir = "../../../preprocessing-biblical/output/chromadb"
+server_host = "localhost"
+server_port = 8000
+
+[error_handling]
+max_network_retries = 5
+max_validation_retries = 3
+retry_base_delay_seconds = 2.0
+max_retry_delay_seconds = 30.0
+log_file = "preprocessing.log"
+
+[prompts]
+modernize = "../../prompts/modernize.txt"
+questionize = "../../prompts/questionize.txt"

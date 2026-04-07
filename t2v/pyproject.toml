@@ -1,0 +1,6 @@
+[tool.uv.workspace]
+members = [
+    "preprocessing-common",
+    "preprocessing-biblical",
+    "preprocessing-generic",
+]

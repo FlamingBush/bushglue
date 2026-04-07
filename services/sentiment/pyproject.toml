@@ -1,0 +1,21 @@
+[project]
+name = "bush-sentiment"
+version = "0.1.0"
+description = "Sentiment analysis + fire orchestration (DistilBERT)"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.0",
+    "torch",
+    "transformers",
+    "bushutil",
+]
+
+[project.scripts]
+bush-sentiment = "bush_sentiment:main"
+
+[tool.uv.sources]
+bushutil = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,21 @@
+[project]
+name = "bush-sound"
+version = "0.1.0"
+description = "Flame sound effects synthesis service"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.0",
+    "numpy>=1.24",
+    "sounddevice>=0.4",
+    "bushutil",
+]
+
+[project.scripts]
+bush-sound = "bush_sound:main"
+
+[tool.uv.sources]
+bushutil = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

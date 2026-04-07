@@ -1,0 +1,7 @@
+You are modernizing a bible verse into clear, contemporary English. Preserve the full meaning, imagery, and emotional tone of the original, but replace archaic vocabulary, grammar, and sentence structures with natural modern English.
+
+Verse reference: {verse_reference}
+Original text:
+{verse_text}
+
+Rewrite this verse in modern English. Do not add commentary, interpretation, or explanation — only provide the modernized text.

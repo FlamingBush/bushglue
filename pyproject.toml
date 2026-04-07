@@ -1,0 +1,18 @@
+[project]
+name = "bushglue"
+version = "0.1.0"
+description = "Bush Glue – AI art installation pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "chromadb",
+    "rich>=13.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/*",
+    "services/*",
+]
+exclude = [
+    "t2v",
+]

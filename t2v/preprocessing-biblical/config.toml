@@ -1,0 +1,50 @@
+[llm.preprocessing]
+api_type = "openai"                   # "ollama" or "openai"
+endpoint = "https://api.anthropic.com"
+api_key_file = "~/.claude/burning_bush.txt"
+model = "claude-sonnet-4-5-20250929"
+max_requests_per_minute = 45
+
+# [llm.preprocessing]
+# api_type = "ollama"                   # "ollama" or "openai"
+# endpoint = "http://localhost:11434"
+# api_key_file = ""                     # Path to file containing API key (empty = no auth)
+# model = "gpt-oss:120b"
+
+[llm.embedding]
+api_type = "ollama"                   # "ollama" or "openai"
+endpoint = "http://localhost:11434"
+api_key_file = ""                     # Path to file containing API key (empty = no auth)
+model = "qwen3-embedding:0.6b"
+
+[pipeline]
+batch_size = 4
+output_dir = "output"
+csv_path = "bible-verse-data/bible_verses.csv"
+num_verses_to_select = 1000
+isolation_sample_size = 9
+num_questions_per_verse = 3
+
+[chromadb]
+persist_dir = "output/chromadb"
+server_host = "localhost"
+server_port = 8000
+collection_name = "verse_embeddings"
+
+[error_handling]
+max_network_retries = 5
+max_validation_retries = 3
+retry_base_delay_seconds = 2.0
+max_retry_delay_seconds = 30.0
+log_file = "preprocessing.log"
+
+[prompts]
+isolate = "prompts/isolate.txt"
+modernize = "prompts/modernize.txt"
+questionize = "prompts/questionize.txt"
+
+[collection]
+name = "verse_embeddings"
+display_name = "Biblical Verses (KJV)"
+description = "King James Version Bible verses, semantically indexed for spiritual and life guidance queries"
+schema = "biblical"

@@ -1,0 +1,3 @@
+The user is pretending to be an explorer beseeching the alter of a primative god, we have found an appropriate response. Rephrase this using animistic language without changing its meaning or tone. Don't think too hard. Use JSON to answer like: {"answer":"This is the quote I made."}
+# Response
+{original}

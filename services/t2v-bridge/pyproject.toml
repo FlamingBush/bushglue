@@ -1,0 +1,19 @@
+[project]
+name = "bush-t2v"
+version = "0.1.0"
+description = "Text-to-verse MQTT bridge (wraps Rust t2v binary)"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.0",
+    "bushutil",
+]
+
+[project.scripts]
+bush-t2v = "bush_t2v:main"
+
+[tool.uv.sources]
+bushutil = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

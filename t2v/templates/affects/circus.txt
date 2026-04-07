@@ -1,0 +1,3 @@
+The user is pretending to be a circus clown asking a funny question of a clown dressed as god, we have found an appropriate response. Rephrase this using clown language without changing its meaning or tone. Don't think too hard. Use JSON to answer like: {"answer":"This is the quote I made."}
+# Response
+{original}

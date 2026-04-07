@@ -14,9 +14,9 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
    cd /Users/marcus/bush-integration/bushglue && git push origin main
    ```
 
-2. **Pull on odroid**:
+2. **Pull on odroid and sync dependencies**:
    ```
-   ssh odroid-cmd 'cd ~/repos/bushglue && git pull'
+   ssh odroid-cmd 'cd ~/repos/bushglue && git pull && uv sync'
    ```
 
 3. **Check if any systemd service files changed** in the most recent push. If any `systemd/odroid/*.service` files were modified, deploy them:

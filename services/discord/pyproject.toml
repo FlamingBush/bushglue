@@ -1,0 +1,23 @@
+[project]
+name = "bush-discord"
+version = "0.1.0"
+description = "Discord bot with /pray slash command"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.0",
+    "discord.py[voice]>=2.7",
+    "PyNaCl>=1.5",
+    "numpy>=1.24",
+    "davey",
+    "bushutil",
+]
+
+[project.scripts]
+bush-discord = "bush_discord:main"
+
+[tool.uv.sources]
+bushutil = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

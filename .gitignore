@@ -1,1 +1,5 @@
 __pycache__
+.venv/
+*.egg-info/
+t2v/target/
+data/chromadb/

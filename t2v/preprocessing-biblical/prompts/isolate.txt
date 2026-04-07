@@ -1,0 +1,6 @@
+You are selecting bible verses that are interesting, meaningful, and diverse. Given the following {num_verses} verses, select the ONE verse that is most unique, thought-provoking, and orthogonal (least similar in theme, style, and content) to typical selections.
+
+Verses:
+{verses_block}
+
+Respond with the verse_id of your selection.

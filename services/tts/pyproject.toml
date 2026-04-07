@@ -1,0 +1,19 @@
+[project]
+name = "bush-tts"
+version = "0.1.0"
+description = "Text-to-speech MQTT service (espeak-ng + sox)"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.0",
+    "bushutil",
+]
+
+[project.scripts]
+bush-tts = "bush_tts:main"
+
+[tool.uv.sources]
+bushutil = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

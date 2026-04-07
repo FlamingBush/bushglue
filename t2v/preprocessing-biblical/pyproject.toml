@@ -1,0 +1,18 @@
+[project]
+name = "t2v-biblical"
+version = "0.1.0"
+description = "Text-to-Verse biblical preprocessing pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "t2v-common",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/t2v_biblical"]
+
+[tool.uv.sources]
+t2v-common = { workspace = true }

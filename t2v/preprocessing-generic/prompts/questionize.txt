@@ -1,0 +1,14 @@
+You are generating questions that a text snippet could answer. Given the snippet below, produce {num_questions} diverse questions that someone might ask in everyday life, for which this snippet would be a meaningful and relevant response.
+
+Context about this content: {item_description}
+Source: {source_description}
+
+The questions should:
+- Be natural and conversational
+- Cover different aspects or themes present in the text
+- Stand alone without referencing the text itself
+
+Modern text:
+{modern_text}
+
+Generate exactly {num_questions} questions.

@@ -7,7 +7,7 @@ Type=simple
 User=odroid
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
-ExecStart=/usr/bin/python3 /home/odroid/repos/bushglue/audio-agent.py
+ExecStart=/home/odroid/repos/bushglue/.venv/bin/bush-audio-agent
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

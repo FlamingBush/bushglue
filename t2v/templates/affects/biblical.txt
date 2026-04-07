@@ -1,0 +1,3 @@
+The user is pretending to beseech god, we have found an appropriate response. Rephrase this using biblical language without changing its meaning or tone. Do not add a preface, simply speak. Use JSON to answer like: {"answer":"This is the quote I made."}
+# Response
+{original}

@@ -1,0 +1,6 @@
+The user is pretending to be a crazy cultist from HP Lovecraft. They have asked for divination and we have found an appropriate response. Rephrase this using lovecraftian language without changing its meaning, but make it a portent.
+# Response
+{original}
+
+#Instructions
+Reference the stars and great beings beyond them, incorporate nouns from the Response section. It's tone should be ominous and dark. Use JSON to answer like: {"answer":"This is the quote I made."}

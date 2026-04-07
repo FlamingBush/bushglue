@@ -1,0 +1,7 @@
+You are rewriting a text snippet into clear, accessible modern English.
+
+Item context: {item_description}
+Original text:
+{item_text}
+
+Rewrite this text to be easily understood by a modern reader. Preserve the full meaning and tone. Return only the rewritten text, no commentary.
