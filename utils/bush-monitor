@@ -16,9 +16,9 @@ Keys:
   q        — quit
 """
 import os, sys
-_venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv", "bin", "python")
-if os.path.isfile(_venv_python) and os.path.realpath(sys.executable) != os.path.realpath(_venv_python):
-    os.execv(_venv_python, [_venv_python] + sys.argv)
+_venv = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv"))
+if os.path.isdir(_venv) and sys.prefix != _venv:
+    os.execv(os.path.join(_venv, "bin", "python"), [os.path.join(_venv, "bin", "python")] + sys.argv)
 
 import fcntl
 import json
