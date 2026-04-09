@@ -5,7 +5,7 @@ After=network-online.target mosquitto.service
 [Service]
 Type=simple
 User=odroid
-ExecStart=/home/odroid/repos/bushglue/.venv/bin/python /home/odroid/repos/bushglue/utils/bush-firecontrol-web --broker localhost
+ExecStart=/home/odroid/bushglue/.venv/bin/python /home/odroid/bushglue/utils/bush-firecontrol-web --broker localhost
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

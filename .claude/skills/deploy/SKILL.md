@@ -16,34 +16,34 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
 
 2. **Pull on odroid and sync dependencies**:
    ```
-   ssh odroid-cmd 'cd ~/repos/bushglue && git pull && uv sync'
+   ssh odroid 'cd ~/bushglue && git pull && ~/.local/bin/uv sync --all-packages'
    ```
 
 3. **Check if any systemd service files changed** in the most recent push. If any `systemd/odroid/*.service` files were modified, deploy them:
    ```
-   ssh odroid-cmd 'sudo cp ~/repos/bushglue/systemd/odroid/*.service /etc/systemd/system/ && sudo systemctl daemon-reload'
+   ssh odroid 'sudo cp ~/bushglue/systemd/odroid/*.service /etc/systemd/system/ && sudo systemctl daemon-reload'
    ```
 
 4. **Restart affected services.** Restart whichever services had their script or service file changed. If unsure, restart all pipeline services:
    ```
-   ssh odroid-cmd 'sudo systemctl restart bush-stt bush-tts bush-t2v bush-sentiment bush-audio-agent'
+   ssh odroid 'sudo systemctl restart bush-stt bush-tts bush-t2v bush-sentiment bush-audio-agent'
    ```
    Wait a few seconds for services to settle before running the test.
 
 5. **Restart the local monitor** (if it's running, it will reload with the new code):
    ```
-   ssh odroid-cmd 'mosquitto_pub -h localhost -t bush/monitor/restart -m "{}"'
+   ssh odroid 'mosquitto_pub -h localhost -t bush/monitor/restart -m "{}"'
    ```
 
 6. **Run the audio health check**:
    ```
-   ssh odroid-cmd 'bush-audio-fix'
+   ssh odroid 'bush-audio-fix'
    ```
    Report any FAILs. The USB codec being in broken state is a known hardware issue (needs replug) — flag it but do not treat it as a deploy failure. Any other FAIL is a real problem.
 
 7. **Run the integration test** with a 40-second timeout:
    ```
-   ssh odroid-cmd 'timeout 40 bush-integration-test'
+   ssh odroid 'timeout 40 ~/bushglue/.venv/bin/python ~/bushglue/utils/bush-integration-test'
    ```
    If it exits with code 124, the test timed out — treat that as a failure and diagnose accordingly.
 

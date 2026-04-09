@@ -12,8 +12,10 @@ Accepts runtime device changes via bush/audio/stt/set-device {"device": <int|str
 """
 import json
 import os
+import pathlib
 import queue
 import random
+import subprocess as _subprocess
 import sys
 import threading
 import time
@@ -23,8 +25,8 @@ import paho.mqtt.client as mqtt
 from bushutil import get_mqtt_broker, load_audio_device, save_audio_device
 
 # ── paths / device ─────────────────────────────────────────────────────────
-STT_DIR = os.environ.get("STT_DIR", "/mnt/c/Users/EB/speech-to-text")
-MODEL_PATH = os.environ.get("STT_MODEL", f"{STT_DIR}/models/en-us")
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]  # bushglue/
+MODEL_PATH = os.environ.get("STT_MODEL", str(_REPO_ROOT / "data" / "vosk-model"))
 _dev = os.environ.get("STT_DEVICE")
 if _dev:
     STT_DEVICE = int(_dev) if _dev.isdigit() else _dev  # int index or string name
@@ -77,10 +79,6 @@ def log(msg: str):
 
 
 _AUDIO_RETRY_INTERVAL = 10  # seconds between device-ready checks
-
-
-import pathlib
-import subprocess as _subprocess
 
 
 def _is_alsa_device(device) -> bool:
@@ -229,8 +227,7 @@ def main():
     log("MQTT connected.")
 
     # ── Vosk setup ─────────────────────────────────────────────────────────
-    sys.path.insert(0, STT_DIR)
-    from transcriber import SpeechToText
+    from bush_stt.transcriber import SpeechToText
     from vosk import KaldiRecognizer
 
     stt = SpeechToText(model_path=MODEL_PATH, sample_rate=SAMPLE_RATE)

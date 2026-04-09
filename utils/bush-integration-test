@@ -19,6 +19,13 @@ Usage:
     python3 integration-test.py --health-only
     python3 integration-test.py --summarize
 """
+import os, sys
+_venv = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv")
+if os.path.isdir(_venv) and _venv not in os.environ.get("VIRTUAL_ENV", ""):
+    _sp = os.path.join(_venv, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+    if _sp not in sys.path:
+        sys.path.insert(0, _sp)
+
 import argparse
 import json
 import subprocess

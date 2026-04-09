@@ -6,7 +6,7 @@ Wants=ollama.service
 [Service]
 Type=simple
 User=odroid
-ExecStart=/home/odroid/repos/bushglue/.venv/bin/chroma run --path /home/odroid/repos/bushglue/data/chromadb
+ExecStart=/home/odroid/bushglue/.venv/bin/chroma run --path /home/odroid/bushglue/data/chromadb
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

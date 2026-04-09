@@ -271,7 +271,7 @@ def main():
         else:
             check("udev sidetone-mute script ran", False, warn=True,
                   fix="No /tmp/bush-codec-init.log — udev may not be calling bush-codec-init.\n"
-                      "     Check: ls -la /home/odroid/repos/bushglue/udev/bush-codec-init (needs +x)\n"
+                      "     Check: ls -la /home/odroid/bushglue/udev/bush-codec-init (needs +x)\n"
                       "     Check: sudo udevadm test $(udevadm info -q path /dev/snd/controlC3)\n"
                       "     Fallback: bush-monitor mutes sidetone if running (polling, 8s delay).")
         print()

@@ -6,9 +6,9 @@ Requires=chromadb.service ollama.service
 [Service]
 Type=simple
 User=odroid
-Environment=T2V_BIN=/home/odroid/repos/bushglue/t2v/target/release/text-to-verse
-Environment=AFFECTS_DIR=/home/odroid/repos/bushglue/t2v/templates/affects
-ExecStart=/home/odroid/repos/bushglue/.venv/bin/bush-t2v
+Environment=T2V_BIN=/home/odroid/bushglue/t2v/target/release/text-to-verse
+Environment=AFFECTS_DIR=/home/odroid/bushglue/t2v/templates/affects
+ExecStart=/home/odroid/bushglue/.venv/bin/bush-t2v
 MemoryMax=1500M
 MemoryHigh=1200M
 Restart=on-failure

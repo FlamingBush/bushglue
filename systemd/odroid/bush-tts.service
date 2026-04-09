@@ -5,7 +5,7 @@ After=network-online.target user@1000.service
 [Service]
 Type=simple
 User=odroid
-ExecStart=/home/odroid/repos/bushglue/.venv/bin/bush-tts
+ExecStart=/home/odroid/bushglue/.venv/bin/bush-tts
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
