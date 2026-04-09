@@ -1,8 +1,6 @@
 # Bush Glue — Modular System for Critique of Intersections of Religion and Technology
 
-Burgeoning clearinghouse with aspirations to monorepo.
-
-No PRs allowed, just keep main up to date with the odroid mmmkay?
+See the [root README](../README.md) for setup and deploy instructions.
 
 ## Component Diagram
 
