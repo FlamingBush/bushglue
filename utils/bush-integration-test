@@ -20,11 +20,9 @@ Usage:
     python3 integration-test.py --summarize
 """
 import os, sys
-_venv = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv")
-if os.path.isdir(_venv) and _venv not in os.environ.get("VIRTUAL_ENV", ""):
-    _sp = os.path.join(_venv, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
-    if _sp not in sys.path:
-        sys.path.insert(0, _sp)
+_venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv", "bin", "python")
+if os.path.isfile(_venv_python) and os.path.realpath(sys.executable) != os.path.realpath(_venv_python):
+    os.execv(_venv_python, [_venv_python] + sys.argv)
 
 import argparse
 import json
