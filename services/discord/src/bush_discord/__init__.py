@@ -26,8 +26,10 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -68,6 +70,8 @@ TOPIC_FLAME      = "bush/flame/pulse"
 
 MQTT_PORT   = 1883
 REPO_DIR = Path(__file__).resolve().parents[4]  # …/services/discord/src/bush_discord → repo root
+WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
+AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".webm"}
 
 from bushutil import build_sox_effects as _build_sox_effects
 
@@ -350,9 +354,10 @@ class PipelineSession:
     each stage in order, and returns a PipelineResult.
     """
 
-    def __init__(self, bridge: MQTTBridge, phrase: str):
+    def __init__(self, bridge: MQTTBridge, phrase: str, file: Optional[Path] = None):
         self._bridge = bridge
         self._phrase = phrase
+        self._file = file
 
         self._transcript_ev   = asyncio.Event()
         self._transcript_text: Optional[str] = None
@@ -456,8 +461,12 @@ class PipelineSession:
 
             # run bush-pray asynchronously; track when playback finishes
             inject_script = REPO_DIR / "utils" / "bush-pray"
+            if self._file:
+                pray_args = ["--file", str(self._file)]
+            else:
+                pray_args = ["--phrase", self._phrase]
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, str(inject_script), "--phrase", self._phrase,
+                sys.executable, str(inject_script), *pray_args,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -554,7 +563,7 @@ class PipelineSession:
 
 # ── embed builder ─────────────────────────────────────────────────────────────
 
-def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
+def build_summary_embed(phrase: str, result: PipelineResult, is_file: bool = False) -> discord.Embed:
     # determine color from top emotion
     color = 0x95A5A6   # default grey
     top_emotion = None
@@ -570,7 +579,7 @@ def build_summary_embed(phrase: str, result: PipelineResult) -> discord.Embed:
             top_emotion = max(scores, key=scores.get)
             color = EMOTION_COLORS.get(top_emotion, color)
 
-    desc_parts = [f"**said** {phrase}"]
+    desc_parts = [f"**played** {phrase}" if is_file else f"**said** {phrase}"]
     if result.transcript:
         desc_parts.append(f"**heard** {result.transcript}")
     if result.verse:
@@ -764,11 +773,19 @@ class BushBot(discord.Client):
 
     async def on_message(self, message: discord.Message):
         print(f"[bot] on_message: author={message.author} bot={message.author.bot} channel={message.channel} content={message.content!r:.60}", flush=True)
-        # ignore bots and empty messages
+        # ignore bots
         if message.author.bot:
             return
         phrase = message.content.strip()
-        if not phrase:
+
+        # check for audio file attachments
+        audio_attachment = None
+        for att in message.attachments:
+            if Path(att.filename).suffix.lower() in AUDIO_EXTS:
+                audio_attachment = att
+                break
+
+        if not phrase and not audio_attachment:
             return
 
         # accept DMs and messages in #bush-irl
@@ -786,26 +803,50 @@ class BushBot(discord.Client):
             )
 
         async with self._lock:
-            print(f"[bot] message '{phrase}' from {message.author} in {message.channel}", flush=True)
+            is_file = False
+            if audio_attachment:
+                label = phrase or audio_attachment.filename
+                print(f"[bot] audio upload '{label}' from {message.author} in {message.channel}", flush=True)
+                raw_path = Path(tempfile.mktemp(suffix=Path(audio_attachment.filename).suffix))
+                stem = Path(audio_attachment.filename).stem
+                slug = re.sub(r"[^a-z0-9]+", "_", stem.lower().strip()).strip("_")
+                wav_path = WAVS_DIR / f"{slug}.wav"
+                WAVS_DIR.mkdir(parents=True, exist_ok=True)
+                await audio_attachment.save(raw_path)
+                conv = await asyncio.create_subprocess_exec(
+                    "sox", str(raw_path), "-r", "16000", "-c", "1", "-b", "16", str(wav_path),
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                )
+                ret = await conv.wait()
+                raw_path.unlink(missing_ok=True)
+                if ret != 0:
+                    await message.channel.send(f"Failed to convert `{audio_attachment.filename}` — sox exited {ret}")
+                    return
+                session = PipelineSession(self._bridge, phrase=label, file=wav_path)
+                is_file = True
+            else:
+                label = phrase
+                print(f"[bot] message '{phrase}' from {message.author} in {message.channel}", flush=True)
+                session = PipelineSession(self._bridge, phrase)
 
             verse_sent = False
+            verb = "played" if is_file else "said"
 
             async def on_verse(text: str, heard: Optional[str]):
                 nonlocal verse_sent
                 try:
                     verse = " ".join(text.split())
-                    header = f"{message.author.display_name} said \"{phrase}\" and AI Am (your fucking god dude) heard \"{heard}\"\n" if heard else ""
+                    header = f"{message.author.display_name} {verb} \"{label}\" and AI Am (your fucking god dude) heard \"{heard}\"\n" if heard else ""
                     await message.channel.send(f"{header}> *\"{verse}\"*")
                     verse_sent = True
                 except Exception as e:
                     print(f"[bot] Failed to send verse: {e}", flush=True)
-            # Text stomps on voice: cut any VC playback and mute voice input
+            # Text/file stomps on voice: cut any VC playback and mute voice input
             if self._voice_client and self._voice_client.is_playing():
                 self._voice_client.stop()
             if self._loopback_writer:
                 self._loopback_writer.muted = True
 
-            session = PipelineSession(self._bridge, phrase)
             try:
                 result = await session.run(on_verse=on_verse)
             finally:
@@ -815,7 +856,7 @@ class BushBot(discord.Client):
             if not verse_sent and result.verse:
                 await message.channel.send(f"> *\"{result.verse}\"*")
 
-            embed = build_summary_embed(phrase, result)
+            embed = build_summary_embed(label, result, is_file=is_file)
             await message.channel.send(embed=embed)
 
     async def _handle_pray(self, interaction: discord.Interaction, phrase: str):
