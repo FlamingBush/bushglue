@@ -15,14 +15,20 @@ Environment:
     LOOPBACK_DEVICE ALSA playback device to write into  (default: hw:3,0)
 """
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
 LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "loopback-inject")
+LOOPBACK_SOURCE = "loopback-inject.monitor"
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
+TOPIC_STT_DEVICE = "bush/audio/stt/device"
+TOPIC_SET_STT_DEVICE = "bush/audio/stt/set-device"
 
 
 def phrase_to_filename(phrase: str) -> str:
@@ -43,6 +49,32 @@ def synthesize(phrase: str, out_path: Path) -> None:
     )
     espeak.stdout.close()
     espeak.wait()
+
+
+def get_stt_device() -> str | None:
+    """Query the current STT input device from the retained MQTT topic."""
+    try:
+        result = subprocess.run(
+            ["mosquitto_sub", "-h", MQTT_BROKER, "-t", TOPIC_STT_DEVICE,
+             "-C", "1", "-W", "3"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout.strip())
+            return data.get("device")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
+        print(f"[bush-pray] Failed to query STT device: {e}", flush=True)
+    return None
+
+
+def set_stt_device(device: str) -> None:
+    """Tell the STT service to switch input device."""
+    payload = json.dumps({"device": device})
+    subprocess.run(
+        ["mosquitto_pub", "-h", MQTT_BROKER, "-t", TOPIC_SET_STT_DEVICE,
+         "-m", payload],
+        timeout=5,
+    )
 
 
 def main():
@@ -68,11 +100,25 @@ def main():
             print(f"[bush-pray] File not found: {wav}", file=sys.stderr)
             sys.exit(1)
 
+    # Switch STT to loopback source before playing
+    original_device = get_stt_device()
+    switched = False
+    if original_device != LOOPBACK_SOURCE:
+        print(f"[bush-pray] Switching STT device → {LOOPBACK_SOURCE}")
+        set_stt_device(LOOPBACK_SOURCE)
+        switched = True
+        time.sleep(0.3)  # let STT service reopen the source
+
     print(f"[bush-pray] Playing into {LOOPBACK_DEVICE}")
-    subprocess.run(
-        ["sox", str(wav), "-t", "pulseaudio", LOOPBACK_DEVICE],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            ["sox", str(wav), "-t", "pulseaudio", LOOPBACK_DEVICE],
+            check=True,
+        )
+    finally:
+        if switched and original_device:
+            print(f"[bush-pray] Restoring STT device → {original_device}")
+            set_stt_device(original_device)
 
 
 if __name__ == "__main__":
