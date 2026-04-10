@@ -18,6 +18,9 @@ bush-stt = "bush_stt:main"
 [tool.uv.sources]
 bushutil = { workspace = true }
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/bush_sound", "src/bush_stt"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
