@@ -4,12 +4,9 @@
 
 ```
 services/          Python microservices (uv workspace packages)
-  stt/             Speech-to-text (Vosk)
-  tts/             Text-to-speech (espeak-ng + sox)
-  t2v-bridge/      Text-to-verse MQTT bridge (wraps Rust binary)
+  core/            Lightweight MQTT services (audio-agent, t2v-bridge, tts)
+  audio/           Audio I/O services (sound synthesis, speech-to-text)
   sentiment/       Emotion classification + fire control (DistilBERT)
-  sound/           Flame audio synthesis
-  audio-agent/     Audio device discovery
   discord/         Discord /pray command bot
 packages/          Shared Python packages
   bushutil/        MQTT broker detection, audio config, sox effects
