@@ -48,7 +48,7 @@ docs/              Architecture docs, MQTT topics reference
 ```
 
 Steps 5a and 5b run in parallel from the same `t2v/verse` message.
-The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s safety timeout.
+The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s timeout.
 
 ### MQTT topics
 
