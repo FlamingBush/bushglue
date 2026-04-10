@@ -67,10 +67,8 @@ TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
 TOPIC_FLAME      = "bush/flame/pulse"
 
 MQTT_PORT   = 1883
-REPO_DIR = Path(__file__).parent
+REPO_DIR = Path(__file__).resolve().parents[4]  # …/services/discord/src/bush_discord → repo root
 
-import sys as _sys
-_sys.path.insert(0, str(REPO_DIR))
 from bushutil import build_sox_effects as _build_sox_effects
 
 # ── pipeline timeouts (seconds) ───────────────────────────────────────────────
@@ -1052,7 +1050,6 @@ def main():
     if broker_override:
         broker = broker_override
     else:
-        sys.path.insert(0, str(REPO_DIR))
         from bushutil import get_mqtt_broker
         broker = get_mqtt_broker()
 
