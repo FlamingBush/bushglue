@@ -120,60 +120,6 @@ def main():
     check("Builtin codec (es8316) present", builtin_present,
           fix="Builtin codec missing from /proc/asound/cards — kernel driver issue, try rebooting.")
 
-    usb_present = "CODEC" in cards_text or "USB audio" in cards_text
-    check("USB codec (hw:CODEC) enumerated", usb_present, warn=not usb_present,
-          fix="USB codec not found. Replug the USB sound card.")
-
-    if usb_present:
-        # PA must NOT claim hw:CODEC — any PA module load triggers usb_set_interface
-        # failures on the RK3568 OHCI controller, permanently breaking the device.
-        if pa_running:
-            rc, pa_sinks, _ = run(["pactl", "list", "short", "sinks"])
-            rc2, pa_sources, _ = run(["pactl", "list", "short", "sources"])
-            pa_claimed = "CODEC" in pa_sinks or "CODEC" in pa_sources
-            check("PA has NOT claimed hw:CODEC", not pa_claimed,
-                  fix="PulseAudio has loaded hw:CODEC — this will break the device.\n"
-                      "     Fix: pactl unload-module <module-id> for any CODEC module.\n"
-                      "     Prevent: add 'device.blacklist = \"*CODEC*\"' to PA config.")
-
-        # Primary health check: try to open the device.
-        # Some usb_set_interface errors occur normally during enumeration and
-        # don't indicate a broken state — the open test is the authoritative signal.
-        # Use -d 0 (run until killed) so timeout (-1) means device opened fine.
-        rc, _, _ = run(["arecord", "-D", "hw:CODEC", "-f", "S16_LE", "-c", "1",
-                        "-r", "16000", "-d", "0", "-t", "raw", "/dev/null"], timeout=3)
-        usb_usable = rc in (0, -1)
-        if usb_usable:
-            check("USB codec responds to ALSA open", True)
-        else:
-            # Open failed — check dmesg for a more specific cause
-            rc2, dmesg_out, _ = run(["dmesg"], timeout=5)
-            broken_indicators = [
-                "usb_set_interface failed",
-                "cannot set freq",
-                "can't set config",
-                "retire_capture_urb",
-            ]
-            lines = dmesg_out.splitlines()
-            last_enum_idx = -1
-            for i, line in enumerate(lines):
-                if "idVendor=08bb" in line and "New USB device found" in line:
-                    last_enum_idx = i
-            lines_since_enum = lines[last_enum_idx + 1:] if last_enum_idx >= 0 else lines
-            post_enum_text = "\n".join(lines_since_enum)
-            recent_errors = [ind for ind in broken_indicators if ind in post_enum_text]
-            if recent_errors:
-                err_list = ", ".join(f'"{e}"' for e in recent_errors)
-                check("USB codec not in broken state", False,
-                      fix=f"USB codec has kernel errors ({err_list}).\n"
-                          f"     Fix: physically unplug and replug the USB sound card.\n"
-                          f"     Do NOT load it into PulseAudio — use hw:CODEC for direct ALSA access only.")
-            else:
-                check("USB codec responds to ALSA open", False,
-                      fix="USB codec enumerates but can't be opened.\n"
-                          "     Fix: unplug and replug the USB sound card.\n"
-                          "     Do NOT attempt to load it via pactl — this corrupts the device state.")
-
     print()
 
     # ── 5. Active device health ────────────────────────────────────────────────
@@ -208,7 +154,6 @@ def main():
                 tts_opens = rc == 0
                 check(f"TTS device {tts_device!r} opens for playback", tts_opens,
                       fix=f"TTS device {tts_device!r} cannot be opened.\n"
-                          f"     If hw:CODEC: replug the USB sound card.\n"
                           f"     Switch to builtin: mosquitto_pub -h {args.broker} "
                           f"-t bush/audio/tts/set-device -m '{{\"device\":\"hw:0\"}}'")
         else:
@@ -239,7 +184,6 @@ def main():
                 stt_opens = rc in (0, -1)
                 check(f"STT device {stt_device!r} opens for capture", stt_opens,
                       fix=f"STT device {stt_device!r} cannot be opened for capture.\n"
-                          f"     If hw:CODEC: replug the USB sound card.\n"
                           f"     Switch to loopback: mosquitto_pub -h {args.broker} "
                           f"-t bush/audio/stt/set-device -m '{{\"device\":\"loopback-inject.monitor\"}}'")
         else:
@@ -259,22 +203,6 @@ def main():
               fix="Can't read bush/audio/stt/device from MQTT — is bush-stt running?")
 
     print()
-
-    # ── 6. USB codec settle / udev mute ────────────────────────────────────────
-    if usb_present:
-        print("USB codec settle")
-        udev_log = Path("/tmp/bush-codec-init.log")
-        if udev_log.exists():
-            last_line = udev_log.read_text().strip().splitlines()[-1]
-            check("udev sidetone-mute script ran", True,
-                  fix=f"Last run: {last_line}")
-        else:
-            check("udev sidetone-mute script ran", False, warn=True,
-                  fix="No /tmp/bush-codec-init.log — udev may not be calling bush-codec-init.\n"
-                      "     Check: ls -la /home/odroid/bushglue/udev/bush-codec-init (needs +x)\n"
-                      "     Check: sudo udevadm test $(udevadm info -q path /dev/snd/controlC3)\n"
-                      "     Fallback: bush-monitor mutes sidetone if running (polling, 8s delay).")
-        print()
 
     # ── Summary ────────────────────────────────────────────────────────────────
     if fixes:

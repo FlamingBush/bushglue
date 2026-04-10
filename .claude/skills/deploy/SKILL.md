@@ -39,7 +39,7 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
    ```
    ssh odroid 'bush-audio-fix'
    ```
-   Report any FAILs. The USB codec being in broken state is a known hardware issue (needs replug) — flag it but do not treat it as a deploy failure. Any other FAIL is a real problem.
+   Report any FAILs. Any FAIL is a real problem.
 
 7. **Run the integration test** with a 40-second timeout:
    ```

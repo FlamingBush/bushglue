@@ -8,7 +8,7 @@
 #   bush-standby --undo       # restore services that were running before standby
 #   bush-standby --device hw:0  # override output device (default: hw:0)
 
-DEVICE="plughw:CODEC"
+DEVICE="hw:Device"
 UNDO=0
 STATE_FILE="/tmp/bush-standby.state"
 STANDBY_FILE="${BUSH_STANDBY_FILE:-/home/odroid/standby.mp3}"
@@ -83,21 +83,9 @@ echo "bush-standby: fire control → http://${LOCAL_IP:-<odroid-ip>}:${WEB_PORT}
 
 echo "bush-standby: looping $STANDBY_FILE on $DEVICE  (Ctrl-C or --undo to restore)"
 
-# The RK3568 OHCI controller needs ~45s from cold boot before it can reliably
-# handle SET_INTERFACE on the USB audio device. Wait until 45s uptime before
-# the first open attempt. Retries also wait 45s in case of later failures.
-OHCI_READY=45
-uptime_s() { awk '{print int($1)}' /proc/uptime; }
-up=$(uptime_s)
-if [[ $up -lt $OHCI_READY ]]; then
-    wait_s=$(( OHCI_READY - up ))
-    echo "bush-standby: waiting ${wait_s}s for OHCI warm-up (uptime ${up}s)..."
-    sleep "$wait_s"
-fi
-
 while true; do
     sox "$STANDBY_FILE" -r 48000 -t alsa "$DEVICE" 2>/dev/null &
     SOX_PID=$!
     wait "$SOX_PID"
-    [[ $? -ne 0 ]] && { echo "bush-standby: playback failed, retrying in 45s..."; sleep 45; }
+    [[ $? -ne 0 ]] && { echo "bush-standby: playback failed, retrying in 5s..."; sleep 5; }
 done
