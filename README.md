@@ -1,6 +1,4 @@
-# Bush Glue
-
-Monorepo for the AI Am art installation pipeline. Modular system for critique of intersections of religion and technology.
+# Bush Glue (Modular System for Critique of Intersections of Religion and Technology)
 
 ## Structure
 
