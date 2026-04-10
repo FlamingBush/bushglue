@@ -8,11 +8,12 @@ Type=simple
 User=odroid
 Environment=T2V_BIN=/home/odroid/bushglue/t2v/target/release/text-to-verse
 Environment=AFFECTS_DIR=/home/odroid/bushglue/t2v/templates/affects
+ExecStartPre=/bin/sh -c 'until curl -sf http://localhost:8000/api/v2/heartbeat >/dev/null 2>&1; do sleep 1; done'
 ExecStart=/home/odroid/bushglue/.venv/bin/bush-t2v
 MemoryMax=1500M
 MemoryHigh=1200M
 Restart=on-failure
-RestartSec=30
+RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
