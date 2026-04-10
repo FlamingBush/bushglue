@@ -378,19 +378,11 @@ def _loopback_inject(broker: str, phrase: str) -> PipelineResult:
         subprocess.run(["sudo", "systemctl", "stop", LOOPBACK_COMPETITOR], check=True)
         stopped = True
 
-    # Save and switch STT device to loopback
-    original_device = _get_stt_device(broker)
-    switched = False
-    if original_device and original_device != LOOPBACK_DEVICE:
-        _set_stt_device(broker, LOOPBACK_DEVICE)
-        switched = True
-        time.sleep(1)  # let STT restart its audio loop
+    # bush-pray handles switching STT to loopback before audio injection
 
     try:
         return run_pipeline(broker, phrase, transcript_only=False)
     finally:
-        if switched and original_device:
-            _set_stt_device(broker, original_device)
         if stopped:
             subprocess.run(["sudo", "systemctl", "start", LOOPBACK_COMPETITOR], check=True)
 
