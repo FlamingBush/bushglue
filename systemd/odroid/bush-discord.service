@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=simple
 User=odroid
 EnvironmentFile=/home/odroid/.config/bush/discord-token.env
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 ExecStart=/home/odroid/bushglue/.venv/bin/bush-discord
 WorkingDirectory=/home/odroid/bushglue
 Restart=on-failure
