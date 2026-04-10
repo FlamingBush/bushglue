@@ -116,15 +116,19 @@ def _alsa_device_present(device) -> bool:
     return pathlib.Path(path).exists()
 
 
-def _wait_for_audio(device) -> None:
-    """Block until the audio source appears, logging each retry."""
+def _wait_for_audio(device, interrupt: threading.Event | None = None) -> bool:
+    """Block until the audio source appears. Returns False if interrupted by a device change."""
     if _is_alsa_device(device):
         check = lambda: _alsa_device_present(device)
     else:
         check = lambda: _pa_source_present(device)
     while not check():
         log(f"Audio source {device!r} not yet available — retrying in {_AUDIO_RETRY_INTERVAL}s...")
-        time.sleep(_AUDIO_RETRY_INTERVAL)
+        if interrupt and interrupt.wait(_AUDIO_RETRY_INTERVAL):
+            return False
+        elif not interrupt:
+            time.sleep(_AUDIO_RETRY_INTERVAL)
+    return True
 
 
 def main():
@@ -253,7 +257,10 @@ def main():
             device_change.clear()
             tts_pause.clear()
             tts_resume.clear()
-            _wait_for_audio(current_device)
+            if not _wait_for_audio(current_device, interrupt=device_change):
+                current_device = next_device[0]
+                log(f"Device changed to {current_device!r} while waiting")
+                continue
 
             parec_proc = None
             reader_stop = threading.Event()
