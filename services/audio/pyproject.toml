@@ -1,15 +1,19 @@
 [project]
-name = "bush-t2v"
+name = "bush-audio"
 version = "0.1.0"
-description = "Text-to-verse MQTT bridge (wraps Rust t2v binary)"
+description = "Audio I/O services (sound synthesis, speech-to-text)"
 requires-python = ">=3.11"
 dependencies = [
     "paho-mqtt>=2.0",
+    "numpy>=1.24",
+    "sounddevice>=0.4",
+    "vosk>=0.3",
     "bushutil",
 ]
 
 [project.scripts]
-bush-t2v = "bush_t2v:main"
+bush-sound = "bush_sound:main"
+bush-stt = "bush_stt:main"
 
 [tool.uv.sources]
 bushutil = { workspace = true }

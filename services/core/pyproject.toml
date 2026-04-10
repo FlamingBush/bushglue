@@ -1,7 +1,7 @@
 [project]
-name = "bush-tts"
+name = "bush-core"
 version = "0.1.0"
-description = "Text-to-speech MQTT service (espeak-ng + sox)"
+description = "Lightweight MQTT services (audio-agent, t2v-bridge, tts)"
 requires-python = ">=3.11"
 dependencies = [
     "paho-mqtt>=2.0",
@@ -9,6 +9,8 @@ dependencies = [
 ]
 
 [project.scripts]
+bush-audio-agent = "bush_audio_agent:main"
+bush-t2v = "bush_t2v:main"
 bush-tts = "bush_tts:main"
 
 [tool.uv.sources]
