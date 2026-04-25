@@ -31,6 +31,18 @@ See the [root README](../README.md) for setup and deploy instructions.
 |-------|-----------|-----------|-------------|
 | `bush/flame/pulse` | → | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control, sound-service |
 
+### Needle Valve Topics
+
+| Topic | Direction | Publisher | Subscribers |
+|-------|-----------|-----------|-------------|
+| `bush/fire/valve/target` | → | bush-flame-expression, bush-valve | relay-control |
+| `bush/fire/valve/home` | → | bush-valve, (external) | relay-control |
+| `bush/fire/valve/stop` | → | bush-valve, (external) | relay-control |
+| `bush/fire/valve/calibrate` | → | bush-valve, (external) | relay-control |
+| `bush/fire/valve/actual` | ← | relay-control | bush-valve, (monitor) |
+| `bush/fire/valve/status` | ← | relay-control | bush-valve, (monitor) |
+| `bush/fire/valve/online` | ← | relay-control | (monitor) |
+
 ### Audio Management Topics (all retained)
 
 | Topic | Direction | Publisher | Subscribers |
@@ -105,6 +117,49 @@ Labels are one of: `anger` `joy` `love` `surprise` `fear` `sadness`
 - flare: 50–2000 ms
 - bigjet: 100–1000 ms
 - poof: 20–450 ms
+
+### `bush/fire/valve/target`
+```
+0.500
+```
+Float 0.0 (closed) to 1.0 (fully open). Also accepts JSON `{"target": 0.5}`.
+
+### `bush/fire/valve/actual`
+```
+0.423
+```
+Float 0.0–1.0, current fractional position. Published at 5 Hz during motion, 1 Hz when idle.
+
+### `bush/fire/valve/status`
+```json
+{
+  "state": "idle",
+  "pos": 0.42,
+  "target": 0.50,
+  "homed": true,
+  "stalled": false,
+  "last_error": null
+}
+```
+`state` is one of: `unknown`, `homing`, `idle`, `moving`, `stalled`, `error`.
+
+### `bush/fire/valve/online`
+```
+online
+```
+Retained birth message. Value is `online` or `offline`.
+
+### `bush/fire/valve/home`
+Empty payload. Triggers homing sequence (drive to open stop, zero).
+
+### `bush/fire/valve/stop`
+Empty payload. Emergency stop.
+
+### `bush/fire/valve/calibrate`
+```
+16000
+```
+Integer: number of microstep pulses from fully open to fully closed. Takes effect immediately, does not persist across reboots.
 
 ### `bush/audio/devices` (retained)
 ```json

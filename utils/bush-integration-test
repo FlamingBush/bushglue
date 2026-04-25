@@ -65,6 +65,7 @@ HEALTH_UNITS = [
     "bush-t2v",
     "bush-tts",
     "bush-sentiment",
+    "bush-flame-expression",
 ]
 
 
@@ -423,6 +424,125 @@ def _print_results(result: PipelineResult) -> bool:
     return result.passed
 
 
+TOPIC_VALVE_STATUS = "bush/fire/valve/status"
+TOPIC_VALVE_TARGET = "bush/fire/valve/target"
+TOPIC_VALVE_HOME   = "bush/fire/valve/home"
+TOPIC_VALVE_ACTUAL = "bush/fire/valve/actual"
+
+T_VALVE_STATUS = 5    # seconds to wait for valve status response
+T_VALVE_MOVE   = 10   # seconds to wait for valve to reach position
+
+
+def run_valve_smoke_test(broker: str) -> bool:
+    """Home the valve, move to 0.5, move back to 1.0, verify position feedback."""
+    print("\nValve smoke test\n")
+
+    status_event = threading.Event()
+    actual_event = threading.Event()
+    last_status = [None]
+    last_actual = [None]
+
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe(TOPIC_VALVE_STATUS)
+        client.subscribe(TOPIC_VALVE_ACTUAL)
+
+    def on_message(client, userdata, msg):
+        if msg.topic == TOPIC_VALVE_STATUS:
+            try:
+                last_status[0] = json.loads(msg.payload)
+            except (ValueError, TypeError):
+                last_status[0] = msg.payload.decode(errors="replace")
+            status_event.set()
+        elif msg.topic == TOPIC_VALVE_ACTUAL:
+            try:
+                last_actual[0] = float(msg.payload)
+            except (ValueError, TypeError):
+                pass
+            actual_event.set()
+
+    mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    mqttc.on_connect = on_connect
+    mqttc.on_message = on_message
+
+    try:
+        mqttc.connect(broker, MQTT_PORT, 60)
+    except Exception as e:
+        print(f"  FAIL  cannot connect to broker: {e}")
+        return False
+
+    mqttc.loop_start()
+
+    # Step 1: Check valve is online
+    print("  checking valve status...", end="", flush=True)
+    if not status_event.wait(timeout=T_VALVE_STATUS):
+        print("  FAIL  no valve status (valve offline?)")
+        mqttc.loop_stop()
+        mqttc.disconnect()
+        return False
+    status = last_status[0]
+    if isinstance(status, dict):
+        print(f"  state={status.get('state')}  homed={status.get('homed')}")
+    else:
+        print(f"  {status}")
+
+    # Step 2: Home
+    print("  homing...", end="", flush=True)
+    status_event.clear()
+    mqttc.publish(TOPIC_VALVE_HOME)
+    # Wait for idle state (homing complete)
+    deadline = time.time() + 35  # 30s home timeout + margin
+    while time.time() < deadline:
+        status_event.wait(timeout=1.0)
+        status_event.clear()
+        if isinstance(last_status[0], dict) and last_status[0].get("state") == "idle":
+            break
+    if not isinstance(last_status[0], dict) or last_status[0].get("state") != "idle":
+        print(f"  FAIL  homing did not complete (state={last_status[0]})")
+        mqttc.loop_stop()
+        mqttc.disconnect()
+        return False
+    print("  homed")
+
+    # Step 3: Move to 0.5
+    print("  moving to 0.5...", end="", flush=True)
+    actual_event.clear()
+    mqttc.publish(TOPIC_VALVE_TARGET, "0.5")
+    deadline = time.time() + T_VALVE_MOVE
+    while time.time() < deadline:
+        actual_event.wait(timeout=0.5)
+        actual_event.clear()
+        if last_actual[0] is not None and abs(last_actual[0] - 0.5) < 0.05:
+            break
+    if last_actual[0] is None or abs(last_actual[0] - 0.5) >= 0.05:
+        print(f"  FAIL  actual={last_actual[0]} (want ~0.5)")
+        mqttc.loop_stop()
+        mqttc.disconnect()
+        return False
+    print(f"  actual={last_actual[0]:.3f}")
+
+    # Step 4: Return to 1.0
+    print("  returning to 1.0...", end="", flush=True)
+    actual_event.clear()
+    mqttc.publish(TOPIC_VALVE_TARGET, "1.0")
+    deadline = time.time() + T_VALVE_MOVE
+    while time.time() < deadline:
+        actual_event.wait(timeout=0.5)
+        actual_event.clear()
+        if last_actual[0] is not None and abs(last_actual[0] - 1.0) < 0.05:
+            break
+    if last_actual[0] is None or abs(last_actual[0] - 1.0) >= 0.05:
+        print(f"  FAIL  actual={last_actual[0]} (want ~1.0)")
+        mqttc.loop_stop()
+        mqttc.disconnect()
+        return False
+    print(f"  actual={last_actual[0]:.3f}")
+
+    mqttc.loop_stop()
+    mqttc.disconnect()
+    print("\n  PASS  valve smoke test")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bush Glue end-to-end integration test")
     parser.add_argument("--broker", default=None,
@@ -438,10 +558,19 @@ def main():
                         help="Print service health and exit")
     parser.add_argument("--summarize", action="store_true",
                         help="Output PipelineResult as JSON instead of human-readable text")
+    parser.add_argument("--valve-only", action="store_true",
+                        help="Run only the valve smoke test")
     args = parser.parse_args()
 
     if args.health_only:
         sys.exit(0 if check_health() else 1)
+
+    if args.valve_only:
+        b = args.broker
+        if not b:
+            from bushutil import get_mqtt_broker
+            b = get_mqtt_broker()
+        sys.exit(0 if run_valve_smoke_test(b) else 1)
 
     if args.mqtt_only:
         broker = args.broker or "localhost"

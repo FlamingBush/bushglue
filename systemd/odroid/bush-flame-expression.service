@@ -1,0 +1,16 @@
+[Unit]
+Description=Flame Expression — sentiment-driven needle valve control
+After=network.target
+
+[Service]
+Type=simple
+User=odroid
+ExecStart=/home/odroid/bushglue/.venv/bin/bush-flame-expression
+WorkingDirectory=/home/odroid/bushglue
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -14,12 +14,22 @@
 |---|---|
 | GP2 | Flare relay output |
 | GP3 | Big jet relay output |
+| GP4 | UART TX → MKS SERVO42C RX (needle valve) |
+| GP5 | UART RX ← MKS SERVO42C TX (needle valve) |
+| GP9 | Poof relay output |
 
 ## MQTT Topics
 
 | Topic | Payload | Effect |
 |---|---|---|
 | `bush/flame/pulse` | `{"valve":"flare","ms":350}` | Fire named valve for N ms. Valid valves: `flare`, `bigjet`, `poof` |
+| `bush/fire/valve/target` | `0.5` or `{"target":0.5}` | Set needle valve position (0.0=closed, 1.0=open) |
+| `bush/fire/valve/home` | (any) | Initiate homing sequence (drive to open stop) |
+| `bush/fire/valve/stop` | (any) | Emergency stop |
+| `bush/fire/valve/calibrate` | `16000` or `{"steps":16000}` | Set open_steps calibration |
+| `bush/fire/valve/actual` | `0.42` | (published) Current fractional position |
+| `bush/fire/valve/status` | JSON | (published) State, position, errors |
+| `bush/fire/valve/online` | `online`/`offline` | (published) Availability |
 
 ## Required CircuitPython Libraries
 
@@ -39,7 +49,8 @@ TODO bundle these
 
 | File | Purpose |
 |---|---|
-| `code.py` | **Active firmware** — non-blocking MQTT GPIO pulse controller |
+| `code.py` | **Active firmware** — non-blocking MQTT GPIO pulse controller + valve integration |
+| `valve.py` | Motorized needle valve control via MKS SERVO42C-MT V1.1 UART |
 | `secrets.py` | WiFi + MQTT credentials (copy from `secrets.example.py`, do not commit) |
 
 ## Rebuild Steps

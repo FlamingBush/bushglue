@@ -37,11 +37,13 @@ digraph bushglue {
     TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
     SENTIMENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nsentiment analysis\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
     RELAYS [label="relay-control/\nCIRCUITPY/code.py\n──────────────\nrpi pico 2\nlives in orange box" fillcolor="#cfe2f3" color="#1155cc"]
+    FLAME_EXPR [label="bush-flame-expression\n──────────────\nsentiment → valve\nspeech modulation\n10 Hz target" fillcolor="#cfe2f3" color="#1155cc"]
+    NEEDLE_VALVE [label="Needle Valve\n(propane modulation)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
 
     // Layout hints
     { rank=source; MIC; BUTTONS; FIRECONTROL }
-    { rank=same; TTS; SENTIMENT }
-    { rank=sink; SPEAKER; FLAME }
+    { rank=same; TTS; SENTIMENT; FLAME_EXPR }
+    { rank=sink; SPEAKER; FLAME; NEEDLE_VALVE }
 
     // Audio paths
     MIC -> STT [color="#38761d"]
@@ -56,9 +58,15 @@ digraph bushglue {
     TTS -> STT [label="bush/pipeline/tts/speaking\nbush/pipeline/tts/done" color="#1155cc"]
     TTS -> SENTIMENT [label="bush/pipeline/tts/done" color="#1155cc"]
 
-    // Flame effects
+    // Flame effects (solenoid pulsing)
     SENTIMENT -> RELAYS [label="bush/flame/pulse" color="#1155cc"]
     FIRECONTROL -> RELAYS [label="bush/flame/pulse" color="#1155cc"]
     BUTTONS -> FLAME [color="#38761d"]
     RELAYS -> FLAME [color="#38761d"]
+
+    // Needle valve (smooth modulation)
+    SENTIMENT -> FLAME_EXPR [label="bush/pipeline/\nsentiment/result" color="#1155cc"]
+    TTS -> FLAME_EXPR [label="bush/pipeline/tts/\nspeaking, done" color="#1155cc"]
+    FLAME_EXPR -> RELAYS [label="bush/fire/valve/target" color="#1155cc"]
+    RELAYS -> NEEDLE_VALVE [color="#38761d"]
 }
