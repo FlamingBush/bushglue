@@ -19,6 +19,11 @@ import json
 # ── UART setup ──────────────────────────────────────────────────────────────
 uart = busio.UART(board.GP4, board.GP5, baudrate=115200, timeout=0.1)
 
+# Verbose UART/state tracing for hardware bring-up. Flip to True to capture
+# raw TX/RX bytes, _pending_cmd transitions, and homing progress over the
+# Pico's USB serial console. Leave False in production.
+DEBUG = False
+
 # ── MKS SERVO42C protocol constants ────────────────────────────────────────
 MKS_ADDR        = 0xE0
 CMD_READ_ANGLE  = 0x36
@@ -91,16 +96,17 @@ MAX_RETRIES     = 1
 # Homing state
 _home_started_ms = 0
 HOME_TIMEOUT_MS  = 30000   # 30s max for homing
+_last_home_poll_ms = 0
+_home_poll_toggle  = False  # alternates between stall and angle polls
+HOME_POLL_MS       = 500    # ms between diagnostic polls during homing
+
+# Last decoded encoder reading (signed int32). Surfaced in status JSON
+# so polarity / movement is visible from the host without USB serial.
+last_raw_angle = 0
 
 
 def _ticks_diff(later, earlier):
     return (later - earlier) & 0x3FFFFFFF
-
-
-def _ticks_expired(deadline):
-    if deadline is None:
-        return False
-    return _ticks_diff(supervisor.ticks_ms(), deadline) < 0x1FFFFFFF
 
 
 # ── MKS packet construction ────────────────────────────────────────────────
@@ -109,20 +115,56 @@ def _checksum(data):
     return sum(data) & 0xFF
 
 
+def _hex(buf):
+    return " ".join("%02X" % b for b in buf)
+
+
 def _send(cmd_bytes):
     """Send a raw command packet with address prefix and checksum."""
     pkt = bytes([MKS_ADDR]) + cmd_bytes
     pkt = pkt + bytes([_checksum(pkt)])
+    if DEBUG:
+        print("VALVE TX:", _hex(pkt))
     uart.write(pkt)
 
 
 def _send_and_expect(cmd_bytes, label):
     """Send command and register that we're waiting for a response."""
     global _pending_cmd, _cmd_sent_ms, _retry_count
+    if DEBUG and _pending_cmd is not None:
+        print("VALVE WARN: overwriting pending %r with %r" % (_pending_cmd, label))
     _pending_cmd = label
     _cmd_sent_ms = supervisor.ticks_ms()
     _retry_count = 0
     _send(cmd_bytes)
+
+
+def _send_and_drain(cmd_bytes, label, timeout_ms=200):
+    """Send a one-shot config command and synchronously consume its 3-byte ack.
+
+    Used at homing-trigger time so RETURN_ZERO's _pending_cmd correlates only
+    with the long-running RETURN_ZERO response — otherwise the SET_ZERO_*
+    acks pile up in _rx_buf and the first one gets misattributed to the
+    pending "home" label, triggering a false homing-complete.
+    """
+    global _rx_buf
+    _send(cmd_bytes)
+    start = supervisor.ticks_ms()
+    while _ticks_diff(supervisor.ticks_ms(), start) < timeout_ms:
+        data = uart.read(64)
+        if data:
+            if DEBUG:
+                print("VALVE RX (%s drain):" % label, _hex(data))
+            _rx_buf.extend(data)
+        # Discard garbage prefix bytes
+        while len(_rx_buf) > 0 and _rx_buf[0] != MKS_ADDR:
+            _rx_buf = _rx_buf[1:]
+        if len(_rx_buf) >= 3:
+            _rx_buf = _rx_buf[3:]
+            return True
+    if DEBUG:
+        print("VALVE WARN: drain timeout for %s" % label)
+    return False
 
 
 def cmd_enable(enable=True):
@@ -146,11 +188,12 @@ def cmd_stop():
 
 def cmd_move(step_target):
     """Move to absolute step position. Enforces soft limits."""
-    global target_pos, _pending_cmd
+    global target_pos, _pending_cmd, last_error
     step_target = max(0, min(open_steps, step_target))
     target_pos = step_target
 
     if not homed:
+        last_error = "not_homed"
         print("Valve: rejecting MOVE — not homed")
         return
 
@@ -189,18 +232,28 @@ def cmd_read_stall():
 
 def cmd_home():
     """Initiate homing sequence: drive CCW toward open stop."""
-    global state, _home_started_ms, homed
+    global state, _home_started_ms, homed, _last_home_poll_ms, _home_poll_toggle
+    global _rx_buf
     homed = False
     state = "homing"
     _home_started_ms = supervisor.ticks_ms()
-    # Use MKS built-in return-to-zero in CCW direction (toward open)
-    # First set zero mode to DirMode (single direction search)
-    _send(bytes([CMD_SET_ZERO_MODE, 0x01]))
-    # Set zero return direction: CCW = 0x01
-    _send(bytes([CMD_SET_ZERO_DIR, 0x01]))
-    # Set zero return speed: slowest = 0x04
-    _send(bytes([CMD_SET_ZERO_SPEED, 0x04]))
-    # Execute return to zero
+    _last_home_poll_ms = _home_started_ms
+    _home_poll_toggle = False
+
+    # Drain any stale UART bytes (and orphaned _pending_cmd state) so the
+    # SET_ZERO_* drain helpers start from a clean slate.
+    stale = uart.read(256)
+    if stale and DEBUG:
+        print("VALVE: discarded %d stale bytes before home" % len(stale))
+    _rx_buf = bytearray()
+
+    # Configure zero behaviour synchronously so the acks for these one-shot
+    # commands don't get misattributed to RETURN_ZERO. RETURN_ZERO only acks
+    # when the motor actually stalls — see PROTOCOL.md.
+    _send_and_drain(bytes([CMD_SET_ZERO_MODE, 0x01]),  "set_zero_mode")
+    _send_and_drain(bytes([CMD_SET_ZERO_DIR,  0x01]),  "set_zero_dir")
+    _send_and_drain(bytes([CMD_SET_ZERO_SPEED, 0x04]), "set_zero_speed")
+
     _send_and_expect(bytes([CMD_RETURN_ZERO, 0x00]), "home")
     print("Valve: homing (driving CCW toward open stop)...")
 
@@ -215,7 +268,7 @@ def cmd_set_zero():
 def _parse_response():
     """Try to parse a complete response from _rx_buf. Returns True if handled."""
     global _rx_buf, _pending_cmd, current_pos, state, homed, last_error
-    global _home_started_ms
+    global _home_started_ms, last_raw_angle
 
     if len(_rx_buf) < 3:
         return False
@@ -235,16 +288,16 @@ def _parse_response():
         raw = int.from_bytes(_rx_buf[1:5], "big", signed=True)
         chk = _rx_buf[5]
         if chk == _checksum(_rx_buf[0:5]):
+            last_raw_angle = raw
             # Convert encoder angle to step position
             # MKS reports 0-65535 per rotation, multi-turn accumulating
             # After homing, 0 = open position
-            # We need steps from closed: current_pos = open_steps - encoder_steps
-            # But encoder_steps after homing is relative to open stop
-            # So: position relative to open stop in steps
             # encoder ticks per rev = 65536, steps per rev = 3200 (16x)
-            # steps_from_open = raw * 3200 / 65536
             steps_from_open = (raw * 3200) // 65536
             # our convention: 0 = closed, open_steps = open
+            # NOTE: assumes CW (closing) yields positive raw. If polarity is
+            # reversed, current_pos will peg at open_steps; the raw_angle
+            # field in status JSON makes this trivially diagnosable.
             current_pos = max(0, min(open_steps, open_steps - steps_from_open))
         _rx_buf = _rx_buf[6:]
         _pending_cmd = None
@@ -257,16 +310,32 @@ def _parse_response():
         stall_byte = _rx_buf[1]
         _rx_buf = _rx_buf[3:]
         _pending_cmd = None
-        if stall_byte == 0x01:  # blocked/stalled
+        if stall_byte == 0x01:          # blocked/stalled
             state = "stalled"
             last_error = "motor_stalled"
             print("Valve: STALLED")
+        elif stall_byte == 0x00:        # driver error
+            last_error = "motor_driver_error"
+            if DEBUG:
+                print("Valve: motor driver reports error (0x00)")
+        elif stall_byte == 0x02:        # running normally
+            if DEBUG:
+                print("Valve: stall poll = running normally (0x02)")
+        else:
+            if DEBUG:
+                print("Valve: stall poll unknown byte 0x%02X" % stall_byte)
         return True
 
     else:
         # Generic success/fail response: ADDR + 01/00 + CHK = 3 bytes
         if len(_rx_buf) < 3:
             return False
+        # Stray ack with no pending command — log and discard.
+        if cmd is None:
+            if DEBUG:
+                print("VALVE WARN: stray ack", _hex(_rx_buf[0:3]))
+            _rx_buf = _rx_buf[3:]
+            return True
         ok = _rx_buf[1] == 0x01
         _rx_buf = _rx_buf[3:]
 
@@ -316,6 +385,8 @@ def _drain_uart():
     global _rx_buf
     data = uart.read(64)
     if data:
+        if DEBUG:
+            print("VALVE RX:", _hex(data))
         _rx_buf.extend(data)
 
 
@@ -369,17 +440,23 @@ def handle_mqtt(topic, payload):
         cmd_stop()
 
     elif topic == TOPIC_VALVE_CALIBRATE:
+        if isinstance(payload, (bytes, bytearray)):
+            text = payload.decode().strip()
+        else:
+            text = str(payload).strip()
+        new_steps = None
         try:
-            new_steps = int(payload)
-            if isinstance(payload, (bytes, bytearray)):
-                data = json.loads(payload)
-                new_steps = int(data.get("steps", data.get("value", payload)))
+            new_steps = int(text)
         except (ValueError, TypeError):
             try:
-                new_steps = int(payload)
-            except (ValueError, TypeError):
+                data = json.loads(text)
+                new_steps = int(data.get("steps", data.get("value")))
+            except (ValueError, TypeError, KeyError):
                 print(f"Valve: bad calibrate payload: {payload}")
                 return
+        if new_steps is None:
+            print(f"Valve: bad calibrate payload: {payload}")
+            return
         if 100 <= new_steps <= 100000:
             open_steps = new_steps
             print(f"Valve: open_steps calibrated to {open_steps}")
@@ -415,6 +492,7 @@ def service():
     """Non-blocking service loop. Call as often as possible from main loop."""
     global pending_target, last_target_ms, state, last_error
     global last_status_ms, last_actual_ms, _home_started_ms
+    global _last_home_poll_ms, _home_poll_toggle
 
     now = supervisor.ticks_ms()
 
@@ -429,8 +507,26 @@ def service():
     # Check for UART timeout
     _check_timeout()
 
-    # Homing timeout check
+    # Homing diagnostics + timeout
     if state == "homing":
+        # Independent witness of motor state during the long RETURN_ZERO
+        # window: alternate stall-status and encoder-angle polls so we can
+        # see (a) whether the motor is alive and (b) whether the encoder
+        # is moving. Only fires when we have no pending UART command, so
+        # it never collides with the in-flight "home" ack.
+        if (_pending_cmd is None
+                and _ticks_diff(now, _last_home_poll_ms) >= HOME_POLL_MS):
+            _last_home_poll_ms = now
+            if _home_poll_toggle:
+                cmd_read_stall()
+            else:
+                cmd_read_angle()
+                if DEBUG:
+                    elapsed = _ticks_diff(now, _home_started_ms)
+                    print("Valve: homing t=%dms raw_angle=%d"
+                          % (elapsed, last_raw_angle))
+            _home_poll_toggle = not _home_poll_toggle
+
         if _ticks_diff(now, _home_started_ms) >= HOME_TIMEOUT_MS:
             state = "error"
             last_error = "home_timeout"
@@ -466,6 +562,9 @@ def _status_json():
         "homed": homed,
         "stalled": state == "stalled",
         "last_error": last_error,
+        "pos_steps": current_pos,
+        "open_steps": open_steps,
+        "raw_angle": last_raw_angle,
     })
 
 
