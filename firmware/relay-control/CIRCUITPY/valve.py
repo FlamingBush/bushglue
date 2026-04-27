@@ -71,7 +71,12 @@ ACTUAL_MOVE_MS  = 200
 
 pending_target  = None
 last_target_ms  = 0
-TARGET_MIN_MS   = 500
+TARGET_MIN_MS   = 100
+# Inbound MQTT-target sample rate: ignore target messages arriving faster
+# than this so multiple publishers can't combine to overrun the main loop.
+# Only the most recent value within a window matters anyway.
+_last_target_inbound_ms = 0
+TARGET_INBOUND_MIN_MS = 200
 
 _rx_buf         = bytearray()
 _pending_cmd    = None
@@ -339,9 +344,13 @@ def _check_timeout():
 
 
 def handle_mqtt(topic, payload):
-    global pending_target, open_steps
+    global pending_target, open_steps, _last_target_inbound_ms
 
     if topic == TOPIC_VALVE_TARGET:
+        now = supervisor.ticks_ms()
+        if _ticks_diff(now, _last_target_inbound_ms) < TARGET_INBOUND_MIN_MS:
+            return
+        _last_target_inbound_ms = now
         try:
             val = float(payload)
         except (ValueError, TypeError):

@@ -64,7 +64,7 @@ SILENCE_THRESHOLD_S = 0.4 # silence must exceed this before dropping
 RAMP_DURATION_S = 1.5     # ramp between sentiment changes over 1.5s
 
 # Publish rate
-PUBLISH_HZ = 10
+PUBLISH_HZ = 2
 PUBLISH_INTERVAL_S = 1.0 / PUBLISH_HZ
 
 # Stale sentiment timeout — revert to default if no sentiment for this long
