@@ -1,9 +1,16 @@
 # main.py — Pi Pico 2 W MQTT GPIO pulse controller + motorized needle valve
 # CircuitPython 10.x
 #
-# Safety guarantee: pins are ALWAYS turned off on schedule.
-# MQTT I/O is done in small non-blocking chunks; if it blocks or
-# fails the pins still go off. Relays will never get stuck on.
+# CRITICAL INVARIANTS — every code path in this main loop must respect both:
+#   1. Solenoid pulse OFF deadlines (sub-ms accuracy). service_pins runs
+#      first every iteration; nothing downstream may block long enough to
+#      delay an OFF deadline. Relays must never get stuck on.
+#   2. MQTT keepalive: pings must reach the broker within KEEP_ALIVE (15 s).
+#      That means mqtt_loop has to be reached every iteration, and no
+#      single iteration may take more than a few ms. valve.service() in
+#      particular must stay non-blocking and bounded.
+# If you add work here, measure or reason about its worst-case duration
+# under load (heavy MQTT traffic + frequent UART activity from the MKS).
 #
 # Valve control: MKS SERVO42C-MT V1.1 on UART (GP4 TX, GP5 RX).
 # See valve.py for protocol details and PROTOCOL.md for documentation.

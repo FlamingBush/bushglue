@@ -38,13 +38,6 @@ HOME_SPEED    = 10
 CURRENT_GEAR  = 0x01
 MICROSTEP     = 16
 
-# Rough pulses-per-second at each speed gear, used only to estimate when
-# a move should be done so state can flip back to "idle". Generous on
-# purpose — overestimating move duration just delays the next command.
-PPS_AT_MAX    = 4000
-PPS_AT_HOME   = 2000
-MOVE_MARGIN_MS = 200
-
 TOPIC_VALVE_TARGET    = b"bush/fire/valve/target"
 TOPIC_VALVE_HOME      = b"bush/fire/valve/home"
 TOPIC_VALVE_STOP      = b"bush/fire/valve/stop"
@@ -60,7 +53,7 @@ ALL_VALVE_TOPICS = [
     TOPIC_VALVE_CALIBRATE,
 ]
 
-# state ∈ {"unknown", "initializing", "homing", "idle", "moving", "stalled", "error"}
+# state ∈ {"unknown", "initializing", "homing", "idle", "stalled", "error"}
 state           = "unknown"
 current_pos     = 0
 target_pos      = 0
@@ -78,7 +71,7 @@ ACTUAL_MOVE_MS  = 200
 
 pending_target  = None
 last_target_ms  = 0
-TARGET_MIN_MS   = 100
+TARGET_MIN_MS   = 500
 
 _rx_buf         = bytearray()
 _pending_cmd    = None
@@ -102,14 +95,9 @@ _home_started_ms      = 0
 HOME_TIMEOUT_MS       = 30000
 _last_stall_poll_ms   = 0
 HOME_POLL_MS          = 200
-MOVE_STALL_POLL_MS    = 250
 _home_phase           = None
 HOME_SETTLE_MS        = 50
 _home_settle_until_ms = 0
-
-# Move completion deadline (ticks_ms). When state == "moving", state flips
-# to "idle" once supervisor.ticks_ms() reaches this value.
-_move_done_ms = 0
 
 
 def _ticks_diff(later, earlier):
@@ -141,23 +129,18 @@ def _send_and_expect(cmd_bytes, label):
     _send(cmd_bytes)
 
 
-def _estimate_move_ms(pulses, speed_gear):
-    pps = PPS_AT_HOME if speed_gear <= HOME_SPEED else PPS_AT_MAX
-    return (pulses * 1000) // pps + MOVE_MARGIN_MS
-
-
 def cmd_stop():
     global _pending_cmd, state, target_pos
     _send(bytes([CMD_STOP]))
     _pending_cmd = None
     target_pos = current_pos
-    if state in ("moving", "homing"):
+    if state == "homing":
         state = "idle"
     print("Valve STOP")
 
 
 def cmd_move(step_target):
-    global target_pos, last_error, _move_done_ms, state, current_pos
+    global target_pos, last_error, current_pos
     step_target = max(0, min(open_steps, step_target))
     target_pos = step_target
 
@@ -177,9 +160,7 @@ def cmd_move(step_target):
         bytes([CMD_MOVE_POS, speed_dir]) + abs_pulses.to_bytes(4, "big"),
         "move",
     )
-    state = "moving"
-    current_pos = step_target  # trust the MKS to execute the pulse count
-    _move_done_ms = (supervisor.ticks_ms() + _estimate_move_ms(abs_pulses, MAX_SPEED)) & 0x3FFFFFFF
+    current_pos = step_target  # MKS closed-loop owns the actual motion
 
 
 def _read_angle():
@@ -336,7 +317,7 @@ def _drain_uart():
 
 
 def _check_timeout():
-    global _pending_cmd, last_error
+    global _pending_cmd, last_error, _init_idx, state
     if _pending_cmd is None:
         return
     if _ticks_diff(supervisor.ticks_ms(), _cmd_sent_ms) < CMD_TIMEOUT_MS:
@@ -344,7 +325,17 @@ def _check_timeout():
     if DEBUG:
         print("Valve: UART timeout (%s)" % _pending_cmd)
     last_error = "uart_timeout_%s" % _pending_cmd
+    cmd = _pending_cmd
     _pending_cmd = None
+    # Keep the init state machine advancing on timeout — otherwise we'd
+    # sit in "initializing" forever if any one ack never lands.
+    if cmd == "init":
+        _init_idx += 1
+        if _init_idx < len(_INIT_STEPS):
+            _send_and_expect(_INIT_STEPS[_init_idx], "init")
+        else:
+            state = "unknown"
+            print("Valve: init complete (with timeouts)")
 
 
 def handle_mqtt(topic, payload):
@@ -405,7 +396,7 @@ def init():
 
 def service():
     global pending_target, last_target_ms, state, last_error
-    global _home_phase, _last_stall_poll_ms, _rx_buf, _move_done_ms
+    global _home_phase, _last_stall_poll_ms, _rx_buf
 
     now = supervisor.ticks_ms()
 
@@ -423,12 +414,9 @@ def service():
                 except AttributeError:
                     pass
                 _rx_buf = bytearray()
-                _home_phase = "drive"
                 pulses = (open_steps * 2).to_bytes(4, "big")
                 speed_dir = 0x80 | (HOME_SPEED & 0x7F)
                 _send_and_expect(bytes([CMD_MOVE_POS, speed_dir]) + pulses, "move")
-                # On move ack, _parse_response leaves state=="homing"; we
-                # transition to "running" right after a successful move ack.
                 _home_phase = "running"
                 _last_stall_poll_ms = now
 
@@ -445,17 +433,9 @@ def service():
             cmd_stop()
             print("Valve: homing timed out")
 
-    if state == "moving":
-        if (_pending_cmd is None
-                and _ticks_diff(now, _last_stall_poll_ms) >= MOVE_STALL_POLL_MS):
-            _last_stall_poll_ms = now
-            _read_stall()
-        if _ticks_diff(now, _move_done_ms) >= 0:
-            state = "idle"
-
     if (pending_target is not None
             and _pending_cmd is None
-            and state in ("idle",)
+            and state == "idle"
             and _ticks_diff(now, last_target_ms) >= TARGET_MIN_MS):
         step_target = int(pending_target * open_steps)
         pending_target = None
@@ -483,12 +463,12 @@ def get_publish_messages():
     now = supervisor.ticks_ms()
     msgs = []
 
-    interval = STATUS_MOVE_MS if state in ("moving", "homing") else STATUS_IDLE_MS
+    interval = STATUS_MOVE_MS if state == "homing" else STATUS_IDLE_MS
     if _ticks_diff(now, last_status_ms) >= interval:
         last_status_ms = now
         msgs.append((TOPIC_VALVE_STATUS, _status_json()))
 
-    actual_interval = ACTUAL_MOVE_MS if state in ("moving", "homing") else ACTUAL_IDLE_MS
+    actual_interval = ACTUAL_MOVE_MS if state == "homing" else ACTUAL_IDLE_MS
     if _ticks_diff(now, last_actual_ms) >= actual_interval:
         last_actual_ms = now
         actual = current_pos / open_steps if open_steps > 0 else 0
