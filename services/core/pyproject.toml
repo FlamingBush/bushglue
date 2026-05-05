@@ -8,6 +8,12 @@ dependencies = [
     "bushutil",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-mock>=3.0",
+]
+
 [project.scripts]
 bush-audio-agent = "bush_audio_agent:main"
 bush-t2v = "bush_t2v:main"

@@ -10,6 +10,8 @@ dependencies = [
     "vosk>=0.3",
     "silero-vad>=5.0",
     "soxr>=0.5",
+    "pyrnnoise>=0.4",
+    "pywhispercpp>=1.2.0",
     "bushutil",
 ]
 
