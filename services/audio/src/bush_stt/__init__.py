@@ -9,6 +9,13 @@ unmutes on bush/pipeline/tts/done, resetting the Vosk recognizer so
 any partial state from hearing TTS speech is discarded.
 
 Accepts runtime device changes via bush/audio/stt/set-device {"device": <int|str>}.
+
+Two pipelines:
+  - LEGACY (default, STT_USE_VAD=0): byte-identical to the original Vosk
+    streaming path. parec/arecord 16k -> SpeechToText.accept_audio() -> MQTT.
+  - NEW (STT_USE_VAD=1): VAD-endpointed utterance-level pipeline. Optionally
+    captures at 48k with RNNoise + soxr 48->16, then VAD endpoints into
+    complete utterances passed to a pluggable STTEngine adapter.
 """
 import json
 import os
@@ -32,7 +39,23 @@ if _dev:
     STT_DEVICE = int(_dev) if _dev.isdigit() else _dev  # int index or string name
 else:
     STT_DEVICE = load_audio_device("stt")  # restore last saved device (or None)
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 16000  # legacy path uses this; SpeechToText still imports it
+
+# ── pipeline flags ─────────────────────────────────────────────────────────
+# Default-off: STT_USE_VAD=0 keeps byte-identical legacy behavior.
+STT_USE_VAD = os.environ.get("STT_USE_VAD", "0") not in ("0", "false", "False", "")
+STT_USE_RNNOISE = os.environ.get("STT_USE_RNNOISE", "0") not in ("0", "false", "False", "")
+STT_ENGINE_NAME = os.environ.get("STT_ENGINE", "vosk").lower()
+
+# Capture rate flips when RNNoise is enabled (48k native frames).
+# Legacy path always uses 16k.
+CAPTURE_SAMPLE_RATE = 48000 if (STT_USE_VAD and STT_USE_RNNOISE) else 16000
+
+# Recognizer rate is always 16 kHz (Vosk model + Whisper + Silero VAD).
+RECOGNIZER_SAMPLE_RATE = 16000
+
+# Chunk size matches 0.5s of audio at the active capture rate, int16 LE.
+CHUNK = int(CAPTURE_SAMPLE_RATE * 0.5) * 2
 
 FALLBACK_PHRASES = [
     "what is the fire",
@@ -62,7 +85,7 @@ def _next_fallback() -> str:
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_TRANSCRIPT      = "bush/pipeline/stt/transcript"
-TOPIC_PARTIAL         = "bush/pipeline/stt/partial"
+TOPIC_PARTIAL         = "bush/pipeline/stt/partial"  # legacy-only; new path doesn't publish
 TOPIC_TTS_SPEAKING    = "bush/pipeline/tts/speaking"
 TOPIC_TTS_DONE        = "bush/pipeline/tts/done"
 TOPIC_SET_DEVICE      = "bush/audio/stt/set-device"
@@ -131,9 +154,58 @@ def _wait_for_audio(device, interrupt: threading.Event | None = None) -> bool:
     return True
 
 
+# ── factories for the new pipeline ─────────────────────────────────────────
+
+def _build_engine():
+    """Construct the STT engine selected by STT_ENGINE.
+
+    Only called on the new VAD path. Raises RuntimeError if the engine name
+    is unknown; a missing dependency surfaces as ImportError to fail loud at
+    startup (no silent fallback to vosk).
+    """
+    if STT_ENGINE_NAME == "vosk":
+        from bush_stt.engines.vosk import VoskEngine
+        log(f"using engine: vosk (model={MODEL_PATH})")
+        return VoskEngine(model_path=MODEL_PATH)
+    elif STT_ENGINE_NAME == "whisper-bindings":
+        from bush_stt.engines.whisper_bindings import WhisperBindingsEngine
+        log("using engine: whisper-bindings")
+        return WhisperBindingsEngine()
+    elif STT_ENGINE_NAME == "whisper-subprocess":
+        from bush_stt.engines.whisper_subprocess import WhisperSubprocessEngine
+        log("using engine: whisper-subprocess")
+        return WhisperSubprocessEngine()
+    else:
+        raise RuntimeError(
+            f"Unknown STT_ENGINE={STT_ENGINE_NAME!r}; "
+            f"must be vosk|whisper-bindings|whisper-subprocess"
+        )
+
+
+def _build_pipeline():
+    """Build VAD pipeline components.
+
+    Returns (vad, denoise_or_none, resampler_or_none).
+    """
+    from bush_stt.vad import VadEndpointer
+    vad = VadEndpointer()
+    if STT_USE_RNNOISE:
+        from bush_stt.denoise import RnnoiseFilter
+        denoise = RnnoiseFilter()
+        # Stateful streaming resampler (48k -> 16k); arbitrary input length OK.
+        import soxr
+        resampler = soxr.ResampleStream(48000, 16000, 1, dtype="int16")
+        return vad, denoise, resampler
+    return vad, None, None
+
+
 def main():
     broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
+    log(
+        f"flags: STT_USE_VAD={STT_USE_VAD} STT_USE_RNNOISE={STT_USE_RNNOISE} "
+        f"STT_ENGINE={STT_ENGINE_NAME} CAPTURE_SAMPLE_RATE={CAPTURE_SAMPLE_RATE}"
+    )
 
     # ── mute gate ──────────────────────────────────────────────────────────
     MUTE_TIMEOUT_S = 30
@@ -147,12 +219,13 @@ def main():
     next_device = [STT_DEVICE]   # list so inner functions can mutate it
 
     # ── ALSA TTS pause/resume (take turns on shared hw: devices) ────────────
-    # When TTS speaks on the *same* ALSA card as STT, release the capture
-    # interface so the OHCI controller doesn't get concurrent opens.
-    # If they're on different cards (e.g. Yeti vs C-Media), no pause needed.
     tts_pause  = threading.Event()
     tts_resume = threading.Event()
     tts_device = [None]  # tracked via MQTT retained message
+
+    # ── VAD object slot (set on new-pipeline branch; legacy path leaves None) ─
+    # Used by on_tts_speaking / on_tts_done to coordinate with VAD state.
+    vad_ref: list = [None]
 
     def on_tts_done():
         if _mute_timer[0] is not None:
@@ -162,6 +235,11 @@ def main():
         reset_recognizer.set()
         tts_pause.clear()
         tts_resume.set()
+        if vad_ref[0] is not None:
+            try:
+                vad_ref[0].reset()
+            except Exception as e:
+                log(f"vad.reset() error: {e}")
         log("Unmuting STT (TTS done)")
 
     def on_tts_speaking():
@@ -174,6 +252,11 @@ def main():
         t.daemon = True
         t.start()
         _mute_timer[0] = t
+        if vad_ref[0] is not None:
+            try:
+                vad_ref[0].drop_in_flight()
+            except Exception as e:
+                log(f"vad.drop_in_flight() error: {e}")
         stt_card = _alsa_card(current_device)
         tts_card = _alsa_card(tts_device[0]) if tts_device[0] else None
         if stt_card and stt_card == tts_card:
@@ -230,19 +313,12 @@ def main():
     mqttc.loop_start()
     log("MQTT connected.")
 
-    # ── Vosk setup ─────────────────────────────────────────────────────────
-    from bush_stt.transcriber import SpeechToText
-    from vosk import KaldiRecognizer
-
-    stt = SpeechToText(model_path=MODEL_PATH, sample_rate=SAMPLE_RATE)
+    # ── shared capture state ───────────────────────────────────────────────
     audio_queue: queue.Queue[bytes] = queue.Queue()
-
-    # ── restartable audio loop ─────────────────────────────────────────────
-    CHUNK = 8000 * 2  # 8000 samples × 2 bytes (int16)
     current_device = STT_DEVICE
 
-    def _feed_parec(proc, stop_evt):
-        """Background thread: reads parec stdout into audio_queue."""
+    def _feed_capture(proc, stop_evt):
+        """Background thread: reads parec/arecord stdout into audio_queue."""
         while not stop_evt.is_set():
             try:
                 data = proc.stdout.read(CHUNK)
@@ -252,6 +328,184 @@ def main():
             except Exception:
                 break
 
+    def _open_capture(device, sample_rate):
+        """Spawn parec or arecord at the given rate. Returns Popen object."""
+        if _is_alsa_device(device):
+            # plughw: lets ALSA handle resampling/channel conversion (e.g. Yeti)
+            alsa_dev = str(device)
+            if alsa_dev.startswith("hw:"):
+                alsa_dev = "plug" + alsa_dev
+            log(f"Opening ALSA device {alsa_dev!r} at {sample_rate} Hz...")
+            return _subprocess.Popen(
+                ["arecord", "-D", alsa_dev,
+                 "-f", "S16_LE", "-c", "1", f"-r{sample_rate}", "-t", "raw"],
+                stdout=_subprocess.PIPE,
+                stderr=_subprocess.DEVNULL,
+            )
+        else:
+            log(f"Opening PA source {device!r} at {sample_rate} Hz...")
+            return _subprocess.Popen(
+                ["parec", "--device", str(device),
+                 "--format=s16le", f"--rate={sample_rate}", "--channels=1"],
+                stdout=_subprocess.PIPE,
+                stderr=_subprocess.DEVNULL,
+            )
+
+    # ── pipeline-specific pre-flight ──────────────────────────────────────
+    if STT_USE_VAD:
+        log("starting NEW pipeline (VAD enabled)")
+        engine = _build_engine()
+        vad, denoise, resampler = _build_pipeline()
+        vad_ref[0] = vad
+    else:
+        log("starting LEGACY pipeline (Vosk streaming)")
+        # Warn loudly if non-default knobs were set on the legacy path so
+        # ops doesn't think they took effect.
+        if os.environ.get("STT_USE_RNNOISE", "0") not in ("0", "false", "False", ""):
+            log("WARN: STT_USE_RNNOISE has no effect when STT_USE_VAD=0 "
+                "(legacy path uses 16k Vosk streaming)")
+        if os.environ.get("STT_ENGINE", "vosk").lower() != "vosk":
+            log("WARN: STT_ENGINE has no effect when STT_USE_VAD=0 "
+                "(legacy path uses streaming Vosk)")
+        # Legacy SpeechToText (streaming Vosk) and KaldiRecognizer for resets
+        from bush_stt.transcriber import SpeechToText
+        from vosk import KaldiRecognizer
+        stt = SpeechToText(model_path=MODEL_PATH, sample_rate=SAMPLE_RATE)
+        engine = None
+        vad = None
+        denoise = None
+        resampler = None
+
+    # ── helpers per-iteration ─────────────────────────────────────────────
+
+    def _run_legacy_iteration():
+        """Inner capture loop body for legacy streaming Vosk path.
+
+        Behavior must remain byte-identical to the original implementation.
+        """
+        last_partial = ""
+        while not device_change.is_set() and not tts_pause.is_set():
+            if parec_proc.poll() is not None:
+                log("parec exited unexpectedly")
+                break
+            try:
+                data = audio_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if force_finalize.is_set():
+                force_finalize.clear()
+                text = stt.final_result() or last_partial or _next_fallback()
+                log(f"Force-final: {text!r}")
+                mqttc.publish(TOPIC_TRANSCRIPT,
+                              json.dumps({"text": text, "ts": time.time()}))
+                last_partial = ""
+                mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
+                stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                log("Recognizer reset (force-finalize).")
+                continue
+
+            if reset_recognizer.is_set():
+                reset_recognizer.clear()
+                last_partial = ""
+                mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
+                stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
+                log("Recognizer reset.")
+
+            if muted.is_set():
+                continue
+
+            result = stt.accept_audio(data)
+
+            if result["type"] == "final" and result["text"]:
+                text = result["text"]
+                last_partial = ""
+                log(f"Final: {text!r}")
+                mqttc.publish(TOPIC_TRANSCRIPT,
+                              json.dumps({"text": text, "ts": time.time()}))
+            elif result["type"] == "partial" and result["text"]:
+                last_partial = result["text"]
+                mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": result["text"]}))
+                print(f"\rPartial: {result['text']}", end="", flush=True)
+
+    def _run_new_iteration():
+        """Inner capture loop body for the new VAD + engine pipeline.
+
+        Captures at CAPTURE_SAMPLE_RATE; optionally denoises (48k native) and
+        resamples 48->16; feeds 16k PCM to the VAD endpointer, calls
+        engine.transcribe() on each emitted utterance and publishes results.
+        """
+        # Lazy numpy import only on the new path (avoid cost on legacy startup)
+        import numpy as np
+        while not device_change.is_set() and not tts_pause.is_set():
+            if parec_proc.poll() is not None:
+                log("capture process exited unexpectedly")
+                break
+            try:
+                data = audio_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if force_finalize.is_set():
+                force_finalize.clear()
+                # New semantics (v1): emit a canned phrase, drop in-flight VAD
+                # state. We don't try to harvest a half-buffered utterance —
+                # keep it simple and predictable.
+                text = _next_fallback()
+                log(f"Force-final (canned): {text!r}")
+                mqttc.publish(TOPIC_TRANSCRIPT,
+                              json.dumps({"text": text, "ts": time.time()}))
+                vad.drop_in_flight()
+                if denoise is not None:
+                    denoise.reset()
+                continue
+
+            if reset_recognizer.is_set():
+                reset_recognizer.clear()
+                vad.reset()
+                if denoise is not None:
+                    denoise.reset()
+                log("Recognizer/VAD reset.")
+
+            if muted.is_set():
+                continue
+
+            # Stage 1: optional RNNoise (operates on 48k native frames)
+            if denoise is not None:
+                data = denoise.process(data)
+                if not data:
+                    # Less than one 480-sample frame buffered; wait for more
+                    continue
+                # Stage 2: 48 -> 16 resample
+                arr_in = np.frombuffer(data, dtype=np.int16)
+                arr_out = resampler.resample_chunk(arr_in)
+                if arr_out.size == 0:
+                    continue
+                pcm_16k = arr_out.tobytes()
+            else:
+                # No denoiser: capture is already 16k mono int16 LE
+                pcm_16k = data
+
+            # Stage 3: VAD endpoint -> zero or more complete utterances
+            utterances = vad.feed(pcm_16k)
+            for utt in utterances:
+                ms = (len(utt) // 2) * 1000 // RECOGNIZER_SAMPLE_RATE
+                log(f"VAD emitted utterance: {len(utt)} bytes ({ms} ms)")
+                try:
+                    result = engine.transcribe(utt)
+                    text = result.get("text", "")
+                    if text:
+                        log(f"Final: {text!r}")
+                        mqttc.publish(
+                            TOPIC_TRANSCRIPT,
+                            json.dumps({"text": text, "ts": time.time()}),
+                        )
+                    else:
+                        log("Engine returned empty text; not publishing")
+                except Exception as e:
+                    log(f"engine.transcribe error: {e}")
+
+    # ── main capture loop (shared across both pipelines) ──────────────────
     try:
         while True:
             device_change.clear()
@@ -266,29 +520,9 @@ def main():
             reader_stop = threading.Event()
             reader_thread = None
             try:
-                if _is_alsa_device(current_device):
-                    # Use plughw: so ALSA handles resampling/channel conversion
-                    # (e.g. Yeti only supports stereo 48kHz on hw:)
-                    alsa_dev = str(current_device)
-                    if alsa_dev.startswith("hw:"):
-                        alsa_dev = "plug" + alsa_dev
-                    log(f"Opening ALSA device {alsa_dev!r} at {SAMPLE_RATE} Hz...")
-                    parec_proc = _subprocess.Popen(
-                        ["arecord", "-D", alsa_dev,
-                         "-f", "S16_LE", "-c", "1", f"-r{SAMPLE_RATE}", "-t", "raw"],
-                        stdout=_subprocess.PIPE,
-                        stderr=_subprocess.DEVNULL,
-                    )
-                else:
-                    log(f"Opening PA source {current_device!r} at {SAMPLE_RATE} Hz...")
-                    parec_proc = _subprocess.Popen(
-                        ["parec", "--device", str(current_device),
-                         "--format=s16le", f"--rate={SAMPLE_RATE}", "--channels=1"],
-                        stdout=_subprocess.PIPE,
-                        stderr=_subprocess.DEVNULL,
-                    )
+                parec_proc = _open_capture(current_device, CAPTURE_SAMPLE_RATE)
                 reader_thread = threading.Thread(
-                    target=_feed_parec, args=(parec_proc, reader_stop), daemon=True
+                    target=_feed_capture, args=(parec_proc, reader_stop), daemon=True
                 )
                 reader_thread.start()
 
@@ -296,50 +530,11 @@ def main():
                               json.dumps({"device": current_device, "status": "ok"}),
                               retain=True)
                 log("Listening. Speak a query...")
-                last_partial = ""
-                while not device_change.is_set() and not tts_pause.is_set():
-                    if parec_proc.poll() is not None:
-                        log("parec exited unexpectedly")
-                        break
-                    try:
-                        data = audio_queue.get(timeout=0.5)
-                    except queue.Empty:
-                        continue
 
-                    if force_finalize.is_set():
-                        force_finalize.clear()
-                        text = stt.final_result() or last_partial or _next_fallback()
-                        log(f"Force-final: {text!r}")
-                        mqttc.publish(TOPIC_TRANSCRIPT,
-                                      json.dumps({"text": text, "ts": time.time()}))
-                        last_partial = ""
-                        mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
-                        stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
-                        log("Recognizer reset (force-finalize).")
-                        continue
-
-                    if reset_recognizer.is_set():
-                        reset_recognizer.clear()
-                        last_partial = ""
-                        mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": ""}))
-                        stt.recognizer = KaldiRecognizer(stt.model, SAMPLE_RATE)
-                        log("Recognizer reset.")
-
-                    if muted.is_set():
-                        continue
-
-                    result = stt.accept_audio(data)
-
-                    if result["type"] == "final" and result["text"]:
-                        text = result["text"]
-                        last_partial = ""
-                        log(f"Final: {text!r}")
-                        mqttc.publish(TOPIC_TRANSCRIPT,
-                                      json.dumps({"text": text, "ts": time.time()}))
-                    elif result["type"] == "partial" and result["text"]:
-                        last_partial = result["text"]
-                        mqttc.publish(TOPIC_PARTIAL, json.dumps({"text": result["text"]}))
-                        print(f"\rPartial: {result['text']}", end="", flush=True)
+                if STT_USE_VAD:
+                    _run_new_iteration()
+                else:
+                    _run_legacy_iteration()
 
             except Exception as e:
                 log(f"Stream error: {e}")
@@ -367,6 +562,17 @@ def main():
     except KeyboardInterrupt:
         log("Interrupted.")
     finally:
+        # New-pipeline resource cleanup (best-effort — never raise during shutdown)
+        if STT_USE_VAD:
+            if vad is not None:
+                try: vad.close()
+                except Exception: pass
+            if denoise is not None:
+                try: denoise.close()
+                except Exception: pass
+            if engine is not None:
+                try: engine.close()
+                except Exception: pass
         mqttc.loop_stop()
         mqttc.disconnect()
         log("Done.")
