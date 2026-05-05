@@ -1,0 +1,638 @@
+#!/usr/bin/env python3
+"""
+Bush Glue TTS bench harness.
+
+Drives each TTS engine adapter against a corpus of input texts and emits a CSV
+with TTFA + RTF + latency + CPU + RAM per (text, engine, run). This is the
+sibling artifact to bush-stt-bench: it's how we pick the TTS engine per
+eng review §6.
+
+Usage:
+    bush-tts-bench --corpus <file_or_dir> --engine <name>[,<name>...] \\
+        --output <csv> [--repeat N] [--warmup N] [--voice <path>] [--mos]
+
+The --corpus argument is either:
+    - a TSV file with columns: <text_id>\\t<text>\\t<category>
+    - a directory containing a texts.tsv file with the same format
+
+A ready-to-use corpus ships at data/tts-bench-corpus.tsv.
+
+Engines are loaded lazily; an engine that cannot be imported (module missing,
+construction failure, missing voice file, etc.) is skipped with a warning so
+the bench remains robust as new engines arrive.
+
+When --mos is passed, after each synthesis the bench writes a temp WAV and
+prompts the operator to rate the audio 1-5 (mean opinion score) or 's' to skip.
+
+Required Python deps (NOT in pyproject — bench is a dev tool):
+    pip install psutil>=5.9   # CPU + RAM monitoring
+    # soxr only if a future engine resamples; current engines (espeak, piper)
+    # don't need it because we never decode the audio for analysis.
+
+If psutil is missing the bench keeps running with sentinel -1 values
+in the CPU/RAM columns and prints a one-line install hint.
+"""
+import os
+import sys
+
+# ── venv re-exec (same pattern as utils/bush-stt-bench, utils/bush-stt-file) ──
+_venv = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv"))
+if os.path.isdir(_venv) and sys.prefix != _venv:
+    os.execv(os.path.join(_venv, "bin", "python"), [os.path.join(_venv, "bin", "python")] + sys.argv)
+
+# ── make in-tree workspace packages importable even without the venv ────────
+import pathlib
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]   # bushglue/
+_CORE_SRC = _REPO_ROOT / "services" / "core" / "src"
+_AUDIO_SRC = _REPO_ROOT / "services" / "audio" / "src"
+_BUSHUTIL_SRC = _REPO_ROOT / "packages" / "bushutil" / "src"
+for p in (_CORE_SRC, _AUDIO_SRC, _BUSHUTIL_SRC):
+    if p.exists() and str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+import argparse
+import csv
+import importlib
+import shutil
+import statistics
+import subprocess
+import tempfile
+import threading
+import time
+import traceback
+import uuid
+import wave
+from typing import Any
+
+
+# ── engine registry: name -> "module:ClassName" ─────────────────────────────
+ENGINE_REGISTRY: dict[str, str] = {
+    "espeak": "bush_tts.engines.espeak:EspeakEngine",
+    "piper":  "bush_tts.engines.piper:PiperEngine",
+}
+
+
+# ── CSV columns (in order) ─────────────────────────────────────────────────
+# `ttfa_ms` (time-to-first-audio-sample) is recorded for forward-compat with
+# streaming engines; for non-streaming engines (espeak, piper subprocess) it
+# equals total_latency_ms. Adding it now means no schema bump later.
+CSV_COLUMNS = [
+    "text_id", "category", "engine", "voice", "run_index",
+    "text_length_chars", "audio_seconds",
+    "ttfa_ms", "total_latency_ms", "rtf",
+    "cpu_pct_peak", "ram_mb_peak",
+    "mos", "ts",
+]
+
+
+def log(msg: str) -> None:
+    """Progress logger — goes to stderr, [bench] prefix, line-buffered."""
+    print(f"[bench] {msg}", file=sys.stderr, flush=True)
+
+
+# ── optional deps with graceful fallback ────────────────────────────────────
+try:
+    import psutil  # type: ignore
+    _HAVE_PSUTIL = True
+except Exception:
+    psutil = None
+    _HAVE_PSUTIL = False
+
+
+# ── corpus loading ──────────────────────────────────────────────────────────
+def resolve_corpus(corpus: pathlib.Path) -> pathlib.Path:
+    """Accept either a TSV file or a directory containing texts.tsv.
+
+    Returns the resolved TSV file path. Raises FileNotFoundError if neither
+    layout is found.
+    """
+    if corpus.is_file():
+        return corpus
+    if corpus.is_dir():
+        tsv = corpus / "texts.tsv"
+        if tsv.is_file():
+            return tsv
+        raise FileNotFoundError(f"corpus dir missing texts.tsv: {tsv}")
+    raise FileNotFoundError(f"corpus path does not exist: {corpus}")
+
+
+def load_corpus(tsv_path: pathlib.Path) -> list[dict[str, str]]:
+    """Parse a TSV file into a list of {text_id, text, category} dicts.
+
+    Lines starting with '#' or blank are skipped. Each non-empty line must
+    have at least 2 tab-separated fields: <text_id>\\t<text>[\\t<category>].
+    Missing category defaults to "unspecified".
+    """
+    rows: list[dict[str, str]] = []
+    with tsv_path.open("r", encoding="utf-8") as f:
+        for line_no, raw in enumerate(f, start=1):
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                log(f"WARN: {tsv_path.name} line {line_no}: expected at least 2 tab-separated fields, got {len(parts)}; skipping")
+                continue
+            text_id = parts[0].strip()
+            text = parts[1] if len(parts) >= 2 else ""
+            category = parts[2].strip() if len(parts) >= 3 else "unspecified"
+            if not text_id:
+                log(f"WARN: {tsv_path.name} line {line_no}: empty text_id; skipping")
+                continue
+            rows.append({"text_id": text_id, "text": text, "category": category})
+    return rows
+
+
+# ── engine loading ──────────────────────────────────────────────────────────
+def load_engine(engine_name: str, voice_path: str | None) -> Any:
+    """Lazily import + construct an engine instance from ENGINE_REGISTRY.
+
+    Returns the engine instance, or None if the engine isn't available
+    (unknown name, missing module, missing required config). Warnings are
+    printed to stderr; the bench keeps going.
+    """
+    spec = ENGINE_REGISTRY.get(engine_name)
+    if not spec:
+        log(f"WARN: unknown engine {engine_name!r}; known: {sorted(ENGINE_REGISTRY.keys())}; skipping")
+        return None
+    module_name, class_name = spec.split(":", 1)
+    try:
+        module = importlib.import_module(module_name)
+        cls = getattr(module, class_name)
+    except ImportError as e:
+        log(f"WARN: engine {engine_name} unavailable: {e}; skipping")
+        return None
+    except Exception as e:
+        log(f"WARN: engine {engine_name} import failed: {e}; skipping")
+        return None
+
+    try:
+        if engine_name == "piper":
+            vp = voice_path or os.environ.get("PIPER_VOICE")
+            if not vp:
+                log("WARN: piper needs --voice or PIPER_VOICE; skipping")
+                return None
+            return cls(voice_path=vp)
+        return cls()
+    except Exception as e:
+        log(f"WARN: engine {engine_name} failed to construct: {e}; skipping")
+        return None
+
+
+def engine_voice_label(engine_name: str, engine: Any, voice_path: str | None) -> str:
+    """Best-effort short label for the 'voice' CSV column."""
+    # Piper: prefer the actual voice file path, fall back to argument or env.
+    vp = getattr(engine, "_voice_path", None) or voice_path or os.environ.get("PIPER_VOICE")
+    if vp:
+        return str(vp)
+    # espeak: report the configured voice (e.g. "en-gb")
+    ev = getattr(engine, "_voice", None)
+    if ev:
+        return str(ev)
+    return "default"
+
+
+# ── CPU + RAM sampler ───────────────────────────────────────────────────────
+class ResourceSampler:
+    """Background-thread sampler that captures peak CPU% and RSS (MB) of the
+    current process while a synth call is running.
+
+    Sampling cadence: every 50 ms. Captures peak across samples. If psutil is
+    not installed, peaks remain at the sentinel -1.
+
+    NOTE: for engines that shell out to a subprocess (espeak-ng, piper), the
+    parent process CPU is mostly idle; the subprocess does the work. We sample
+    the parent process for consistency with bush-stt-bench. A future
+    refinement would walk children() and aggregate.
+    """
+    def __init__(self, interval_s: float = 0.050) -> None:
+        self.interval_s = interval_s
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.cpu_pct_peak: float = -1.0
+        self.ram_mb_peak: float = -1.0
+        self._proc = None
+        if _HAVE_PSUTIL:
+            try:
+                self._proc = psutil.Process(os.getpid())  # type: ignore[union-attr]
+                # Prime cpu_percent so the first reading isn't 0
+                self._proc.cpu_percent(None)
+                self.cpu_pct_peak = 0.0
+                self.ram_mb_peak = 0.0
+            except Exception:
+                self._proc = None
+
+    def _sample_once(self) -> None:
+        if self._proc is None:
+            return
+        try:
+            cpu = self._proc.cpu_percent(None)
+            # Aggregate any short-lived subprocess children too, so engines
+            # that shell out (espeak, piper) don't all report 0% CPU.
+            try:
+                for child in self._proc.children(recursive=True):
+                    try:
+                        cpu += child.cpu_percent(None)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            rss = self._proc.memory_info().rss / (1024.0 * 1024.0)
+            if cpu > self.cpu_pct_peak:
+                self.cpu_pct_peak = cpu
+            if rss > self.ram_mb_peak:
+                self.ram_mb_peak = rss
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._sample_once()
+            self._stop.wait(self.interval_s)
+
+    def __enter__(self) -> "ResourceSampler":
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        # Final sample (catches very fast synths)
+        self._sample_once()
+
+
+# ── MOS prompt ──────────────────────────────────────────────────────────────
+def _write_temp_wav(audio_pcm: bytes, sample_rate: int) -> pathlib.Path:
+    """Write raw int16 LE PCM to a temp WAV file. Returns the path."""
+    tmp_dir = pathlib.Path(tempfile.gettempdir())
+    path = tmp_dir / f"bench-mos-{uuid.uuid4().hex[:8]}.wav"
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)        # int16
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(audio_pcm)
+    return path
+
+
+def _try_play(wav_path: pathlib.Path) -> bool:
+    """Try to play the wav with aplay if available. Returns True if played
+    successfully, False otherwise — caller falls back to printing the path.
+    """
+    aplay = shutil.which("aplay")
+    if not aplay:
+        return False
+    try:
+        # Suppress aplay's banner; let any error chatter through to stderr
+        # so the operator knows if the audio device is wedged.
+        subprocess.run([aplay, "-q", str(wav_path)], check=False, timeout=120)
+        return True
+    except Exception as e:
+        log(f"WARN: aplay {wav_path} failed: {e}")
+        return False
+
+
+def prompt_mos(audio_pcm: bytes, sample_rate: int, text_id: str, engine_name: str) -> int:
+    """Save the audio to a temp WAV, attempt to play it, and prompt the
+    operator for an MOS rating in [1..5] (or 's' to skip).
+
+    Returns the rating, or -1 if skipped or input couldn't be read.
+    """
+    if not audio_pcm or sample_rate <= 0:
+        return -1
+    try:
+        wav_path = _write_temp_wav(audio_pcm, int(sample_rate))
+    except Exception as e:
+        log(f"WARN: could not write MOS wav: {e}")
+        return -1
+
+    played = _try_play(wav_path)
+    if not played:
+        # Tell the operator how to play it manually so they can still rate.
+        print(f"[bench] play: aplay {wav_path}   (or open it manually)", file=sys.stderr, flush=True)
+
+    rating = -1
+    try:
+        while True:
+            try:
+                ans = input(
+                    f"[bench] rate {text_id} on {engine_name}: 1=robotic, 5=human (1-5, or 's' to skip): "
+                ).strip().lower()
+            except EOFError:
+                # No interactive stdin (e.g. piped). Skip.
+                log("MOS prompt got EOF; skipping rating")
+                break
+            if ans in ("s", "skip", ""):
+                break
+            if ans in ("1", "2", "3", "4", "5"):
+                rating = int(ans)
+                break
+            print("[bench] please enter 1, 2, 3, 4, 5, or s", file=sys.stderr, flush=True)
+    finally:
+        try:
+            wav_path.unlink()
+        except Exception:
+            pass
+
+    return rating
+
+
+# ── csv writer ──────────────────────────────────────────────────────────────
+def open_csv(output: str) -> tuple[Any, csv.DictWriter, bool]:
+    """Return (file_handle, writer, header_written_in_this_call).
+
+    If output == "-", writes to stdout. Otherwise appends to the file (writes
+    header only if the file is new or empty).
+    """
+    if output == "-":
+        f = sys.stdout
+        wrote_header = False
+        if not getattr(f, "_bench_header_written", False):
+            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+            writer.writeheader()
+            wrote_header = True
+            try:
+                f._bench_header_written = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        else:
+            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        return f, writer, wrote_header
+
+    path = pathlib.Path(output)
+    is_new = (not path.exists()) or path.stat().st_size == 0
+    f = open(path, "a", encoding="utf-8", newline="")
+    writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+    if is_new:
+        writer.writeheader()
+    return f, writer, is_new
+
+
+# ── per-text benchmark loop ────────────────────────────────────────────────
+def bench_one(
+    engine_name: str,
+    engine: Any,
+    voice_label: str,
+    text_row: dict[str, str],
+    repeat: int,
+    warmup: int,
+    do_mos: bool,
+    writer: csv.DictWriter,
+) -> list[dict[str, Any]]:
+    """Run an engine on a single text `repeat+warmup` times.
+
+    Returns the list of CSV rows that were *recorded* (warmup runs are not
+    in the list). Errors are captured as a single error row per text-run so
+    the bench never crashes on a bad input or a flaky engine.
+    """
+    text_id = text_row["text_id"]
+    category = text_row["category"]
+    text = text_row["text"]
+    rows: list[dict[str, Any]] = []
+
+    # Warmup runs (results discarded).
+    for _ in range(max(0, warmup)):
+        try:
+            engine.synthesize(text)
+        except Exception as e:
+            log(f"WARN warmup of {text_id} on {engine_name} failed: {e}")
+
+    # Measured runs.
+    for run_index in range(repeat):
+        synth_audio = b""
+        synth_sr = 0
+        error: str | None = None
+        latency_ms = -1.0
+        ttfa_ms = -1.0
+        audio_seconds = 0.0
+        rtf = -1.0
+        try:
+            with ResourceSampler() as sampler:
+                t0 = time.perf_counter()
+                result = engine.synthesize(text)
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+            # All current engines are non-streaming: TTFA == total latency.
+            ttfa_ms = latency_ms
+            if isinstance(result, dict):
+                synth_audio = result.get("audio_pcm") or b""
+                synth_sr = int(result.get("sample_rate") or 0)
+            else:
+                synth_audio = b""
+                synth_sr = 0
+            # int16 mono → 2 bytes per sample.
+            if synth_sr > 0 and synth_audio:
+                audio_seconds = len(synth_audio) / 2.0 / float(synth_sr)
+            rtf = (latency_ms / 1000.0 / audio_seconds) if audio_seconds > 0 else -1.0
+        except Exception as e:
+            error = str(e)
+            log(f"ERROR synth {text_id} on {engine_name} run {run_index}: {e}")
+        finally:
+            cpu_peak = sampler.cpu_pct_peak if 'sampler' in locals() else -1.0
+            ram_peak = sampler.ram_mb_peak if 'sampler' in locals() else -1.0
+
+        # Optional MOS rating (skipped on error or empty audio).
+        mos = -1
+        if do_mos and error is None and synth_audio:
+            try:
+                mos = prompt_mos(synth_audio, synth_sr, text_id, engine_name)
+            except Exception as e:
+                log(f"WARN MOS prompt failed for {text_id}/{engine_name}: {e}")
+                mos = -1
+
+        row = {
+            "text_id":           text_id,
+            "category":          category,
+            "engine":            engine_name,
+            "voice":             voice_label,
+            "run_index":         run_index,
+            "text_length_chars": len(text),
+            "audio_seconds":     round(audio_seconds, 3) if audio_seconds >= 0 else -1,
+            "ttfa_ms":           round(ttfa_ms, 1) if ttfa_ms >= 0 else -1,
+            "total_latency_ms":  round(latency_ms, 1) if latency_ms >= 0 else -1,
+            "rtf":               round(rtf, 3) if rtf >= 0 else -1,
+            "cpu_pct_peak":      round(cpu_peak, 1) if cpu_peak >= 0 else -1,
+            "ram_mb_peak":       round(ram_peak, 1) if ram_peak >= 0 else -1,
+            "mos":               mos,
+            "ts":                round(time.time(), 3),
+        }
+        if error:
+            # csv.DictWriter ignores extra fields when extrasaction="raise" is
+            # not set, but our DictWriter uses the default ("raise"). So we
+            # just stash the error in a log line; the row's -1 sentinels
+            # convey "this run failed". Future schema bump can add an "error"
+            # column if/when we want it.
+            log(f"  recorded error sentinel for {text_id}/{engine_name}/run{run_index}")
+        writer.writerow(row)
+        rows.append(row)
+    return rows
+
+
+# ── per-engine summary ─────────────────────────────────────────────────────
+def percentile(values: list[float], q: float) -> float:
+    """Linear-interp percentile in [0,100], -1 sentinel if input empty."""
+    vs = [v for v in values if v >= 0]
+    if not vs:
+        return -1.0
+    vs.sort()
+    if len(vs) == 1:
+        return vs[0]
+    k = (len(vs) - 1) * (q / 100.0)
+    lo = int(k)
+    hi = min(lo + 1, len(vs) - 1)
+    frac = k - lo
+    return vs[lo] + (vs[hi] - vs[lo]) * frac
+
+
+def summarize(per_engine_rows: dict[str, list[dict[str, Any]]], do_mos: bool) -> None:
+    """Print the [bench] === SUMMARY === block to stderr."""
+    log("=== SUMMARY ===")
+    for engine_name in sorted(per_engine_rows.keys()):
+        rows = per_engine_rows[engine_name]
+        n = len(rows)
+        rtfs = [r["rtf"] for r in rows if isinstance(r["rtf"], (int, float)) and r["rtf"] >= 0]
+        latencies = [r["total_latency_ms"] for r in rows
+                     if isinstance(r["total_latency_ms"], (int, float)) and r["total_latency_ms"] >= 0]
+        mean_rtf = statistics.mean(rtfs) if rtfs else -1.0
+        p50 = percentile(latencies, 50)
+        p95 = percentile(latencies, 95)
+        rtf_str = f"{mean_rtf:.3f}" if mean_rtf >= 0 else "n/a"
+        p50_str = f"{p50:.0f} ms" if p50 >= 0 else "n/a"
+        p95_str = f"{p95:.0f} ms" if p95 >= 0 else "n/a"
+        log(f"{engine_name}: {n} rows, mean RTF {rtf_str}, p50 latency {p50_str}, p95 {p95_str}")
+    if do_mos:
+        parts = []
+        for engine_name in sorted(per_engine_rows.keys()):
+            rows = per_engine_rows[engine_name]
+            scored = [r["mos"] for r in rows
+                      if isinstance(r["mos"], (int, float)) and r["mos"] >= 1]
+            if scored:
+                parts.append(f"{engine_name}={statistics.mean(scored):.1f}")
+            else:
+                parts.append(f"{engine_name}=n/a")
+        if parts:
+            log(f"mean MOS: {', '.join(parts)}")
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bush-tts-bench",
+        description="Bench-mark Bush Glue TTS engines against a corpus of input texts. "
+                    "Outputs TTFA + RTF + latency + CPU + RAM per (text, engine, run) to CSV.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Example:\n"
+            "  bush-tts-bench --corpus data/tts-bench-corpus.tsv --engine espeak \\\n"
+            "                 --output /tmp/tts-bench.csv\n"
+            "  bush-tts-bench --corpus data/tts-bench-corpus.tsv --engine espeak,piper \\\n"
+            "                 --voice voices/en_US-amy-medium.onnx \\\n"
+            "                 --output /tmp/tts-bench.csv --repeat 5 --warmup 2 --mos\n"
+        ),
+    )
+    parser.add_argument("--corpus", required=True,
+                        help="TSV file or directory containing texts.tsv. "
+                             "Format: <text_id>\\t<text>\\t<category>")
+    parser.add_argument("--engine", required=True,
+                        help=f"Comma-separated list of engine names. Known: "
+                             f"{','.join(sorted(ENGINE_REGISTRY.keys()))}")
+    parser.add_argument("--output", required=True,
+                        help="Output CSV path. Header is written for new files; rows are "
+                             "appended to existing files. Use '-' for stdout.")
+    parser.add_argument("--repeat", type=int, default=3,
+                        help="Number of measured runs per text (default: 3).")
+    parser.add_argument("--warmup", type=int, default=1,
+                        help="Number of discarded warmup runs per engine (default: 1).")
+    parser.add_argument("--voice", default=None,
+                        help="Voice file path (engine-specific; piper requires it).")
+    parser.add_argument("--mos", action="store_true",
+                        help="After each synth, play the audio and prompt for an MOS rating (1-5).")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    # Dependency reminders (one-line hints, non-fatal).
+    if not _HAVE_PSUTIL:
+        log("psutil not installed; CPU and RAM peaks will be reported as -1. Fix: pip install psutil")
+
+    corpus_path = pathlib.Path(args.corpus).resolve()
+    try:
+        tsv_path = resolve_corpus(corpus_path)
+    except FileNotFoundError as e:
+        log(f"ERROR: {e}")
+        return 1
+
+    try:
+        texts = load_corpus(tsv_path)
+    except Exception as e:
+        log(f"ERROR reading corpus {tsv_path}: {e}")
+        return 1
+    if not texts:
+        log(f"ERROR: no texts in {tsv_path}")
+        return 1
+    log(f"Loaded {len(texts)} text(s) from {tsv_path}")
+
+    engine_names = [e.strip() for e in args.engine.split(",") if e.strip()]
+    if not engine_names:
+        log("ERROR: --engine must list at least one engine name")
+        return 1
+
+    # Open CSV (header written for new files only).
+    f, writer, _ = open_csv(args.output)
+    per_engine_rows: dict[str, list[dict[str, Any]]] = {}
+
+    try:
+        for engine_name in engine_names:
+            log(f"--- engine: {engine_name} ---")
+            engine = load_engine(engine_name, args.voice)
+            if engine is None:
+                continue
+            voice_label = engine_voice_label(engine_name, engine, args.voice)
+
+            collected: list[dict[str, Any]] = []
+            for i, text_row in enumerate(texts, start=1):
+                log(f"[{engine_name}] {i}/{len(texts)}  {text_row['text_id']}  ({text_row['category']})")
+                rows = bench_one(
+                    engine_name=engine_name,
+                    engine=engine,
+                    voice_label=voice_label,
+                    text_row=text_row,
+                    repeat=args.repeat,
+                    warmup=args.warmup,
+                    do_mos=args.mos,
+                    writer=writer,
+                )
+                collected.extend(rows)
+                f.flush()
+            per_engine_rows[engine_name] = collected
+
+            # Release engine resources between engines.
+            close = getattr(engine, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:
+                    log(f"WARN: {engine_name}.close() raised {e}")
+    finally:
+        if f is not sys.stdout:
+            try:
+                f.close()
+            except Exception:
+                pass
+
+    summarize(per_engine_rows, do_mos=args.mos)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        log("interrupted")
+        sys.exit(130)
+    except Exception:
+        traceback.print_exc()
+        sys.exit(2)
