@@ -24,3 +24,7 @@ packages = ["src/bush_sound", "src/bush_stt"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
