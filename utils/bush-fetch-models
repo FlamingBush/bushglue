@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# Bush Glue model fetcher
+# Reads data/models-manifest.tsv and downloads each entry idempotently with
+# SHA256 verification. Handles raw files, .zip archives, and .tar.gz/.tgz
+# tarballs (extracted into dest_path as a directory).
+#
+# Usage:
+#   bush-fetch-models [--manifest PATH] [--data-root PATH] [--accept-tbd]
+#   bush-fetch-models -h | --help
+#
+# Manifest format (tab-separated):
+#   name<TAB>url<TAB>sha256<TAB>dest_path
+# Lines starting with '#' or blank are ignored.
+# dest_path is resolved relative to --data-root (default: data/).
+# sha256 may be the literal string "TBD" — pass --accept-tbd to download
+# anyway and emit a copy-pasteable update line on stderr.
+
+set -euo pipefail
+
+# ── defaults ──────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+MANIFEST="$REPO_ROOT/data/models-manifest.tsv"
+DATA_ROOT="$REPO_ROOT/data"
+ACCEPT_TBD=0
+
+usage() {
+    cat <<'EOF'
+Usage: bush-fetch-models [--manifest PATH] [--data-root PATH] [--accept-tbd]
+       bush-fetch-models -h | --help
+
+Downloads ML model artifacts listed in data/models-manifest.tsv with SHA256
+verification. Idempotent: existing files matching the manifest sha256 are
+skipped.
+
+Options:
+  --manifest PATH    Path to TSV manifest (default: <repo>/data/models-manifest.tsv)
+  --data-root PATH   Root directory for dest_path resolution (default: <repo>/data)
+  --accept-tbd       Allow manifest entries whose sha256 is "TBD"; the computed
+                     hash is printed to stderr so you can paste it back into
+                     the manifest. Without this flag, TBD entries fail the run.
+  -h, --help         Print this help and exit.
+
+Logging: progress lines are written to stdout with a [fetch-models] prefix;
+errors go to stderr with the same prefix. Exit code is 0 if every entry
+succeeded, 1 if any failed.
+
+Manifest format (tab-separated, '#' comments + blank lines ignored):
+  name<TAB>url<TAB>sha256<TAB>dest_path
+
+Archive handling:
+  - urls ending in .zip       → dest_path is a directory; archive is unzipped
+  - urls ending in .tar.gz/.tgz → dest_path is a directory; archive is tar xzf'd
+  - anything else             → dest_path is a single file
+EOF
+}
+
+# ── arg parsing ───────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --manifest)
+            [[ $# -ge 2 ]] || { echo "[fetch-models] --manifest needs a value" >&2; exit 2; }
+            MANIFEST="$2"; shift 2 ;;
+        --data-root)
+            [[ $# -ge 2 ]] || { echo "[fetch-models] --data-root needs a value" >&2; exit 2; }
+            DATA_ROOT="$2"; shift 2 ;;
+        --accept-tbd)
+            ACCEPT_TBD=1; shift ;;
+        -h|--help)
+            usage; exit 0 ;;
+        *)
+            echo "[fetch-models] unknown argument: $1" >&2
+            usage >&2
+            exit 2 ;;
+    esac
+done
+
+# ── tool checks ───────────────────────────────────────────────────────────
+missing=()
+for t in curl sha256sum unzip tar awk; do
+    command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+done
+if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "[fetch-models] missing required tools: ${missing[*]}" >&2
+    exit 2
+fi
+
+# ── manifest checks ───────────────────────────────────────────────────────
+if [[ ! -f "$MANIFEST" ]]; then
+    echo "[fetch-models] manifest not found: $MANIFEST" >&2
+    exit 2
+fi
+mkdir -p "$DATA_ROOT"
+
+log()  { echo "[fetch-models] $*"; }
+err()  { echo "[fetch-models] $*" >&2; }
+
+# Compute sha256 of a file path; prints just the hex digest.
+sha_of() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+# Compute sha256 of a directory: hash of sorted "<sha>  <relpath>" listing of
+# every regular file. Stable across re-extracts of the same tree.
+sha_of_dir() {
+    local dir="$1"
+    ( cd "$dir" && find . -type f -print0 \
+        | sort -z \
+        | xargs -0 sha256sum \
+        | sha256sum \
+        | awk '{print $1}' )
+}
+
+failures=()
+
+process_entry() {
+    local name="$1" url="$2" want_sha="$3" rel_dest="$4"
+    local dest abs_dest tmp computed
+    abs_dest="$DATA_ROOT/$rel_dest"
+
+    # Pick handler by URL suffix.
+    local kind="file"
+    case "$url" in
+        *.zip)              kind="zip" ;;
+        *.tar.gz|*.tgz)     kind="tgz" ;;
+    esac
+
+    # Idempotent skip: if dest exists and sha matches, we're done.
+    if [[ "$want_sha" != "TBD" ]]; then
+        if [[ "$kind" == "file" && -f "$abs_dest" ]]; then
+            local have
+            have="$(sha_of "$abs_dest")"
+            if [[ "$have" == "$want_sha" ]]; then
+                log "SKIP: $name: $abs_dest (sha256 ok)"
+                return 0
+            fi
+        fi
+        # For archives we don't re-hash the extracted tree against want_sha
+        # (want_sha is the *archive* hash). We use a sentinel marker file.
+        if [[ "$kind" != "file" && -d "$abs_dest" && -f "$abs_dest/.fetch-models-sha256" ]]; then
+            local have
+            have="$(cat "$abs_dest/.fetch-models-sha256")"
+            if [[ "$have" == "$want_sha" ]]; then
+                log "SKIP: $name: $abs_dest (archive sha256 ok)"
+                return 0
+            fi
+        fi
+    fi
+
+    # TBD handling.
+    if [[ "$want_sha" == "TBD" && "$ACCEPT_TBD" -ne 1 ]]; then
+        err "FAIL: $name: manifest entry $name has TBD sha256; rerun with --accept-tbd to compute"
+        failures+=("$name")
+        return 0
+    fi
+
+    # Download.
+    case "$kind" in
+        file)
+            mkdir -p "$(dirname "$abs_dest")"
+            tmp="${abs_dest}.partial"
+            ;;
+        zip)
+            mkdir -p "$abs_dest" "$(dirname "$abs_dest")" 2>/dev/null || true
+            tmp="/tmp/bush-fetch-models.${name}.zip.partial"
+            ;;
+        tgz)
+            mkdir -p "$abs_dest" "$(dirname "$abs_dest")" 2>/dev/null || true
+            tmp="/tmp/bush-fetch-models.${name}.tar.gz.partial"
+            ;;
+    esac
+
+    log "GET: $name: $url"
+    if ! curl -fL --retry 3 --retry-delay 2 -C - -o "$tmp" "$url"; then
+        err "FAIL: $name: curl failed for $url"
+        rm -f "$tmp"
+        failures+=("$name")
+        return 0
+    fi
+
+    computed="$(sha_of "$tmp")"
+
+    if [[ "$want_sha" == "TBD" ]]; then
+        # User asked us to compute it — emit and accept.
+        echo "# UPDATE: sha256 for $name: $computed" >&2
+    else
+        if [[ "$computed" != "$want_sha" ]]; then
+            err "FAIL: $name: sha256 mismatch (want $want_sha, got $computed)"
+            rm -f "$tmp"
+            failures+=("$name")
+            return 0
+        fi
+    fi
+
+    # Install: atomic rename for files, extract for archives.
+    case "$kind" in
+        file)
+            if ! mv -f "$tmp" "$abs_dest"; then
+                err "FAIL: $name: rename to $abs_dest failed"
+                rm -f "$tmp"
+                failures+=("$name")
+                return 0
+            fi
+            ;;
+        zip)
+            mkdir -p "$abs_dest"
+            # Extract into a staging dir, then swap to keep it close to atomic.
+            local stage
+            stage="$(mktemp -d "${abs_dest%/}.stage.XXXXXX")"
+            if ! unzip -q -o "$tmp" -d "$stage"; then
+                err "FAIL: $name: unzip failed"
+                rm -rf "$stage"; rm -f "$tmp"
+                failures+=("$name")
+                return 0
+            fi
+            # If the zip has a single top-level directory, flatten it into dest.
+            local entries
+            mapfile -t entries < <(find "$stage" -maxdepth 1 -mindepth 1)
+            rm -rf "$abs_dest"
+            mkdir -p "$(dirname "$abs_dest")"
+            if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}" ]]; then
+                mv "${entries[0]}" "$abs_dest"
+                rmdir "$stage" 2>/dev/null || true
+            else
+                mv "$stage" "$abs_dest"
+            fi
+            echo "$computed" > "$abs_dest/.fetch-models-sha256"
+            rm -f "$tmp"
+            ;;
+        tgz)
+            mkdir -p "$abs_dest"
+            local stage
+            stage="$(mktemp -d "${abs_dest%/}.stage.XXXXXX")"
+            if ! tar xzf "$tmp" -C "$stage"; then
+                err "FAIL: $name: tar xzf failed"
+                rm -rf "$stage"; rm -f "$tmp"
+                failures+=("$name")
+                return 0
+            fi
+            local entries
+            mapfile -t entries < <(find "$stage" -maxdepth 1 -mindepth 1)
+            rm -rf "$abs_dest"
+            mkdir -p "$(dirname "$abs_dest")"
+            if [[ ${#entries[@]} -eq 1 && -d "${entries[0]}" ]]; then
+                mv "${entries[0]}" "$abs_dest"
+                rmdir "$stage" 2>/dev/null || true
+            else
+                mv "$stage" "$abs_dest"
+            fi
+            echo "$computed" > "$abs_dest/.fetch-models-sha256"
+            rm -f "$tmp"
+            ;;
+    esac
+
+    log "OK: $name: $abs_dest"
+}
+
+# ── main loop ─────────────────────────────────────────────────────────────
+# Read TSV, skipping comments and blank lines. We use awk to pre-filter so
+# malformed lines are surfaced and so we can rely on tab-only splits.
+line_no=0
+while IFS=$'\t' read -r name url want_sha rel_dest || [[ -n "${name:-}" ]]; do
+    line_no=$((line_no + 1))
+    # Trim trailing CR if the file was edited on Windows.
+    rel_dest="${rel_dest%$'\r'}"
+    # Skip blank or comment lines.
+    if [[ -z "${name// }" ]]; then continue; fi
+    case "$name" in \#*) continue ;; esac
+    if [[ -z "${url:-}" || -z "${want_sha:-}" || -z "${rel_dest:-}" ]]; then
+        err "FAIL: line $line_no: malformed entry (need 4 tab-separated columns): $name"
+        failures+=("line:$line_no")
+        continue
+    fi
+    process_entry "$name" "$url" "$want_sha" "$rel_dest"
+done < "$MANIFEST"
+
+# ── exit ──────────────────────────────────────────────────────────────────
+if [[ ${#failures[@]} -gt 0 ]]; then
+    err "done with ${#failures[@]} failure(s): ${failures[*]}"
+    exit 1
+fi
+log "done; all entries ok"
+exit 0
