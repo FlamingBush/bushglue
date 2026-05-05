@@ -11,6 +11,13 @@ dependencies = [
     "numpy>=1.24",
     "davey",
     "bushutil",
+    "bush-core",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-mock>=3.0",
 ]
 
 [project.scripts]
@@ -18,7 +25,12 @@ bush-discord = "bush_discord:main"
 
 [tool.uv.sources]
 bushutil = { workspace = true }
+bush-core = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
