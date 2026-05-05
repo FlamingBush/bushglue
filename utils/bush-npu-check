@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""
+NPU readiness sanity check for the Rockchip RK3588 NPU on an ODROID-M2.
+
+Runs a sequence of checks (platform, /dev render nodes, kernel rknpu driver,
+rknn-toolkit-lite2 import, canned mobilenet_v2 inference) and reports a summary.
+This is the gate for any RKNN offload work in bushglue — if this doesn't pass on
+the M2, NPU work gets deferred.
+
+Exit codes:
+  0  all checks passed
+  1  at least one check failed (on RK3588 hardware)
+  2  not on RK3588 hardware (n/a here, not a failure)
+"""
+import os, sys
+_venv = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv"))
+if os.path.isdir(_venv) and sys.prefix != _venv:
+    os.execv(os.path.join(_venv, "bin", "python"), [os.path.join(_venv, "bin", "python")] + sys.argv)
+
+import argparse
+import hashlib
+import os
+import pathlib
+import sys
+import time
+import traceback
+import urllib.request
+
+# ── constants ──────────────────────────────────────────────────────────────
+CACHE_DIR = pathlib.Path.home() / ".cache" / "bush" / "npu-check"
+MODEL_URL = (
+    "https://github.com/airockchip/rknn_model_zoo/raw/main/"
+    "examples/mobilenet/model/mobilenet_v2.rknn"
+)
+MODEL_FILENAME = "mobilenet_v2.rknn"
+MODEL_SHA256 = "TBD"  # compute on first successful download, log it
+MODEL_EXPECTED_SIZE_MIN = 13 * 1024 * 1024  # ~14 MB; accept >= 13 MB as "looks right"
+
+
+def log(msg: str) -> None:
+    print(f"[npu-check] {msg}", flush=True)
+
+
+# ── checks ─────────────────────────────────────────────────────────────────
+def check_platform() -> tuple[bool, str]:
+    """Detect RK3588 hardware via device-tree compatible or /proc/cpuinfo."""
+    dt_compat = pathlib.Path("/proc/device-tree/compatible")
+    if dt_compat.exists():
+        try:
+            blob = dt_compat.read_bytes()
+            if b"rockchip,rk3588" in blob:
+                return True, "device-tree compatible reports rockchip,rk3588"
+            # fall through if compatible exists but doesn't mention rk3588
+        except OSError as e:
+            return False, f"could not read /proc/device-tree/compatible: {e}"
+
+    cpuinfo = pathlib.Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        try:
+            text = cpuinfo.read_text(errors="replace")
+            lower = text.lower()
+            if "rk3588" in lower or "rockchip" in lower:
+                return True, "/proc/cpuinfo mentions rockchip/rk3588"
+        except OSError as e:
+            return False, f"could not read /proc/cpuinfo: {e}"
+
+    return False, "no rockchip,rk3588 marker in device-tree or /proc/cpuinfo"
+
+
+def check_render_nodes() -> tuple[bool, str]:
+    """Both /dev/dri/renderD128 (Mali GPU) and /dev/dri/renderD129 (NPU) should exist."""
+    n128 = pathlib.Path("/dev/dri/renderD128")
+    n129 = pathlib.Path("/dev/dri/renderD129")
+    have_128 = n128.exists()
+    have_129 = n129.exists()
+    if have_128 and have_129:
+        return True, "both /dev/dri/renderD128 and /dev/dri/renderD129 present"
+    if have_128 and not have_129:
+        return False, "/dev/dri/renderD128 present but /dev/dri/renderD129 missing (NPU node)"
+    if have_129 and not have_128:
+        return False, "/dev/dri/renderD129 present but /dev/dri/renderD128 missing (Mali node)"
+    return False, "neither /dev/dri/renderD128 nor /dev/dri/renderD129 present"
+
+
+def check_kernel_driver() -> tuple[bool, str]:
+    """Check /proc/rknpu/ exists; log /proc/rknpu/version if readable. Best-effort."""
+    rknpu = pathlib.Path("/proc/rknpu")
+    if not rknpu.is_dir():
+        return False, "/proc/rknpu/ not present (kernel rknpu driver not loaded)"
+
+    version_path = rknpu / "version"
+    if version_path.is_file():
+        try:
+            version = version_path.read_text(errors="replace").strip()
+            return True, f"/proc/rknpu/ present, version: {version!r}"
+        except OSError as e:
+            return True, f"/proc/rknpu/ present, version unreadable ({e})"
+    return True, "/proc/rknpu/ present (no version file)"
+
+
+def check_rknnlite_import() -> tuple[bool, str]:
+    """Try importing rknnlite.api.RKNNLite."""
+    try:
+        from rknnlite.api import RKNNLite  # noqa: F401
+    except ImportError:
+        return False, (
+            "rknn-toolkit-lite2 not installed; "
+            "pip install rknn-toolkit-lite2 (in services/audio venv)"
+        )
+    except Exception as e:  # surface any other surprise (e.g. arch mismatch)
+        return False, f"rknnlite import raised {type(e).__name__}: {e}"
+    return True, "rknnlite.api.RKNNLite imports cleanly"
+
+
+def _ensure_model_cached() -> tuple[bool, str, pathlib.Path | None]:
+    """Download the canned mobilenet_v2.rknn into CACHE_DIR if not present."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return False, f"could not create cache dir {CACHE_DIR}: {e}", None
+
+    model_path = CACHE_DIR / MODEL_FILENAME
+    if model_path.is_file():
+        try:
+            size = model_path.stat().st_size
+        except OSError as e:
+            return False, f"could not stat cached model: {e}", None
+        if size >= MODEL_EXPECTED_SIZE_MIN:
+            log(f"using cached model: {model_path} ({size} bytes)")
+            return True, "cached", model_path
+        log(f"cached model too small ({size} bytes), redownloading")
+        try:
+            model_path.unlink()
+        except OSError:
+            pass
+
+    log(f"downloading canned model: {MODEL_URL}")
+    try:
+        urllib.request.urlretrieve(MODEL_URL, model_path)
+    except Exception as e:
+        return False, f"could not download canned model: {MODEL_URL}: {e}", None
+
+    try:
+        size = model_path.stat().st_size
+    except OSError as e:
+        return False, f"download finished but stat failed: {e}", None
+
+    sha = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    log(f"downloaded model: {size} bytes, sha256={sha}")
+    if MODEL_SHA256 != "TBD" and sha != MODEL_SHA256:
+        return False, f"model sha256 mismatch: got {sha}, expected {MODEL_SHA256}", None
+    return True, "downloaded", model_path
+
+
+def check_sanity_inference() -> tuple[bool, str]:
+    """Load mobilenet_v2.rknn, init runtime, run zeros input, time each step."""
+    try:
+        from rknnlite.api import RKNNLite
+    except Exception as e:
+        return False, f"rknnlite import failed in inference check: {e}"
+
+    ok, detail, model_path = _ensure_model_cached()
+    if not ok or model_path is None:
+        return False, detail
+
+    try:
+        import numpy as np
+    except ImportError:
+        return False, "numpy not installed (required to build the synthetic input)"
+
+    rknn_lite = RKNNLite()
+
+    t0 = time.perf_counter()
+    try:
+        ret = rknn_lite.load_rknn(str(model_path))
+    except Exception as e:
+        return False, f"load_rknn raised {type(e).__name__}: {e}"
+    t_load_ms = (time.perf_counter() - t0) * 1000.0
+    if ret != 0:
+        return False, f"load_rknn returned non-zero: {ret}"
+
+    t0 = time.perf_counter()
+    try:
+        ret = rknn_lite.init_runtime()
+    except Exception as e:
+        try:
+            rknn_lite.release()
+        except Exception:
+            pass
+        return False, f"init_runtime raised {type(e).__name__}: {e}"
+    t_init_ms = (time.perf_counter() - t0) * 1000.0
+    if ret != 0:
+        try:
+            rknn_lite.release()
+        except Exception:
+            pass
+        return False, f"init_runtime returned non-zero: {ret}"
+
+    # mobilenet_v2 expects 1×224×224×3 (NHWC) inputs by default in rknn_model_zoo.
+    # Synthetic zeros are fine for "did the NPU run anything?" — we don't care
+    # about the classification result, just that inference completes.
+    inp = np.zeros((1, 224, 224, 3), dtype=np.uint8)
+
+    t0 = time.perf_counter()
+    try:
+        outputs = rknn_lite.inference(inputs=[inp])
+    except Exception as e:
+        try:
+            rknn_lite.release()
+        except Exception:
+            pass
+        return False, f"inference raised {type(e).__name__}: {e}"
+    t_infer_ms = (time.perf_counter() - t0) * 1000.0
+
+    try:
+        rknn_lite.release()
+    except Exception:
+        pass
+
+    if not outputs:
+        return False, "inference returned no outputs"
+
+    log(
+        f"mobilenet_v2 inference: load {t_load_ms:.1f} ms, "
+        f"init {t_init_ms:.1f} ms, infer {t_infer_ms:.1f} ms"
+    )
+    return True, (
+        f"load {t_load_ms:.1f} ms, init {t_init_ms:.1f} ms, infer {t_infer_ms:.1f} ms"
+    )
+
+
+# ── runner ─────────────────────────────────────────────────────────────────
+def run_check(name: str, fn) -> tuple[bool, str]:
+    """Run a single check, catching unexpected exceptions."""
+    try:
+        ok, detail = fn()
+    except Exception as e:
+        ok, detail = False, f"unexpected {type(e).__name__}: {e}"
+        traceback.print_exc()
+    status = "PASS" if ok else "FAIL"
+    log(f"{name}: {status}: {detail}")
+    return ok, detail
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "NPU readiness sanity check for the Rockchip RK3588 NPU (ODROID-M2). "
+            "Exit codes: 0 all passed, 1 at least one failed, 2 not on RK3588."
+        ),
+        add_help=False,
+    )
+    parser.add_argument("-h", "--help", action="store_true", help="show this help and exit")
+    args = parser.parse_args()
+    if args.help:
+        parser.print_help()
+        return 0
+
+    # 1. platform — gates everything else
+    ok, detail = run_check("platform", check_platform)
+    if not ok:
+        log("not on RK3588 hardware (skipped)")
+        log("summary: 0/1 checks passed, exit code 2")
+        return 2
+
+    results: list[tuple[str, bool, str]] = [("platform", True, detail)]
+
+    # 2-4 always run
+    ok, detail = run_check("render_nodes", check_render_nodes)
+    results.append(("render_nodes", ok, detail))
+
+    ok, detail = run_check("kernel_driver", check_kernel_driver)
+    results.append(("kernel_driver", ok, detail))
+
+    ok_import, detail = run_check("rknnlite_import", check_rknnlite_import)
+    results.append(("rknnlite_import", ok_import, detail))
+
+    # 5 only if the import passed
+    if ok_import:
+        ok, detail = run_check("sanity_inference", check_sanity_inference)
+        results.append(("sanity_inference", ok, detail))
+    else:
+        log("sanity_inference: SKIP: rknnlite_import failed, can't run inference")
+        results.append(("sanity_inference", False, "skipped (rknnlite import failed)"))
+
+    passed = sum(1 for _, ok, _ in results if ok)
+    total = len(results)
+    failed = [name for name, ok, _ in results if not ok]
+    exit_code = 0 if not failed else 1
+
+    if failed:
+        log(f"failed checks: {', '.join(failed)}")
+    log(f"summary: {passed}/{total} checks passed, exit code {exit_code}")
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
