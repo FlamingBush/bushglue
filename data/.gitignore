@@ -1,0 +1,5 @@
+# Model artifacts fetched by utils/bush-fetch-models — not in git.
+vosk-model/
+whisper-models/
+piper-voices/
+*.partial

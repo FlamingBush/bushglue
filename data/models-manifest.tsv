@@ -1,0 +1,13 @@
+# Bush Glue model manifest — read by utils/bush-fetch-models
+# Format: name<TAB>url<TAB>sha256<TAB>dest_path
+# dest_path is relative to --data-root (default: data/)
+# sha256 may be "TBD" — use --accept-tbd to download and compute
+#
+# name	url	sha256	dest_path
+vosk-model-small-en-us-0.15	https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip	TBD	vosk-model
+ggml-base.en-q8_0	https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q8_0.bin	TBD	whisper-models/ggml-base.en-q8_0.bin
+ggml-small.en-q8_0	https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q8_0.bin	TBD	whisper-models/ggml-small.en-q8_0.bin
+en_GB-alan-medium.onnx	https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium/en_GB-alan-medium.onnx	TBD	piper-voices/en_GB-alan-medium.onnx
+en_GB-alan-medium.onnx.json	https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json	TBD	piper-voices/en_GB-alan-medium.onnx.json
+en_US-lessac-medium.onnx	https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx	TBD	piper-voices/en_US-lessac-medium.onnx
+en_US-lessac-medium.onnx.json	https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json	TBD	piper-voices/en_US-lessac-medium.onnx.json
