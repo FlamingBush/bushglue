@@ -8,7 +8,18 @@ dependencies = [
     "numpy>=1.24",
     "sounddevice>=0.4",
     "vosk>=0.3",
+    "silero-vad>=5.0",
+    "soxr>=0.5",
     "bushutil",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-mock>=3.0",
+]
+npu = [
+    "rknn-toolkit-lite2; platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 
 [project.scripts]
