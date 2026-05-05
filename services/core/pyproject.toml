@@ -23,3 +23,7 @@ packages = ["src/bush_audio_agent", "src/bush_t2v", "src/bush_tts", "src/bush_fl
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
