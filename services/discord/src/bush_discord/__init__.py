@@ -93,9 +93,35 @@ EMOTIONS_ORDER = ["anger", "joy", "love", "surprise", "fear", "sadness"]
 BAR_WIDTH = 10
 
 # ── TTS synthesis params (mirrors tts-service.py) ────────────────────────────
-ESPEAK_CMD  = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "--stdout"]
 # SOX_EFFECTS = ["gain", "-8", "pitch", "-250", "reverb", "65", "12", "100", "100", "28", "3"]
 # (now generated dynamically via _build_sox_effects(_discord_clarity))
+
+# TTS engine selection — mirrors bush-tts so Discord voice matches what playa visitors hear.
+TTS_ENGINE_NAME = os.environ.get("TTS_ENGINE", "espeak").lower()
+PIPER_VOICE_PATH = os.environ.get(
+    "PIPER_VOICE",
+    "/home/odroid/bushglue/data/piper-voices/en_GB-alan-medium.onnx",  # default M2 deploy path
+)
+
+_tts_engine = None  # initialized lazily on first synth
+
+
+def _build_tts_engine():
+    """Construct the TTS engine selected by TTS_ENGINE env var.
+
+    Mirrors bush-tts behavior: same env vars, same defaults, so Discord
+    voice matches what playa visitors hear.
+    """
+    from bush_tts.engines.base import TTSEngine
+    if TTS_ENGINE_NAME == "piper":
+        from bush_tts.engines.piper import PiperEngine
+        return PiperEngine(voice_path=PIPER_VOICE_PATH)
+    elif TTS_ENGINE_NAME == "espeak":
+        from bush_tts.engines.espeak import EspeakEngine
+        return EspeakEngine()
+    else:
+        raise RuntimeError(f"Unknown TTS_ENGINE={TTS_ENGINE_NAME!r}; must be 'espeak' or 'piper'")
+
 
 # Synced from bush/audio/tts/clarity retained topic on connect
 _discord_clarity: int = 0
@@ -161,28 +187,42 @@ class DiscordTTSSource(discord.AudioSource):
         return await loop.run_in_executor(None, self._run_synth, text)
 
     def _run_synth(self, text: str) -> bytes:
+        global _tts_engine
+        if _tts_engine is None:
+            _tts_engine = _build_tts_engine()
         try:
-            espeak = subprocess.Popen(
-                ESPEAK_CMD + [text],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
+            synth = _tts_engine.synthesize(text)
+        except Exception as e:
+            print(f"[discord] tts engine error: {e}", flush=True)
+            return b""
+        audio_pcm = synth["audio_pcm"]
+        sr = synth["sample_rate"]
+        if not audio_pcm:
+            return b""
+        try:
             sox = subprocess.Popen(
                 [
-                    "sox", "-q", "-t", "wav", "-",
-                    "-t", "raw", "-r", "48000", "-c", "2",
-                    "-e", "signed-integer", "-b", "16", "-",
+                    "sox", "-q",
+                    # input: raw int16 LE mono at engine's rate
+                    "-t", "raw", "-r", str(sr), "-e", "signed", "-b", "16", "-c", "1", "-",
+                    # output: raw int16 LE stereo at 48 kHz (Discord VC format)
+                    "-t", "raw", "-r", "48000", "-c", "2", "-e", "signed", "-b", "16", "-",
                 ] + _build_sox_effects(_discord_clarity),
-                stdin=espeak.stdout,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
-            espeak.stdout.close()
-            pcm, _ = sox.communicate()
-            espeak.wait()
+            pcm, _ = sox.communicate(audio_pcm, timeout=60)
             return pcm
+        except subprocess.TimeoutExpired:
+            print(f"[discord] sox timed out", flush=True)
+            try:
+                sox.kill()
+            except Exception:
+                pass
+            return b""
         except Exception as e:
-            print(f"[tts-source] synth error: {e}", flush=True)
+            print(f"[discord] sox error: {e}", flush=True)
             return b""
 
 
