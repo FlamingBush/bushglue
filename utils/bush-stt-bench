@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+"""
+Bush Glue STT bench harness.
+
+Drives each STT engine adapter against a labelled audio corpus and emits a CSV
+with WER + latency + CPU + RAM per (utterance, engine, run). This is the
+single-most-important week-1 artifact: it's how we pick the recognizer per
+eng review §6.
+
+Usage:
+    bush-stt-bench --corpus <dir> --engine <name>[,<name>...] --output <csv> \\
+        [--model <path>] [--repeat N] [--warmup N] [--language en]
+
+The corpus dir must contain per-utterance WAV files plus a transcripts.tsv
+ground-truth file:
+    <wav_filename>\\t<ground_truth_text>\\t<condition_label>
+
+Engines are loaded lazily; an engine that cannot be imported (module missing)
+is skipped with a warning so the bench remains robust as new engines arrive.
+
+Required Python deps (NOT in pyproject — bench is a dev tool):
+    pip install jiwer>=3.0    # WER / CER metrics
+    pip install psutil>=5.9   # CPU + RAM monitoring
+    pip install soxr>=0.5     # resampling for non-16 kHz inputs (already in services/audio)
+
+If jiwer or psutil are missing the bench keeps running with sentinel -1 values
+in the affected columns and prints a one-line install hint.
+"""
+import os
+import sys
+
+# ── venv re-exec (same pattern as utils/bush-stt-file, utils/bush-monitor) ──
+_venv = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv"))
+if os.path.isdir(_venv) and sys.prefix != _venv:
+    os.execv(os.path.join(_venv, "bin", "python"), [os.path.join(_venv, "bin", "python")] + sys.argv)
+
+# ── make in-tree workspace packages importable even without the venv ────────
+import pathlib
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]   # bushglue/
+_AUDIO_SRC = _REPO_ROOT / "services" / "audio" / "src"
+_BUSHUTIL_SRC = _REPO_ROOT / "packages" / "bushutil" / "src"
+for p in (_AUDIO_SRC, _BUSHUTIL_SRC):
+    if p.exists() and str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+import argparse
+import csv
+import importlib
+import statistics
+import threading
+import time
+import traceback
+import wave
+from typing import Any
+
+
+# ── engine registry: name -> "module:ClassName" ─────────────────────────────
+ENGINE_REGISTRY: dict[str, str] = {
+    "vosk":               "bush_stt.engines.vosk:VoskEngine",
+    "whisper-bindings":   "bush_stt.engines.whisper_bindings:WhisperBindingsEngine",
+    "whisper-subprocess": "bush_stt.engines.whisper_subprocess:WhisperSubprocessEngine",
+}
+
+
+# ── CSV columns (in order) ─────────────────────────────────────────────────
+CSV_COLUMNS = [
+    "utterance_id", "condition", "engine", "model", "run_index",
+    "ground_truth", "hypothesis",
+    "wer", "char_error_rate", "audio_seconds",
+    "latency_ms", "rtf", "cpu_pct_peak", "ram_mb_peak",
+    "hallucination", "ts",
+]
+
+
+def log(msg: str) -> None:
+    """Progress logger — goes to stderr, [bench] prefix, line-buffered."""
+    print(f"[bench] {msg}", file=sys.stderr, flush=True)
+
+
+# ── optional deps with graceful fallback ────────────────────────────────────
+try:
+    import jiwer  # type: ignore
+    _HAVE_JIWER = True
+except Exception:
+    jiwer = None
+    _HAVE_JIWER = False
+
+try:
+    import psutil  # type: ignore
+    _HAVE_PSUTIL = True
+except Exception:
+    psutil = None
+    _HAVE_PSUTIL = False
+
+try:
+    import soxr  # type: ignore
+    _HAVE_SOXR = True
+except Exception:
+    soxr = None
+    _HAVE_SOXR = False
+
+
+# ── corpus loading ──────────────────────────────────────────────────────────
+def load_transcripts(corpus_dir: pathlib.Path) -> list[dict[str, str]]:
+    """Parse transcripts.tsv into a list of {wav, text, condition} dicts.
+
+    Lines starting with '#' or blank are skipped. Empty ground_truth is allowed
+    (silence-only clip for hallucination tests).
+    """
+    tsv_path = corpus_dir / "transcripts.tsv"
+    if not tsv_path.exists():
+        raise FileNotFoundError(f"corpus missing transcripts.tsv: {tsv_path}")
+    rows: list[dict[str, str]] = []
+    with tsv_path.open("r", encoding="utf-8") as f:
+        for line_no, raw in enumerate(f, start=1):
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                log(f"WARN: transcripts.tsv line {line_no}: expected at least 2 tab-separated fields, got {len(parts)}; skipping")
+                continue
+            wav = parts[0].strip()
+            text = parts[1].strip() if len(parts) >= 2 else ""
+            condition = parts[2].strip() if len(parts) >= 3 else "unspecified"
+            rows.append({"wav": wav, "text": text, "condition": condition})
+    return rows
+
+
+def read_wav_pcm(wav_path: pathlib.Path, target_sr: int) -> tuple[bytes, float]:
+    """Read a mono 16-bit WAV → (int16-LE bytes at target_sr, audio_seconds).
+
+    Resamples with soxr if the source rate differs from target_sr. Raises
+    ValueError on non-mono or non-16-bit input. If soxr isn't installed and
+    resampling is needed, raises RuntimeError with a clear install hint.
+    """
+    with wave.open(str(wav_path), "rb") as wf:
+        if wf.getnchannels() != 1:
+            raise ValueError(f"{wav_path}: must be mono, got {wf.getnchannels()} channels")
+        if wf.getsampwidth() != 2:
+            raise ValueError(f"{wav_path}: must be 16-bit PCM, got {wf.getsampwidth() * 8}-bit")
+        if wf.getcomptype() != "NONE":
+            raise ValueError(f"{wav_path}: must be uncompressed PCM, got comptype {wf.getcomptype()}")
+        sr = wf.getframerate()
+        nframes = wf.getnframes()
+        pcm = wf.readframes(nframes)
+        audio_seconds = nframes / float(sr) if sr else 0.0
+
+    if sr == target_sr:
+        return pcm, audio_seconds
+
+    if not _HAVE_SOXR:
+        raise RuntimeError(
+            f"{wav_path}: sample rate {sr} != target {target_sr} and soxr is not installed; "
+            "run `pip install soxr` or pre-resample the corpus"
+        )
+
+    # Resample via soxr. soxr accepts numpy arrays; we keep numpy import lazy
+    # so the bench works without numpy when no resampling is needed.
+    import numpy as np
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    out = soxr.resample(samples, sr, target_sr)  # type: ignore[arg-type]
+    out_int16 = np.clip(out * 32768.0, -32768, 32767).astype(np.int16)
+    return out_int16.tobytes(), audio_seconds
+
+
+# ── engine loading ──────────────────────────────────────────────────────────
+def load_engine(engine_name: str, model_path: str | None, language: str) -> Any:
+    """Lazily import + construct an engine instance from ENGINE_REGISTRY.
+
+    Returns the engine on success. Raises ImportError if the module/class
+    can't be loaded, or any other Exception the constructor itself raises.
+    """
+    if engine_name not in ENGINE_REGISTRY:
+        raise ValueError(f"unknown engine {engine_name!r}; known: {sorted(ENGINE_REGISTRY.keys())}")
+    target = ENGINE_REGISTRY[engine_name]
+    module_name, class_name = target.split(":", 1)
+    module = importlib.import_module(module_name)
+    cls = getattr(module, class_name)
+    # Engine constructors vary; pass through what they expect:
+    if engine_name == "vosk":
+        if not model_path:
+            raise ValueError("vosk engine requires --model <path-to-vosk-model-dir>")
+        return cls(model_path=model_path)
+    if engine_name in ("whisper-bindings", "whisper-subprocess"):
+        # Whisper engines accept (model, language) per the planned adapter contract;
+        # we pass kwargs and let the constructor decide what's required.
+        kwargs: dict[str, Any] = {}
+        if model_path:
+            kwargs["model"] = model_path
+        if language:
+            kwargs["language"] = language
+        return cls(**kwargs)
+    return cls()
+
+
+# ── CPU + RAM sampler ───────────────────────────────────────────────────────
+class ResourceSampler:
+    """Background-thread sampler that captures peak CPU% and RSS (MB) of the
+    current process while a transcribe call is running.
+
+    Sampling cadence: every 50 ms. Captures peak across samples. If psutil is
+    not installed, peaks remain at the sentinel -1.
+    """
+    def __init__(self, interval_s: float = 0.050) -> None:
+        self.interval_s = interval_s
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.cpu_pct_peak: float = -1.0
+        self.ram_mb_peak: float = -1.0
+        self._proc = None
+        if _HAVE_PSUTIL:
+            try:
+                self._proc = psutil.Process(os.getpid())  # type: ignore[union-attr]
+                # Prime cpu_percent so the first reading isn't 0
+                self._proc.cpu_percent(None)
+                self.cpu_pct_peak = 0.0
+                self.ram_mb_peak = 0.0
+            except Exception:
+                self._proc = None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            if self._proc is not None:
+                try:
+                    cpu = self._proc.cpu_percent(None)
+                    rss = self._proc.memory_info().rss / (1024.0 * 1024.0)
+                    if cpu > self.cpu_pct_peak:
+                        self.cpu_pct_peak = cpu
+                    if rss > self.ram_mb_peak:
+                        self.ram_mb_peak = rss
+                except Exception:
+                    pass
+            self._stop.wait(self.interval_s)
+
+    def __enter__(self) -> "ResourceSampler":
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        # Final sample (catches very fast transcribes)
+        if self._proc is not None:
+            try:
+                cpu = self._proc.cpu_percent(None)
+                rss = self._proc.memory_info().rss / (1024.0 * 1024.0)
+                if cpu > self.cpu_pct_peak:
+                    self.cpu_pct_peak = cpu
+                if rss > self.ram_mb_peak:
+                    self.ram_mb_peak = rss
+            except Exception:
+                pass
+
+
+# ── metrics helpers ────────────────────────────────────────────────────────
+def compute_wer(reference: str, hypothesis: str) -> float:
+    """jiwer.wer with a sentinel -1 if jiwer isn't installed.
+
+    Empty reference is a valid case (silence clip): jiwer raises on empty
+    reference, so we treat (empty ref, empty hyp) as wer=0 and (empty ref,
+    non-empty hyp) as wer=1 (everything inserted = max error).
+    """
+    if not _HAVE_JIWER:
+        return -1.0
+    if not reference.strip():
+        return 0.0 if not hypothesis.strip() else 1.0
+    try:
+        return float(jiwer.wer(reference, hypothesis))  # type: ignore[union-attr]
+    except Exception:
+        return -1.0
+
+
+def compute_cer(reference: str, hypothesis: str) -> float:
+    """jiwer.cer with the same sentinel + empty-ref semantics as compute_wer."""
+    if not _HAVE_JIWER:
+        return -1.0
+    if not reference.strip():
+        return 0.0 if not hypothesis.strip() else 1.0
+    try:
+        return float(jiwer.cer(reference, hypothesis))  # type: ignore[union-attr]
+    except Exception:
+        return -1.0
+
+
+# ── csv writer ──────────────────────────────────────────────────────────────
+def open_csv(output: str) -> tuple[Any, csv.DictWriter, bool]:
+    """Return (file_handle, writer, header_written_in_this_call).
+
+    If output == "-", writes to stdout. Otherwise appends to the file (writes
+    header only if the file is new or empty).
+    """
+    if output == "-":
+        f = sys.stdout
+        wrote_header = False
+        if not getattr(f, "_bench_header_written", False):
+            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+            writer.writeheader()
+            wrote_header = True
+            try:
+                f._bench_header_written = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        else:
+            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        return f, writer, wrote_header
+
+    path = pathlib.Path(output)
+    is_new = (not path.exists()) or path.stat().st_size == 0
+    f = open(path, "a", encoding="utf-8", newline="")
+    writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+    if is_new:
+        writer.writeheader()
+    return f, writer, is_new
+
+
+# ── per-utterance benchmark loop ────────────────────────────────────────────
+def bench_one(
+    engine_name: str,
+    engine: Any,
+    model_path_str: str,
+    utterance: dict[str, str],
+    corpus_dir: pathlib.Path,
+    repeat: int,
+    warmup: int,
+    writer: csv.DictWriter,
+) -> list[dict[str, Any]]:
+    """Run an engine on a single utterance `repeat+warmup` times.
+
+    Returns the list of CSV rows that were *recorded* (warmup runs are not
+    in the list). Errors are captured as a single error row per utterance so
+    the bench never crashes on a bad recording.
+    """
+    wav_path = corpus_dir / utterance["wav"]
+    utt_id = utterance["wav"]
+    condition = utterance["condition"]
+    ground_truth = utterance["text"]
+    rows: list[dict[str, Any]] = []
+
+    # Load + resample once; reuse the bytes for every run.
+    try:
+        target_sr = int(getattr(engine, "sample_rate", 16000))
+        audio_pcm, audio_seconds = read_wav_pcm(wav_path, target_sr)
+    except Exception as e:
+        log(f"ERROR loading {wav_path}: {e}; recording error row")
+        row = _error_row(engine_name, model_path_str, utt_id, condition, ground_truth,
+                         f"<load-error: {e}>")
+        writer.writerow(row)
+        return [row]
+
+    # Warmup runs (results discarded).
+    for _ in range(max(0, warmup)):
+        try:
+            engine.transcribe(audio_pcm)
+        except Exception as e:
+            log(f"WARN warmup of {utt_id} on {engine_name} failed: {e}")
+
+    # Measured runs.
+    for run_index in range(repeat):
+        try:
+            with ResourceSampler() as sampler:
+                t0 = time.perf_counter()
+                result = engine.transcribe(audio_pcm)
+                latency_ms = (time.perf_counter() - t0) * 1000.0
+            hypothesis = (result.get("text") or "").strip() if isinstance(result, dict) else str(result)
+            wer = compute_wer(ground_truth, hypothesis)
+            cer = compute_cer(ground_truth, hypothesis)
+            rtf = (latency_ms / 1000.0 / audio_seconds) if audio_seconds > 0 else -1.0
+            hallucination = (ground_truth.strip() == "" and hypothesis.strip() != "")
+            row = {
+                "utterance_id":    utt_id,
+                "condition":       condition,
+                "engine":          engine_name,
+                "model":           model_path_str,
+                "run_index":       run_index,
+                "ground_truth":    ground_truth,
+                "hypothesis":      hypothesis,
+                "wer":             round(wer, 4) if wer >= 0 else -1,
+                "char_error_rate": round(cer, 4) if cer >= 0 else -1,
+                "audio_seconds":   round(audio_seconds, 3),
+                "latency_ms":      round(latency_ms, 2),
+                "rtf":             round(rtf, 4) if rtf >= 0 else -1,
+                "cpu_pct_peak":    round(sampler.cpu_pct_peak, 1) if sampler.cpu_pct_peak >= 0 else -1,
+                "ram_mb_peak":     round(sampler.ram_mb_peak, 1) if sampler.ram_mb_peak >= 0 else -1,
+                "hallucination":   hallucination,
+                "ts":              round(time.time(), 3),
+            }
+        except Exception as e:
+            log(f"ERROR transcribing {utt_id} on {engine_name} run {run_index}: {e}")
+            row = _error_row(engine_name, model_path_str, utt_id, condition, ground_truth,
+                             f"<transcribe-error: {e}>", run_index=run_index)
+        writer.writerow(row)
+        rows.append(row)
+    return rows
+
+
+def _error_row(engine_name: str, model_path_str: str, utt_id: str, condition: str,
+               ground_truth: str, hypothesis: str, run_index: int = 0) -> dict[str, Any]:
+    """Build a standard error row with all numeric fields = -1."""
+    return {
+        "utterance_id":    utt_id,
+        "condition":       condition,
+        "engine":          engine_name,
+        "model":           model_path_str,
+        "run_index":       run_index,
+        "ground_truth":    ground_truth,
+        "hypothesis":      hypothesis,
+        "wer":             -1,
+        "char_error_rate": -1,
+        "audio_seconds":   -1,
+        "latency_ms":      -1,
+        "rtf":             -1,
+        "cpu_pct_peak":    -1,
+        "ram_mb_peak":     -1,
+        "hallucination":   False,
+        "ts":              round(time.time(), 3),
+    }
+
+
+# ── per-engine summary ─────────────────────────────────────────────────────
+def percentile(values: list[float], q: float) -> float:
+    """Linear-interp percentile in [0,100], -1 sentinel if input empty."""
+    vs = [v for v in values if v >= 0]
+    if not vs:
+        return -1.0
+    vs.sort()
+    if len(vs) == 1:
+        return vs[0]
+    k = (len(vs) - 1) * (q / 100.0)
+    lo = int(k)
+    hi = min(lo + 1, len(vs) - 1)
+    frac = k - lo
+    return vs[lo] + (vs[hi] - vs[lo]) * frac
+
+
+def summarize(per_engine_rows: dict[str, list[dict[str, Any]]]) -> None:
+    """Print the [bench] === SUMMARY === block to stderr."""
+    log("=== SUMMARY ===")
+    for engine_name in sorted(per_engine_rows.keys()):
+        rows = per_engine_rows[engine_name]
+        n = len(rows)
+        wers = [r["wer"] for r in rows if isinstance(r["wer"], (int, float)) and r["wer"] >= 0]
+        latencies = [r["latency_ms"] for r in rows if isinstance(r["latency_ms"], (int, float)) and r["latency_ms"] >= 0]
+        mean_wer = (statistics.mean(wers) * 100.0) if wers else -1.0
+        p50 = percentile(latencies, 50)
+        p95 = percentile(latencies, 95)
+        wer_str = f"{mean_wer:.1f}%" if mean_wer >= 0 else "n/a (no jiwer?)"
+        p50_str = f"{p50:.0f} ms" if p50 >= 0 else "n/a"
+        p95_str = f"{p95:.0f} ms" if p95 >= 0 else "n/a"
+        log(f"{engine_name}: {n} rows, mean WER {wer_str}, p50 latency {p50_str}, p95 {p95_str}")
+    # Hallucinations on silence (ground_truth empty and hypothesis not empty).
+    halluc_line_parts = []
+    for engine_name in sorted(per_engine_rows.keys()):
+        rows = per_engine_rows[engine_name]
+        n = sum(1 for r in rows if r.get("hallucination"))
+        halluc_line_parts.append(f"{engine_name}={n}")
+    if halluc_line_parts:
+        log(f"hallucinations on silence: {', '.join(halluc_line_parts)}")
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bush-stt-bench",
+        description="Bench-mark Bush Glue STT engines against a labelled audio corpus. "
+                    "Outputs WER + latency + CPU + RAM per (utterance, engine, run) to CSV.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Example:\n"
+            "  bush-stt-bench --corpus data/test-corpus --engine vosk \\\n"
+            "                 --model data/vosk-model --output /tmp/bench.csv\n"
+            "  bush-stt-bench --corpus data/test-corpus --engine vosk,whisper-bindings \\\n"
+            "                 --output /tmp/bench.csv --repeat 5 --warmup 2\n"
+        ),
+    )
+    parser.add_argument("--corpus", required=True,
+                        help="Directory containing per-utterance WAVs and a transcripts.tsv "
+                             "(format: <wav>\\t<text>\\t<condition>).")
+    parser.add_argument("--engine", required=True,
+                        help=f"Comma-separated list of engine names. Known: "
+                             f"{','.join(sorted(ENGINE_REGISTRY.keys()))}")
+    parser.add_argument("--output", required=True,
+                        help="Output CSV path. Header is written for new files; rows are "
+                             "appended to existing files. Use '-' for stdout.")
+    parser.add_argument("--model", default=None,
+                        help="Engine-specific model path (or alias like 'base.en' for whisper).")
+    parser.add_argument("--repeat", type=int, default=3,
+                        help="Number of measured runs per utterance (default: 3).")
+    parser.add_argument("--warmup", type=int, default=1,
+                        help="Number of discarded warmup runs per engine (default: 1).")
+    parser.add_argument("--language", default="en",
+                        help="Language hint for whisper engines (default: en).")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    # Dependency reminders (one-line hints, non-fatal).
+    if not _HAVE_JIWER:
+        log("jiwer not installed; WER and CER will be reported as -1. Fix: pip install jiwer")
+    if not _HAVE_PSUTIL:
+        log("psutil not installed; CPU and RAM peaks will be reported as -1. Fix: pip install psutil")
+
+    corpus_dir = pathlib.Path(args.corpus).resolve()
+    if not corpus_dir.is_dir():
+        log(f"ERROR: --corpus is not a directory: {corpus_dir}")
+        return 1
+
+    try:
+        utterances = load_transcripts(corpus_dir)
+    except Exception as e:
+        log(f"ERROR reading transcripts.tsv: {e}")
+        return 1
+    if not utterances:
+        log(f"ERROR: no utterances in {corpus_dir / 'transcripts.tsv'}")
+        return 1
+    log(f"Loaded {len(utterances)} utterance(s) from {corpus_dir}")
+
+    engine_names = [e.strip() for e in args.engine.split(",") if e.strip()]
+    if not engine_names:
+        log("ERROR: --engine must list at least one engine name")
+        return 1
+
+    # Open CSV (header written for new files only).
+    f, writer, _ = open_csv(args.output)
+    per_engine_rows: dict[str, list[dict[str, Any]]] = {}
+
+    try:
+        for engine_name in engine_names:
+            log(f"--- engine: {engine_name} ---")
+            try:
+                engine = load_engine(engine_name, args.model, args.language)
+            except ImportError as e:
+                log(f"WARN: engine {engine_name} unavailable: {e}; skipping")
+                continue
+            except Exception as e:
+                log(f"WARN: engine {engine_name} failed to construct: {e}; skipping")
+                continue
+
+            model_str = args.model or ""
+            collected: list[dict[str, Any]] = []
+            for i, utt in enumerate(utterances, start=1):
+                log(f"[{engine_name}] {i}/{len(utterances)}  {utt['wav']}  ({utt['condition']})")
+                rows = bench_one(
+                    engine_name=engine_name,
+                    engine=engine,
+                    model_path_str=model_str,
+                    utterance=utt,
+                    corpus_dir=corpus_dir,
+                    repeat=args.repeat,
+                    warmup=args.warmup,
+                    writer=writer,
+                )
+                collected.extend(rows)
+                f.flush()
+            per_engine_rows[engine_name] = collected
+
+            # Release engine resources between engines.
+            close = getattr(engine, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:
+                    log(f"WARN: {engine_name}.close() raised {e}")
+    finally:
+        if f is not sys.stdout:
+            try:
+                f.close()
+            except Exception:
+                pass
+
+    summarize(per_engine_rows)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        log("interrupted")
+        sys.exit(130)
+    except Exception:
+        traceback.print_exc()
+        sys.exit(2)

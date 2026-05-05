@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""
+Generate a tiny synthetic STT bench corpus for smoke-testing bush-stt-bench
+without needing real recordings.
+
+Renders each utterance through espeak-ng, post-processes to mono 16 kHz 16-bit
+PCM via sox (or directly with espeak-ng if sox isn't available), and emits a
+transcripts.tsv that the bench consumes.
+
+Includes one silence-only clip so the bench's hallucination-on-silence metric
+exercises both branches.
+
+Usage:
+    bush-stt-bench-make-corpus [--out <dir>] [--voice <espeak-voice>]
+                               [--rate-wpm <int>] [--silence-seconds <float>]
+
+Required system tools:
+    espeak-ng       — TTS engine (apt: espeak-ng)
+    sox  (optional) — only used if espeak-ng output isn't already 16 kHz mono;
+                       most modern espeak-ng builds emit 22050 Hz so sox is
+                       typically required. Install: apt: sox
+
+The corpus layout is:
+    <out>/
+        utt-01.wav
+        utt-02.wav
+        ...
+        silence.wav
+        transcripts.tsv      ← <wav>\\t<ground_truth>\\t<condition>
+
+`condition` is hard-coded to "synthetic" for every row so the CSV groups
+nicely (real recordings would use "quiet", "pink_60db", "wind_70db", etc.).
+"""
+import os
+import sys
+
+# ── venv re-exec (same pattern as utils/bush-stt-file) ──────────────────────
+_venv = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv"))
+if os.path.isdir(_venv) and sys.prefix != _venv:
+    os.execv(os.path.join(_venv, "bin", "python"), [os.path.join(_venv, "bin", "python")] + sys.argv)
+
+import argparse
+import pathlib
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import wave
+
+
+# Default phrases. Mirror a few of the FALLBACK_PHRASES used by the live STT
+# service (see services/audio/src/bush_stt/__init__.py).
+DEFAULT_PHRASES = [
+    "hello world",
+    "what is the meaning of fire",
+    "tell me of the wilderness",
+    "speak of the burning bush",
+    "who tends the flame",
+]
+
+DEFAULT_VOICE = "en-us"
+DEFAULT_RATE_WPM = 160
+TARGET_SR = 16000
+
+
+def log(msg: str) -> None:
+    print(f"[make-corpus] {msg}", file=sys.stderr, flush=True)
+
+
+def have(tool: str) -> bool:
+    return shutil.which(tool) is not None
+
+
+def render_with_espeak_ng(text: str, out_wav: pathlib.Path, voice: str, rate_wpm: int) -> None:
+    """Render via `espeak-ng -v <voice> -s <wpm> -w <out>.raw.wav <text>` then
+    convert to 16 kHz mono 16-bit PCM via sox.
+
+    espeak-ng writes a 22 050 Hz mono 16-bit PCM WAV by default; we always pass
+    through sox so we end up at 16 kHz regardless of espeak version.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        raw = pathlib.Path(td) / "raw.wav"
+        cmd = [
+            "espeak-ng",
+            "-v", voice,
+            "-s", str(rate_wpm),
+            "-w", str(raw),
+            text,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        if not raw.exists() or raw.stat().st_size == 0:
+            raise RuntimeError(f"espeak-ng produced no output for {text!r}")
+        if have("sox"):
+            sox_cmd = [
+                "sox", str(raw),
+                "-r", str(TARGET_SR), "-c", "1", "-b", "16", "-e", "signed-integer",
+                str(out_wav),
+            ]
+            subprocess.run(sox_cmd, check=True, capture_output=True)
+        else:
+            # No sox: copy verbatim and warn. The bench's resampler (soxr) will
+            # take care of it at run time, but only if the WAV is already mono
+            # 16-bit (which espeak-ng emits — just at the wrong rate).
+            log("WARN: sox not installed; copying espeak-ng output as-is. "
+                "The bench will resample at runtime via soxr.")
+            shutil.copyfile(raw, out_wav)
+
+
+def write_silence_wav(out_wav: pathlib.Path, seconds: float, sample_rate: int = TARGET_SR) -> None:
+    """Write a silent mono 16-bit PCM WAV of the given duration."""
+    nframes = int(seconds * sample_rate)
+    with wave.open(str(out_wav), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(struct.pack(f"<{nframes}h", *([0] * nframes)))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="bush-stt-bench-make-corpus",
+        description="Generate a tiny synthetic STT bench corpus via espeak-ng + sox.",
+    )
+    parser.add_argument("--out", default="data/test-corpus",
+                        help="Output directory for the corpus (default: data/test-corpus).")
+    parser.add_argument("--voice", default=DEFAULT_VOICE,
+                        help=f"espeak-ng voice code (default: {DEFAULT_VOICE}).")
+    parser.add_argument("--rate-wpm", type=int, default=DEFAULT_RATE_WPM,
+                        help=f"espeak-ng rate in words per minute (default: {DEFAULT_RATE_WPM}).")
+    parser.add_argument("--silence-seconds", type=float, default=2.0,
+                        help="Length of the silence-only clip used for hallucination tests (default: 2.0).")
+    parser.add_argument("--phrases-file", default=None,
+                        help="Optional file with one ground-truth phrase per line (overrides built-in list).")
+    args = parser.parse_args()
+
+    if not have("espeak-ng"):
+        log("ERROR: espeak-ng not found on PATH. Install with: apt-get install espeak-ng")
+        return 1
+
+    out_dir = pathlib.Path(args.out).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.phrases_file:
+        with open(args.phrases_file, "r", encoding="utf-8") as f:
+            phrases = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    else:
+        phrases = list(DEFAULT_PHRASES)
+
+    log(f"Output dir: {out_dir}")
+    log(f"Phrases: {len(phrases)} + 1 silence")
+
+    rows: list[tuple[str, str, str]] = []  # (wav, text, condition)
+    for i, text in enumerate(phrases, start=1):
+        wav_name = f"utt-{i:02d}.wav"
+        wav_path = out_dir / wav_name
+        log(f"  [{i}/{len(phrases)}] rendering {wav_name!r}: {text!r}")
+        render_with_espeak_ng(text, wav_path, args.voice, args.rate_wpm)
+        rows.append((wav_name, text, "synthetic"))
+
+    silence_name = "silence.wav"
+    silence_path = out_dir / silence_name
+    log(f"  generating {silence_name!r} ({args.silence_seconds:.1f}s of silence)")
+    write_silence_wav(silence_path, args.silence_seconds)
+    rows.append((silence_name, "", "synthetic"))   # empty ground_truth marks the silence clip
+
+    tsv_path = out_dir / "transcripts.tsv"
+    with tsv_path.open("w", encoding="utf-8") as f:
+        f.write("# wav\tground_truth\tcondition\n")
+        for wav, text, condition in rows:
+            f.write(f"{wav}\t{text}\t{condition}\n")
+    log(f"Wrote {tsv_path}")
+    log(f"Done. {len(rows)} clips ({len(phrases)} speech + 1 silence).")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except subprocess.CalledProcessError as e:
+        log(f"ERROR: subprocess failed: {' '.join(e.cmd)}")
+        if e.stderr:
+            log(f"stderr: {e.stderr.decode(errors='replace')}")
+        sys.exit(2)
+    except KeyboardInterrupt:
+        log("interrupted")
+        sys.exit(130)
