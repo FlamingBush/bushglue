@@ -8,6 +8,8 @@ queue backs up so playback stays roughly in sync with the pipeline.
 Accepts runtime output device changes via bush/audio/tts/set-device {"device": <str|null>}.
 """
 import json
+import os
+import pathlib
 import queue
 import signal
 import subprocess
@@ -36,14 +38,17 @@ DONE_TAIL_S = 0.5
 # Failsafe: kill sox if it hasn't finished within this many seconds
 TTS_TIMEOUT_S = 60
 
-# espeak-ng → sox pipeline for the voice of God:
-#   en-gb:  British RP — more gravitas than en-us
-#   -s 95:  slow and deliberate
-#   -p 1:   minimum pitch (espeak range 0-99)
-#   -a 200: maximum amplitude out of espeak
-ESPEAK_CMD = ["espeak-ng", "-v", "en-gb", "-s", "95", "-p", "1", "-a", "200", "--stdout"]
+# Engine selection: 'espeak' (default, current behavior) or 'piper' (neural).
+# espeak-ng's voice flags now live in engines/espeak.py; piper voice config
+# is loaded by engines/piper.py from the .onnx.json sidecar at startup.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]  # bushglue/
+TTS_ENGINE_NAME = os.environ.get("TTS_ENGINE", "espeak").lower()
+PIPER_VOICE_PATH = os.environ.get(
+    "PIPER_VOICE",
+    str(_REPO_ROOT / "data" / "piper-voices" / "en_GB-alan-medium.onnx"),
+)
 
-# sox effects applied after espeak (clarity=0 defaults):
+# sox effects applied after the engine's PCM (clarity=0 defaults):
 #   gain -8        headroom before effects to prevent clipping
 #   pitch -250     ~2.5 semitones down — deep but not subterranean
 #   reverb 65 12 100 100 28 3
@@ -68,8 +73,12 @@ _tts_clarity: int = load_setting("tts_clarity", 0)
 _clarity_lock = threading.Lock()
 
 
-def _sox_cmd() -> list[str]:
-    """Build the sox command using the current output device and clarity."""
+def _sox_cmd(sample_rate: int) -> list[str]:
+    """Build the sox command for raw int16 LE mono PCM input at the given rate.
+
+    Args:
+        sample_rate: Hz of the input PCM (engine.sample_rate from synthesis result).
+    """
     with _device_lock:
         dev = _tts_device
     with _clarity_lock:
@@ -78,11 +87,33 @@ def _sox_cmd() -> list[str]:
         output_args = ["-d"]
     else:
         output_args = ["-t", "alsa", dev]
-    return ["sox", "-q", "-t", "wav", "-"] + output_args + build_sox_effects(clarity)
+    return [
+        "sox", "-q",
+        "-t", "raw", "-r", str(sample_rate), "-e", "signed", "-b", "16", "-c", "1", "-",
+    ] + output_args + build_sox_effects(clarity)
 
 
 def log(msg: str):
     print(f"[tts-service] {msg}", flush=True)
+
+
+def _build_engine():
+    """Construct the TTS engine selected by TTS_ENGINE env var.
+
+    Defaults to espeak (current behavior). 'piper' switches to neural TTS.
+    """
+    if TTS_ENGINE_NAME == "piper":
+        from bush_tts.engines.piper import PiperEngine
+        log(f"using Piper engine (voice={PIPER_VOICE_PATH})")
+        return PiperEngine(voice_path=PIPER_VOICE_PATH)
+    elif TTS_ENGINE_NAME == "espeak":
+        from bush_tts.engines.espeak import EspeakEngine
+        log("using espeak engine")
+        return EspeakEngine()
+    else:
+        raise RuntimeError(
+            f"Unknown TTS_ENGINE={TTS_ENGINE_NAME!r}; must be 'espeak' or 'piper'"
+        )
 
 
 # ── speech worker ───────────────────────────────────────────────────────────
@@ -90,16 +121,28 @@ speech_queue: queue.Queue[str | None] = queue.Queue(maxsize=QUEUE_MAX)
 _current_procs: list[subprocess.Popen] = []
 _proc_lock = threading.Lock()
 _mqttc: mqtt.Client | None = None   # set after connect
+_engine = None                      # set at startup in main()
 
 
 def _kill_current():
-    """Kill any in-progress espeak+sox processes immediately."""
+    """Kill the in-progress sox process to interrupt playback immediately.
+
+    The engine adapter runs synthesize() synchronously inside the worker, so
+    there is no separate engine subprocess to kill here — only sox.
+    """
     with _proc_lock:
         for p in _current_procs:
             if p.poll() is None:
                 p.kill()
         _current_procs.clear()
 
+
+def _publish_done():
+    if _mqttc:
+        try:
+            _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}))
+        except Exception:
+            pass
 
 
 def _speak_worker():
@@ -114,29 +157,55 @@ def _speak_worker():
                 _mqttc.publish(TOPIC_SPEAKING, json.dumps({"text": text, "ts": time.time()}))
             except Exception:
                 pass
+
+        # ALSA device-share gating: give STT time to release the capture
+        # interface before sox opens playback. STT inner loop polls
+        # audio_queue with 0.5s timeout, so worst-case teardown is ~500ms +
+        # kill latency. Use 600ms to cover it.
         with _device_lock:
             dev = _tts_device
         if dev is not None and (dev.startswith("hw:") or dev.startswith("plughw:")):
-            # Give STT time to release the capture interface before sox opens playback.
-            # STT inner loop polls audio_queue with 0.5s timeout, so worst-case teardown
-            # is ~500ms + kill latency. Use 600ms to cover it.
             time.sleep(0.6)
+
+        timed_out = False
+        sox_failed = False
+        was_killed = False
         try:
-            espeak = subprocess.Popen(
-                ESPEAK_CMD + [text],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
+            # Synthesize: call engine. Errors here mean the engine failed; we
+            # log, publish done (so the pipeline doesn't block), and skip this
+            # verse.
+            try:
+                synth = _engine.synthesize(text)
+            except Exception as e:
+                log(f"engine.synthesize error: {e}")
+                _publish_done()
+                speech_queue.task_done()
+                continue
+
+            audio_pcm = synth["audio_pcm"]
+            sr = synth["sample_rate"]
+            if not audio_pcm:
+                log("engine returned empty audio; skipping")
+                _publish_done()
+                speech_queue.task_done()
+                continue
+
             sox = subprocess.Popen(
-                _sox_cmd(),
-                stdin=espeak.stdout,
+                _sox_cmd(sr),
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
-            espeak.stdout.close()
             with _proc_lock:
-                _current_procs.extend([espeak, sox])
-            timed_out = False
+                _current_procs.append(sox)
+
+            # Feed all PCM bytes; close stdin so sox knows EOF.
+            try:
+                sox.stdin.write(audio_pcm)
+                sox.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
             try:
                 sox.wait(timeout=TTS_TIMEOUT_S)
             except subprocess.TimeoutExpired:
@@ -144,12 +213,7 @@ def _speak_worker():
                 timed_out = True
                 sox.kill()
                 sox.wait()
-            try:
-                espeak.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                log("espeak timed out — killing")
-                espeak.kill()
-                espeak.wait()
+
             sox_rc = sox.returncode
             sox_err = (sox.stderr.read().decode(errors="replace").strip()
                        if sox.stderr else "")
@@ -159,19 +223,18 @@ def _speak_worker():
             # rc=other non-zero: sox device/format error — skip done to avoid false gate clear
             was_killed = sox_rc == -9 and not timed_out
             sox_failed = sox_rc not in (0, None) and not was_killed and not timed_out
+
             if timed_out:
                 log(f"sox timed out (rc={sox_rc}) — publishing done to unblock pipeline")
             elif sox_failed:
                 log(f"sox failed (rc={sox_rc}) — skipping done signal")
+
             with _proc_lock:
                 _current_procs.clear()
             if not was_killed and not timed_out and not sox_failed:
                 time.sleep(DONE_TAIL_S)
-            if _mqttc and not sox_failed:
-                try:
-                    _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}))
-                except Exception:
-                    pass
+            if not sox_failed:
+                _publish_done()
         except Exception as e:
             log(f"speak error: {e}")
         speech_queue.task_done()
@@ -265,6 +328,9 @@ def on_message(client, userdata, msg):
 def main():
     broker = get_mqtt_broker()
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
+
+    global _engine
+    _engine = _build_engine()
 
     worker = threading.Thread(target=_speak_worker, daemon=True)
     worker.start()
