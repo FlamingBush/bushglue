@@ -46,6 +46,10 @@ SAMPLE_RATE = 16000  # legacy path uses this; SpeechToText still imports it
 STT_USE_VAD = os.environ.get("STT_USE_VAD", "0") not in ("0", "false", "False", "")
 STT_USE_RNNOISE = os.environ.get("STT_USE_RNNOISE", "0") not in ("0", "false", "False", "")
 STT_ENGINE_NAME = os.environ.get("STT_ENGINE", "vosk").lower()
+# Drop transcripts whose mean word-level confidence falls below this floor.
+# Default 0.6 matches the threshold used in the prior STT-accuracy work
+# (middog/bushglue commit ff29f2c, Apr 2026).
+STT_MIN_CONFIDENCE = float(os.environ.get("STT_MIN_CONFIDENCE", "0.6"))
 
 # Capture rate flips when RNNoise is enabled (48k native frames).
 # Legacy path always uses 16k.
@@ -437,6 +441,8 @@ def main():
         """
         # Lazy numpy import only on the new path (avoid cost on legacy startup)
         import numpy as np
+        # Lazy LLM-correction import (stdlib-only module; cheap)
+        from bush_stt.postprocess import correct_transcript
         while not device_change.is_set() and not tts_pause.is_set():
             if parec_proc.poll() is not None:
                 log("capture process exited unexpectedly")
@@ -493,15 +499,27 @@ def main():
                 log(f"VAD emitted utterance: {len(utt)} bytes ({ms} ms)")
                 try:
                     result = engine.transcribe(utt)
-                    text = result.get("text", "")
-                    if text:
-                        log(f"Final: {text!r}")
-                        mqttc.publish(
-                            TOPIC_TRANSCRIPT,
-                            json.dumps({"text": text, "ts": time.time()}),
-                        )
-                    else:
+                    text = (result.get("text") or "").strip()
+                    conf = float(result.get("confidence", 0.0))
+                    if not text:
                         log("Engine returned empty text; not publishing")
+                        continue
+                    if conf < STT_MIN_CONFIDENCE:
+                        log(f"Dropping low-confidence transcript "
+                            f"({conf:.2f} < {STT_MIN_CONFIDENCE:.2f}): {text!r}")
+                        continue
+                    final_text = correct_transcript(text)
+                    if final_text != text:
+                        log(f"LLM corrected: {text!r} -> {final_text!r}")
+                    log(f"Final: {final_text!r} (conf={conf:.2f})")
+                    mqttc.publish(
+                        TOPIC_TRANSCRIPT,
+                        json.dumps({
+                            "text": final_text,
+                            "confidence": conf,
+                            "ts": time.time(),
+                        }),
+                    )
                 except Exception as e:
                     log(f"engine.transcribe error: {e}")
 

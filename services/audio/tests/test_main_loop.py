@@ -117,6 +117,23 @@ def test_engine_name_lowercased(monkeypatch):
     assert bush_stt.STT_ENGINE_NAME == "whisper-bindings"
 
 
+def test_stt_min_confidence_default(monkeypatch):
+    """STT_MIN_CONFIDENCE defaults to 0.6 (matches prior STT-accuracy work)."""
+    monkeypatch.delenv("STT_MIN_CONFIDENCE", raising=False)
+    bush_stt = _reload_bush_stt()
+    assert bush_stt.STT_MIN_CONFIDENCE == 0.6
+
+
+def test_stt_min_confidence_env_override(monkeypatch):
+    """STT_MIN_CONFIDENCE env var overrides the default."""
+    monkeypatch.setenv("STT_MIN_CONFIDENCE", "0.85")
+    bush_stt = _reload_bush_stt()
+    assert bush_stt.STT_MIN_CONFIDENCE == 0.85
+    monkeypatch.setenv("STT_MIN_CONFIDENCE", "0.0")
+    bush_stt = _reload_bush_stt()
+    assert bush_stt.STT_MIN_CONFIDENCE == 0.0
+
+
 def test_build_engine_routes_to_vosk(monkeypatch):
     monkeypatch.setenv("STT_USE_VAD", "1")
     monkeypatch.setenv("STT_ENGINE", "vosk")
