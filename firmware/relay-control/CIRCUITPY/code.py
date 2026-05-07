@@ -30,10 +30,12 @@
 import board
 import digitalio
 import json
+import time
 import wifi
 import socketpool
 import supervisor
 import struct
+import microcontroller
 
 import valve
 
@@ -90,6 +92,19 @@ def service_pins():
         pin_poof.value = False
         off_ms_poof = None
         print("Poof OFF")
+
+
+def force_pins_off():
+    # Drop solenoids and clear schedules before any blocking Wi-Fi
+    # recovery — toggling the radio or sleeping between retries can
+    # outlast a pulse's OFF deadline.
+    global off_ms_flare, off_ms_bigjet, off_ms_poof
+    pin_flare.value = False
+    pin_bigjet.value = False
+    pin_poof.value = False
+    off_ms_flare = None
+    off_ms_bigjet = None
+    off_ms_poof = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Minimal hand-rolled MQTT client over a non-blocking raw socket.
@@ -200,6 +215,43 @@ def wifi_connect():
     wifi.radio.connect(secrets["SSID"], secrets["PASSWORD"])
     print("Wi-Fi OK, IP:", wifi.radio.ipv4_address)
     pool = socketpool.SocketPool(wifi.radio)
+
+
+WIFI_RETRIES_BEFORE_RADIO_RESET    = 3
+WIFI_RADIO_RESETS_BEFORE_CPU_RESET = 2
+
+
+def wifi_connect_with_recovery():
+    """Connect to Wi-Fi with escalating recovery for chip-level hangs.
+
+    Ladder: plain retry → wifi.radio.enabled toggle → microcontroller.reset().
+    Pins are forced OFF up front because each rung blocks for ~seconds.
+    """
+    force_pins_off()
+    radio_resets = 0
+    while True:
+        for attempt in range(WIFI_RETRIES_BEFORE_RADIO_RESET):
+            try:
+                wifi_connect()
+                return
+            except Exception as e:
+                print("Wi-Fi connect failed (attempt {}): {}".format(attempt + 1, e))
+                time.sleep(2)
+        if radio_resets >= WIFI_RADIO_RESETS_BEFORE_CPU_RESET:
+            print("Wi-Fi: radio toggle didn't help, resetting MCU")
+            time.sleep(0.1)
+            microcontroller.reset()
+        print("Wi-Fi: power-cycling radio (enabled = False/True)")
+        try:
+            wifi.radio.enabled = False
+        except Exception as e:
+            print("Wi-Fi: radio off failed:", e)
+        time.sleep(1)
+        try:
+            wifi.radio.enabled = True
+        except Exception as e:
+            print("Wi-Fi: radio on failed:", e)
+        radio_resets += 1
 
 
 def compute_scan_base():
@@ -426,7 +478,7 @@ def publish_valve_online(online=True):
 
 # ── Boot ─────────────────────────────────────────────────────────────────────
 valve.init()
-wifi_connect()
+wifi_connect_with_recovery()
 compute_scan_base()
 mqtt_open()
 if connected:
@@ -469,7 +521,7 @@ while True:
             service_pins()
             try:
                 if not wifi.radio.ipv4_address:
-                    wifi_connect()
+                    wifi_connect_with_recovery()
                     compute_scan_base()
                 mqtt_open(MQTT_BROKER)
             except Exception as e:
