@@ -146,10 +146,14 @@ def main():
         except Exception as e:
             log(f"Message handling error: {e}")
 
+    def on_connect(client, userdata, flags, reason_code, properties):
+        log(f"MQTT connected (rc={reason_code})")
+        client.subscribe(TOPIC_TRANSCRIPT)
+        log(f"Subscribed to {TOPIC_TRANSCRIPT}")
+
+    mqttc.on_connect = on_connect
     mqttc.on_message = on_message
     mqttc.connect(broker, MQTT_PORT, 60)
-    mqttc.subscribe(TOPIC_TRANSCRIPT)
-    log(f"Subscribed to {TOPIC_TRANSCRIPT}")
 
     try:
         mqttc.loop_forever()
