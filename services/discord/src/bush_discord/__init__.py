@@ -1064,8 +1064,13 @@ class BushBot(discord.Client):
         if vc:
             if vc.is_playing():
                 vc.stop()
-            if vc.is_connected():
-                await vc.disconnect()
+            # force=True even if is_connected() is False: after a 1006 WS close
+            # the lib still holds a stale voice-client registration that blocks
+            # subsequent channel.connect() with "Already connected".
+            try:
+                await vc.disconnect(force=True)
+            except Exception as e:
+                print(f"[bot] disconnect during cleanup: {e}", flush=True)
         self._voice_client = None
         self._tts_source   = None
 
