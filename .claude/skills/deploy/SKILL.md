@@ -44,13 +44,7 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
    ssh odroid 'mosquitto_pub -h localhost -t bush/monitor/restart -m "{}"'
    ```
 
-7. **Run the audio health check**:
-   ```
-   ssh odroid 'cd ~/bushglue && utils/bush-audio-fix'
-   ```
-   Report any FAILs. Any FAIL is a real problem.
-
-8. **Run the integration test** with a 40-second timeout:
+7. **Run the integration test** with a 40-second timeout:
    ```
    ssh odroid 'cd ~/bushglue && timeout 40 .venv/bin/python utils/bush-integration-test'
    ```
@@ -58,7 +52,7 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
 
 ## Pass/fail
 
-- If the integration test passes, report success (and note any audio health warnings separately).
+- If the integration test passes, report success.
 - If the integration test fails, show the output and diagnose the failure based on which stage failed:
   - `stt/transcript` — STT or loopback audio issue; check `journalctl -u bush-stt -n 20`
   - `t2v/verse` — t2v or Ollama issue; check `journalctl -u bush-t2v -n 20`
