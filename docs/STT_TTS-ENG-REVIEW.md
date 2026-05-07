@@ -4,6 +4,7 @@
 **Date:** 2026-05-06
 **Audience:** marcus + machine-elves.art crew
 **Status:** DRAFT — extends, does not replace, the external review (`github.com/middog/bushglue` repo/read-through, 2026-05-06)
+**Amended:** 2026-05-06 (later same evening) — the external reviewer ran a counter-review of this doc against the uploaded zip and caught four overstatements + four new findings. amendments are in §9 and inlined at the affected sections; original wording survives in git history.
 **Companion docs:** `STT_TTS-EFFICACY.md`, `STT_TTS-EFFICACY-1PAGER.md`
 
 ---
@@ -14,16 +15,23 @@ honestly the external review is sharp — five concrete code-cited findings beyo
 
 new findings beyond the external review, in rough severity order:
 
-1. **sentiment's MQTT loop runs in a daemon thread.** if it dies (broker blip, exception in callback), the HTTP server keeps responding and systemd never sees a problem. silent failure mode worse than the cold-start gap.
+1. **sentiment's MQTT loop runs in a daemon thread.** initial connect failure or `loop_forever()` exit kills the thread silently; HTTP server keeps responding so systemd sees a healthy process. (the on_message handler itself is wrapped in try/except — the silent-failure path is the loop, not callback exceptions.) ([§2.1 amended](#21-sentiments-mqtt-loop-is-a-daemon-thread))
 2. **mid-motion valve stall is undetected.** `_read_stall()` only polls during `_home_phase == "running"`. the docstring claims "we poll for that during both homing and normal moves" — code disagrees.
-3. **Pico subnet scan can delay pin OFF deadlines by up to 500 ms.** `tcp_probe` is a blocking 0.5s call between `service_pins()` calls. one of the project's named CRITICAL INVARIANTS is violated during scan. risky on a propane installation.
+3. **Pico reconnect/discovery can delay pin OFF deadlines by up to 5 seconds, not just 500 ms.** `tcp_probe` blocks 500ms; `mqtt_open()` blocks up to 5s in retry + scan-connect states. one of the project's named CRITICAL INVARIANTS is violated during scan or reconnect. risky on a propane installation. ([§2.3 amended](#23-pico-reconnectdiscovery-blocks-pin-service))
 4. **flame-expression's silence drop never resets.** after one utterance + one silence period, flame stays at `baseline - SPEECH_DROP` forever, no return-to-baseline-on-long-silence. cosmetic but wrong.
-5. **`bushutil.get_mqtt_broker()` has no timeout** on its `ip route` subprocess. low likelihood of hang, but every service blocks waiting for it at startup.
-6. **TTS speaking/done payload asymmetry.** speaking carries `{text, ts}`, done carries `{ts}` only. minor but a subscriber writing `payload.text` on the wrong topic crashes.
+5. **`bushutil.get_mqtt_broker()` has no timeout on its `ip route` subprocess** — but the subprocess is only reached on the WSL2 path; native ODROID returns "localhost" before subprocess. low severity, one-line fix. ([§2.5 amended](#25-bushutilget_mqtt_broker-no-subprocess-timeout-wsl2-path-only))
+6. **TTS speaking/done payload asymmetry.** speaking carries `{text, ts}`, done carries `{ts}` only. `payload.get("text")` returns `None` on done — current subscribers tolerate it. footgun for stricter `payload["text"]` code; not a live defect. ([§2.6 amended](#26-tts-payload-asymmetry-footgun-not-defect))
 7. **flame-expression is missing from `docs/README.md` data flow.** the doc was written before flame-expression existed; new operators reading it will be confused why the valve ramps without an obvious publisher.
 8. **classifier inference blocks the MQTT thread** in sentiment. ~150 ms × multiple verses arriving fast = MQTT thread falls behind, classifier queue isn't real, and incoming `tts/done` messages compete for the same handler.
 9. **t2v query timeout publishes nothing.** if Ollama or chroma is slow + the 15s urlopen hits, no `verse` is published and no `processing` failure topic exists. the bush goes quiet, the visitor walks off.
-10. **No retained `ready` topics, no `fault` topics, no version field anywhere.** the MQTT contract has only positive signals — every failure mode is communicated by silence.
+10. **No retained `ready` topics, no `fault` topics, no version field anywhere.** the MQTT contract has only positive signals — every failure mode is communicated by silence. **including the Pico**: `bush/fire/valve/online` is published as `online` but is neither retained nor a real MQTT LWT (CONNECT flags set no will, PUBLISH header `0x30` clears retain). late subscribers won't see it. (the original v1 of this doc credited the Pico for this; that was wrong — see §9.) ([§2.10 amended](#210-the-mqtt-contract-has-no-ready-no-fault-no-version))
+
+added in the post-external-review amendment (§9):
+
+11. **Sentiment classifier uses `return_all_scores=True`** — current Transformers prefers `top_k=None` and the legacy single-string return wrapping behavior is documented; could explain "sentiment never fires" even with MQTT + model loading healthy. needs verification in the locked env.
+12. **Docs claim valve state `moving` that firmware never emits.** firmware actually emits `initializing` (doc-omitted). status enum drift.
+13. **`bush-monitor` docs claim valve-topic subscriber that doesn't exist.** monitor's TOPICS list has no `bush/fire/valve/*` entries; only `bush-valve watch` actually subscribes.
+14. **t2v wrapper pipes `stderr` but never drains it.** if the Rust child writes enough to stderr, it blocks. should be `stderr=None` (let journald capture) or a drain thread.
 
 these stack on top of the external reviewer's eight items. **none of them retroactively makes the project unsuitable for playa**, but the safety/correctness margin is smaller than the architecture's neatness suggests. ~wag
 
@@ -43,9 +51,11 @@ so the value-add here is roughly: 11 new findings, plus an MQTT contract audit, 
 
 ## 2. New findings (detail)
 
-### 2.1 Sentiment's MQTT loop is a daemon thread (silent failure mode)
+### 2.1 Sentiment's MQTT loop is a daemon thread
 
 **Where:** `services/sentiment/src/bush_sentiment/__init__.py:184-193`
+
+> **Amended 2026-05-06 (post-external-review):** the original wording implied "exception in callback kills the thread." that's wrong — `on_message` (line 153-179) wraps its body in `try/except`, so ordinary callback exceptions are caught and logged. **The real silent-failure path is initial `connect()` failure or `loop_forever()` exit.** if either happens, the daemon thread dies, the HTTP server stays alive, and there's no MQTT-visible fault.
 
 ```python
 def _loop():
@@ -59,7 +69,7 @@ t = threading.Thread(target=_loop, daemon=True)
 t.start()
 ```
 
-main thread runs `httpd.serve_forever()`. if `loop_forever()` returns or the thread dies on exception, the daemon thread vanishes silently. systemd sees the HTTP server still responding on :8585 → service is "healthy." no `bush/sentiment/fault` topic. no restart.
+main thread runs `httpd.serve_forever()`. if `mqttc.connect()` fails or `loop_forever()` returns (broker drops, network blip outside the wrapped callback), the daemon thread vanishes silently. systemd sees the HTTP server still responding on :8585 → service is "healthy." no `bush/sentiment/fault` topic. no restart.
 
 this is **worse** than the cold-start gap because the cold-start gap is bounded (recovers when model load completes); this one is unbounded.
 
@@ -106,9 +116,11 @@ elif (_home_phase == "running"
 
 ---
 
-### 2.3 Pico subnet scan blocks pin service for up to 500 ms
+### 2.3 Pico reconnect/discovery blocks pin service
 
-**Where:** `firmware/relay-control/CIRCUITPY/code.py:213-229, 491-522`
+**Where:** `firmware/relay-control/CIRCUITPY/code.py:213-229, 232-264, 466-490, 491-522`
+
+> **Amended 2026-05-06 (post-external-review):** the v1 of this finding said "up to 500 ms" via `tcp_probe`. the real worst case is **5 seconds** — `mqtt_open()` uses `s.settimeout(5)` during handshake, and is called in both `ST_RETRY_CONFIGURED` and `ST_SCAN_CONNECT` states. so a pulse OFF deadline can slip the full 5s reconnect-attempt window, not just the 0.5s probe. blocking paths summarized below.
 
 main loop's CRITICAL INVARIANT (line 4-13) is:
 
@@ -126,16 +138,25 @@ if tcp_probe(candidate):  # blocking, settimeout(0.5)
     ...
 ```
 
-`tcp_probe` blocks up to 0.5s on `s.connect()`. so `service_pins()` runs before the probe, but not during. a `flare` pulse with a 220 ms duration that arrives just before the scan starts won't get its OFF until the next loop iteration — up to ~500 ms late. **for solenoid-controlled propane that's the difference between a pulse and a "stuck on for half a second."**
+**Blocking paths and worst-case OFF-deadline lag:**
+
+| Path | Timeout | Triggered when | Pin lag risk |
+|------|---:|---|---|
+| `tcp_probe(candidate)` in `ST_SCAN_PROBE` | 0.5 s | scanning subnet for any open :1883 | up to 500 ms |
+| `mqtt_open(MQTT_BROKER)` in `ST_RETRY_CONFIGURED` | 5 s | configured broker reconnect attempt | up to 5 s |
+| `mqtt_open(scan_candidate)` in `ST_SCAN_CONNECT` | 5 s | scanned candidate full handshake | up to 5 s |
+| Initial boot `mqtt_open()` | 5 s | first connect after Wi-Fi up | structural; usually no active pulse |
+
+`service_pins()` runs once before each blocking call but not during. so a `flare` pulse OFF deadline arriving during any of these windows is delayed by the full socket timeout. **for solenoid-controlled propane that's the difference between a pulse and a "stuck on for up to 5 seconds."**
 
 note: the scan only triggers when configured broker fails 3× (line 128). under normal operation this isn't reached. but at playa where Wi-Fi is flaky, this state will be entered.
 
-**Fix shape:**
-- non-blocking probe state machine: `s.settimeout(0)`, `s.connect_ex()`, then poll for `errno`/EINPROGRESS across loop iterations until connected or timeout. each iteration runs `service_pins()`.
-- OR: simpler — before entering SCAN_PROBE, force OFF all relays and clear `off_ms_*`. flame is dead during scan but no stuck-on risk. log an MQTT event so operators see the state.
-- OR: gate scan to "no pulses are currently scheduled" — only enter SCAN_PROBE when `off_ms_flare/bigjet/poof` are all None.
+**Fix shape (priority order):**
+- **Quick safe fix:** before entering any blocking reconnect/discovery state, force OFF all relay pins and clear `off_ms_*`. flame is dead during scan/reconnect but no stuck-on risk. log an MQTT event so operators see the state.
+- **Better fix:** non-blocking probe + connect state machines. `s.settimeout(0)`, `s.connect_ex()`, poll `errno`/EINPROGRESS across loop iterations. each iteration runs `service_pins()`.
+- **Fix priority: high** — this is the most playa-relevant safety finding in the whole review (combined with the LWT issue in §2.10).
 
-**Severity:** medium. condition is rare (broker unreachable + active pulse mid-flight) but consequence is a stuck solenoid.
+**Severity:** medium-high. condition is uncommon (broker unreachable + active pulse mid-flight), but window is long (5s) and consequence is a stuck solenoid on a propane line.
 
 ---
 
@@ -165,38 +186,46 @@ else:
 
 ---
 
-### 2.5 `bushutil.get_mqtt_broker()` has no subprocess timeout
+### 2.5 `bushutil.get_mqtt_broker()` no subprocess timeout (WSL2 path only)
 
-**Where:** `packages/bushutil/src/bushutil/__init__.py:106-110`
+**Where:** `packages/bushutil/src/bushutil/__init__.py:100-110`
+
+> **Amended 2026-05-06 (post-external-review):** v1 of this finding said "every service blocks at startup forever." that's wrong — the unbounded subprocess is only reached on the WSL2 path. native ODROID hits the early `return "localhost"` on line 105 and never runs `subprocess.run`. severity is lower than originally written.
 
 ```python
+with open("/proc/version") as f:
+    if "microsoft" not in f.read().lower():
+        return "localhost"     # <-- native ODROID returns here
+...
 result = subprocess.run(["ip", "route", "show"], capture_output=True, text=True)
 ```
 
-every service calls `get_mqtt_broker()` at startup. `subprocess.run` without `timeout=` will block indefinitely if `ip` hangs (rare but observed under low-memory or kernel-issue conditions on RK3588 — not unique to ODROID, just the kind of edge this project will hit at 4am dust storm).
+so the no-timeout subprocess only fires when developing on WSL2, not in field deployment.
 
-**Fix:** add `timeout=5` to the run call. On timeout, fall back to "localhost".
+**Fix:** still worth adding `timeout=5` for dev hygiene. On timeout, fall back to "localhost".
 
-**Severity:** low likelihood, but fix is one line.
+**Severity:** low. won't bite at playa.
 
 ---
 
-### 2.6 TTS payload asymmetry
+### 2.6 TTS payload asymmetry (footgun, not defect)
 
 **Where:** `docs/README.md:85, 89` and `services/core/src/bush_tts/__init__.py:157, 143`
+
+> **Amended 2026-05-06 (post-external-review):** v1 of this said "a subscriber writing `payload.get('text')` on the wrong topic crashes." that's wrong — `.get()` returns `None` and doesn't raise. only stricter `payload["text"]` indexing would crash. correcting to "footgun" — current subscribers tolerate this fine.
 
 ```
 bush/pipeline/tts/speaking → {"text": "the text being spoken", "ts": <epoch>}
 bush/pipeline/tts/done     → {"ts": <epoch>}
 ```
 
-a subscriber that writes `json.loads(payload).get("text")` on the wrong topic gets `None`. a subscriber that pattern-matches assumes both have the same shape. it's a minor footgun. discord and flame-expression both subscribe to both topics; both currently handle this OK by reading only `ts` from done. but it's a contract gap.
+a subscriber writing `payload.get("text")` on the wrong topic gets `None` (safe). a subscriber writing `payload["text"]` would raise `KeyError`. a subscriber pattern-matching assumes both have the same shape. discord and flame-expression both subscribe to both topics; both currently handle this OK by reading only `ts` from done. it's a contract asymmetry, not a live defect.
 
 **Fix shape:**
 - emit `{"text": <last-utterance>, "ts": ...}` on done too. cheap, symmetric, doesn't break existing subscribers.
 - OR: document explicitly that `done` is intentionally `{ts}` only.
 
-**Severity:** cosmetic.
+**Severity:** low. don't spend early fix time here unless you're already versioning the payloads.
 
 ---
 
@@ -296,8 +325,10 @@ phases A and A.5 alone are the highest-leverage MQTT-contract change in the repo
 | bush-sentiment | ✗ | ✗ | ✗ | **✗ — daemon thread comment misleads** | see §2.1 |
 | bush-flame-expression | ✗ | ✗ | ✗ | **✗ — 2 vs 10 Hz** | see external review §3 |
 | bush-audio-agent | ✗ | ✗ | ✗ | ✓ | retained `bush/audio/devices` is the closest thing |
-| relay-control (Pico) | ✗ | ✗ | ✓ (`bush/fire/valve/online`) | **✗ — mid-motion stall undetected** | only service that does retained-online correctly |
+| relay-control (Pico) | ✗ | ✗ | **✗ — best-effort birth, not retained, no LWT** | **✗ — mid-motion stall undetected; `moving` state not emitted** | publishes `online` but neither retained nor MQTT will (`code.py:148-164` CONNECT flags omit will, `code.py:173-177` PUBLISH header `0x30` clears retain) |
 | bush-discord | n/a (subscriber-only) | n/a | ✗ | ✓ | also runs voice channel; T_TRANSCRIPT/T_VERSE timeouts shown |
+
+> **Amended 2026-05-06 (post-external-review):** v1 of this table credited the Pico for retained-online + LWT. that was wrong — see §9. **no service in the entire system currently has a real retained ready-or-online or true MQTT LWT.**
 
 bush-discord is the only service with timeouts named after pipeline stages (T_TRANSCRIPT=30s, T_VERSE=45s) — that's a useful pattern the rest of the pipeline could borrow as the `fault` topic policy.
 
@@ -327,7 +358,7 @@ bush-discord is the only service with timeouts named after pipeline stages (T_TR
 | valve target sent during homing | ignored (state != idle) | OK; could publish "queued" | OK |
 | valve "actual" reported but not encoder-confirmed | misleading topic name | rename to `commanded` or `estimated_position` | external reviewer §4 |
 | Pico broker scan blocks pin service | up to 500 ms pin lag | non-blocking probe OR pre-scan force-OFF | §2.3 |
-| Pico Wi-Fi flap | reconnect logic + scan eventually | retain target with TTL + LWT | partial |
+| Pico Wi-Fi flap | reconnect logic + scan eventually | retain target with TTL + LWT (currently no real LWT — see §2.10 / §9) | partial |
 | Pico UART resync hack fires | silently drops bytes | counter in `valve/status` | external reviewer §5 |
 | MQTT broker dies | per-service reconnect logic varies | retained LWTs + `fault` topics | not uniform |
 | `bushutil.get_mqtt_broker()` hangs on `ip route` | service blocks at startup forever | timeout + fallback to localhost | §2.5 |
@@ -361,37 +392,45 @@ these are not "every fixture before playa." they're the ones where today's "test
 
 if i were running the next 10 days of work, this is the sequence i'd land:
 
-**Day 1 (tier A — clear-eyed cleanup, ~90 min total):**
-1. fix flame-expression rate truth (15 min) — external reviewer §3, my §2 ranking #4
+> **Amended 2026-05-06 (post-external-review):** the Pico safety items (force-OFF before any blocking reconnect, real retained/LWT online) move from tier C to tier 0 — they're the most playa-relevant safety findings. classifier API verification (§9.A) added to tier 2.
+
+**Tier 0 — playa safety (highest priority, do first):**
+- **Pico force-OFF before any blocking reconnect/discovery** (§2.3 quick fix; ~1 hour). 5-second pin-lag window is too long for solenoid propane.
+- **Pico real retained/LWT `online`** (§9.B; ~half day). set MQTT will flag in CONNECT, set retain bit on PUBLISH for `online`, send `offline` on graceful shutdown. without this, valve-status visibility on broker-side is fiction.
+- **Mid-motion valve stall polling** (§2.2; ~half day).
+- **TTS `fault` topic** separate from `done` (external reviewer §8; ~half day).
+
+**Tier 1 — readiness + sentiment-CI (~1 day, was tier B):**
+1. fix flame-expression rate truth (15 min) — external reviewer §3
 2. rename `valve/actual` → `valve/commanded` (30 min) — external reviewer §4
 3. instrument the UART resync hack (30 min) — external reviewer §5
-4. CI warning cleanup (15 min) — external reviewer §CI
+4. `bush/<service>/ready` retained-msg convention across all services
+5. integration test waits for readiness (closes external §1)
+6. add sentiment to CI matrix with mocked classifier (closes external §2)
 
-**Day 2 (tier B — readiness + sentiment CI, ~1 day):**
-5. `bush/<service>/ready` retained-msg convention across all services
-6. integration test waits for readiness (closes external §1)
-7. add sentiment to CI matrix with mocked classifier (closes external §2)
+**Tier 2 — silent-failure fixes + sentiment hardening (~1 day):**
+7. sentiment MQTT runs in main thread, not daemon (§2.1)
+8. **classifier API: switch to `top_k=None` + normalize output shape** (§9.A) — verify in locked Transformers env first; could explain "sentiment never fires"
+9. queue classifier off the MQTT callback thread (§2.8)
+10. `bushutil.get_mqtt_broker()` timeout (§2.5, one line, low severity)
 
-**Day 3 (tier C — silent-failure fixes, ~1 day):**
-8. sentiment MQTT runs in main thread, not daemon (§2.1)
-9. valve mid-motion stall polling (§2.2)
-10. Pico subnet-scan pin safety: pre-scan force-OFF (§2.3 quick fix; non-blocking probe is bigger)
-11. `bushutil.get_mqtt_broker()` timeout (§2.5, one line)
+**Tier 3 — fault topics + fixtures (~1-2 days):**
+11. `bush/<service>/fault` retained per service (§2.10 phase B)
+12. t2v wrapper exits on child death + drains stderr (§2.9 + §9.D)
+13. t2v query timeout publishes fault (§2.9, external reviewer §7)
+14. integration test fixtures 1, 4, 6, 8, 10, 11 (the ones that exercise the new fault topics)
+15. (better Pico fix) non-blocking connect + probe state machines (§2.3 deeper)
 
-**Day 4–5 (tier D — fault topics + fixtures):**
-12. `bush/<service>/fault` retained per service (§2.10 phase B)
-13. t2v wrapper exits on child death; t2v query timeout publishes fault (§2.9, external reviewer §7)
-14. TTS `fault` topic separate from `done` (external reviewer §8)
-15. integration test fixtures 1, 4, 6, 8, 10, 11 (the ones that exercise the new fault topics)
-
-**Day 6+ (tier E — polish + structural):**
+**Tier 4 — polish + structural:**
 16. flame-expression silence drop reset (§2.4)
-17. TTS payload symmetry (§2.6)
-18. `docs/README.md` data flow + topic table sync (§2.7 + external reviewer §3)
-19. `_v` field in payloads (§2.10 phase C)
-20. ARM-runner CI for catching the wheel issues x86 misses
+17. TTS payload symmetry (§2.6, low severity)
+18. `docs/README.md` data flow + topic table sync (§2.7 + external reviewer §3 + §9.B,C)
+19. fix valve `moving`/`initializing` state mismatch (§9.B)
+20. fix `bush-monitor` valve subscription docs vs reality (§9.C)
+21. `_v` field in payloads (§2.10 phase C)
+22. ARM-runner CI for catching the wheel issues x86 misses
 
-stops in there are natural — after Day 2 the project is in better shape than the external review found it; after Day 3 the silent-failure modes are gone; after Day 5 the fault topics give playa volunteers visibility into what's broken.
+stops are natural — after tier 0 the propane-side safety is closed; after tier 1 the project is in better shape than the external review found; after tier 2 the silent-failure modes are gone; after tier 3 the fault topics give playa volunteers visibility into what's broken.
 
 ---
 
@@ -435,6 +474,12 @@ honestly worth being explicit:
 | 2.9 | `services/core/src/bush_t2v/__init__.py` | 60–73 | `query_t2v` urlopen timeout=15 |
 | 2.9 | `services/core/src/bush_t2v/__init__.py` | 137–145 | exception swallowed, no fault published |
 | 2.10 | `docs/README.md` | 14–58 | full topic table; no `ready`, no `fault`, no version |
+| 9.A | `services/sentiment/src/bush_sentiment/__init__.py` | 20–22 | `return_all_scores=True` + sorted-list assumption |
+| 9.B | `firmware/relay-control/CIRCUITPY/code.py` | 148–164, 173–177 | CONNECT no will flag; PUBLISH header `0x30` (retain bit clear) |
+| 9.B | `firmware/relay-control/CIRCUITPY/valve.py` | 56 | state set: `unknown, initializing, homing, idle, stalled, error` (no `moving`) |
+| 9.B | `docs/README.md` | 144 | docs claim states include `moving`, omit `initializing` |
+| 9.C | `utils/bush-monitor` | 46–60 | TOPICS list — no `bush/fire/valve/*` entries |
+| 9.D | `services/core/src/bush_t2v/__init__.py` | 93 | `stderr=subprocess.PIPE`, never read |
 
 ### Companion docs
 
@@ -446,4 +491,128 @@ honestly worth being explicit:
 
 ---
 
-*kindled by Beagle Vance, wuff's mid.dog golem, on 2026-05-06 ~wag — the Aleph holds*
+## 9. Amendment log (2026-05-06, post-external-review)
+
+after v1 of this doc was committed and pushed to middog, the external reviewer ran a counter-review against the uploaded zip. **they were right on every retraction.** this section records the corrections so future readers know which claims to trust and which to read with the amendment in mind.
+
+### Retractions / softens (4)
+
+| § | v1 claim | Amended |
+|---|----------|---------|
+| §2.1 | "exception in callback kills MQTT thread" | callback is wrapped in try/except; the real silent path is initial connect failure or `loop_forever()` exit. inlined at §2.1. |
+| §2.5 | "every service blocks at startup waiting on `ip route`" | unbounded subprocess only on WSL2 path; native ODROID returns "localhost" before subprocess. severity dropped to low. inlined at §2.5. |
+| §2.6 | "subscriber writing `.get('text')` on wrong topic crashes" | `.get()` returns `None`; only `payload["text"]` would raise. footgun, not defect. inlined at §2.6. |
+| §3 contract audit | "Pico is the only service with retained-online correctly" | wrong — Pico publishes `online` but it's not retained and not LWT. table row corrected. **no service in the system has a real retained ready/online or true MQTT LWT today.** |
+
+### Pico blocking — extended (1)
+
+| § | v1 claim | Amended |
+|---|----------|---------|
+| §2.3 | "blocks pin OFF deadlines up to 500 ms via `tcp_probe`" | worse: `mqtt_open()` blocks up to 5 s in retry + scan-connect. moved to **tier 0** in §6 ordering. inlined at §2.3 with full blocking-paths table. |
+
+### New findings (4)
+
+#### 9.A — Sentiment classifier API drift (`return_all_scores` vs `top_k`)
+
+**Where:** `services/sentiment/src/bush_sentiment/__init__.py:20-22`
+
+```python
+classifier = hf_pipeline("text-classification",
+                         model='bhadresh-savani/distilbert-base-uncased-emotion',
+                         return_all_scores=True)
+...
+scores = classifier(verse_text)
+top = sorted(scores, key=lambda x: x["score"], reverse=True)[0]
+```
+
+current Transformers `TextClassificationPipeline` documents `top_k=None` as the relevant interface for "all scores"; `return_all_scores` is the legacy name and the single-string return wrapping behavior has changed across versions. depending on the locked Transformers version, `classifier(verse_text)` may return either `[{label, score}, ...]` or `[[{label, score}, ...]]`.
+
+if the wrapping shape changes, `sorted(scores, key=lambda x: x["score"])` raises `TypeError` — and the surrounding `try/except` in `on_message` swallows it. **this could explain "sentiment never fires" even with MQTT and model loading both healthy.**
+
+**Severity:** **high if confirmed.** must be tested in the locked uv environment.
+
+**Fix shape:**
+
+```python
+classifier = hf_pipeline(
+    "text-classification",
+    model="bhadresh-savani/distilbert-base-uncased-emotion",
+    top_k=None,
+)
+
+def _normalize_scores(raw):
+    if raw and isinstance(raw[0], list):
+        raw = raw[0]
+    return sorted(raw, key=lambda x: x["score"], reverse=True)
+```
+
+#### 9.B — Pico `online` is not retained, not LWT; valve states drift between docs and code
+
+**Where:** `firmware/relay-control/CIRCUITPY/code.py:148-164` (CONNECT), `:173-177` (PUBLISH header)
+
+```python
+connect_flags = 0x02   # clean session only — no will flag (0x04)
+                       # no will-retain (0x20), no will-qos
+...
+return bytes([0x30]) + encode_remaining(len(body)) + body  # 0x30 = type 3, retain bit clear
+```
+
+so `bush/fire/valve/online` is a best-effort birth event. late MQTT subscribers won't see it. broker-observed disconnects produce no `offline`. `publish_valve_online(False)` is never called. the `docs/README.md:148` claim "Retained birth message" is documentation drift.
+
+**Related (same finding):** valve state docs (`docs/README.md:144`) list `unknown, homing, idle, moving, stalled, error`. firmware (`valve.py:56`) actually emits `unknown, initializing, homing, idle, stalled, error` — no `moving`, with undocumented `initializing`.
+
+**Severity:** **high.** combined with §2.10 — the system has no real retained-health signal anywhere. fix is in tier 0.
+
+**Fix shape:**
+
+```python
+# In mqtt_connect_packet:
+connect_flags = 0x36   # username + password + clean + will + will-retain + will-qos0
+# Append will-topic and will-payload to variable header per MQTT 3.1.1
+will_topic = b"bush/fire/valve/online"
+will_payload = b"offline"
+variable += encode_string(will_topic) + encode_string(will_payload)
+
+# In mqtt_publish_packet, when publishing online: set retain bit:
+return bytes([0x31]) + encode_remaining(len(body)) + body  # 0x31 = type 3, retain=1
+```
+
+(also: pick one of `moving` or `initializing` and align doc + code.)
+
+#### 9.C — `bush-monitor` docs lie about valve subscription
+
+**Where:** `docs/README.md:42-44` claims `bush/fire/valve/actual`, `/status`, `/online` have `(monitor)` subscribers. **`utils/bush-monitor`'s TOPICS list (`bush-monitor:46-60`) contains no `bush/fire/valve/*` entries.**
+
+`utils/bush-valve watch` does subscribe to status/actual, so operators have *some* visibility — but the docs imply bush-monitor's full-screen TUI shows valve state. it doesn't.
+
+**Severity:** docs hygiene. fix is either add the subscriptions to bush-monitor or remove the claim from docs.
+
+#### 9.D — t2v wrapper pipes stderr but never drains it
+
+**Where:** `services/core/src/bush_t2v/__init__.py:93`
+
+```python
+t2v_proc = subprocess.Popen(
+    [...],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.PIPE,   # <-- piped but never read
+)
+```
+
+`subprocess.PIPE` for stderr without a draining reader means: if the Rust child writes more than the OS pipe buffer (~64 KB on Linux), the child's `write` syscall blocks. depending on what t2v writes for tracing — possibly nothing in normal operation, but warnings/errors could fill the pipe over hours.
+
+**Severity:** low to medium — depends on Rust child's stderr volume.
+
+**Fix shape:**
+- `stderr=None` (let systemd/journald capture it via the inherited fd) — simplest.
+- OR: a small drain thread reading `t2v_proc.stderr` line-by-line and re-logging.
+
+---
+
+### How the external reviewer's other points map
+
+For traceability — the v1 of this doc kept all of the external reviewer's findings (1–10 in their writeup) under the "carryover" section in §1. None of those were retracted by the counter-review; the corrections all targeted my v1 additions, not the external reviewer's original work.
+
+---
+
+*kindled by Beagle Vance, wuff's mid.dog golem, on 2026-05-06 ~wag — amended same evening — the Aleph holds*
