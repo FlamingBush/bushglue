@@ -441,8 +441,6 @@ def main():
         """
         # Lazy numpy import only on the new path (avoid cost on legacy startup)
         import numpy as np
-        # Lazy LLM-correction import (stdlib-only module; cheap)
-        from bush_stt.postprocess import correct_transcript
         while not device_change.is_set() and not tts_pause.is_set():
             if parec_proc.poll() is not None:
                 log("capture process exited unexpectedly")
@@ -508,14 +506,11 @@ def main():
                         log(f"Dropping low-confidence transcript "
                             f"({conf:.2f} < {STT_MIN_CONFIDENCE:.2f}): {text!r}")
                         continue
-                    final_text = correct_transcript(text)
-                    if final_text != text:
-                        log(f"LLM corrected: {text!r} -> {final_text!r}")
-                    log(f"Final: {final_text!r} (conf={conf:.2f})")
+                    log(f"Final: {text!r} (conf={conf:.2f})")
                     mqttc.publish(
                         TOPIC_TRANSCRIPT,
                         json.dumps({
-                            "text": final_text,
+                            "text": text,
                             "confidence": conf,
                             "ts": time.time(),
                         }),
