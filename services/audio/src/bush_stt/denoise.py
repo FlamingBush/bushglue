@@ -41,7 +41,7 @@ def log(msg: str) -> None:
 
 
 def _default_load_filter():
-    """Load pyrnnoise's RNNoise filter. Returns an object with `.process(int16_array)` method."""
+    """Load pyrnnoise's RNNoise filter. Returns an object with `.process_frame(int16_array)` method."""
     try:
         from pyrnnoise import RNNoise
     except ImportError as e:
@@ -49,7 +49,23 @@ def _default_load_filter():
             "pyrnnoise not installed. Run: uv add pyrnnoise   "
             "(or pip install pyrnnoise; ARM64 wheels available as of 0.x)."
         ) from e
-    return RNNoise()
+
+    class _PyRnnoiseAdapter:
+        # pyrnnoise 0.4.x exposes denoise_chunk(np.ndarray) -> Iterator[(probs, frame_2d)].
+        # denoise_frame() is broken for 1D mono input; denoise_chunk handles the
+        # atleast_2d + state-init dance, so we feed our 480-sample mono frames
+        # through it and return the single 1D output.
+        def __init__(self):
+            self._r = RNNoise(sample_rate=48000)
+
+        def process_frame(self, frame):
+            results = list(self._r.denoise_chunk(frame))
+            if not results:
+                return frame
+            _probs, out = results[0]
+            return out[0] if out.ndim == 2 else out
+
+    return _PyRnnoiseAdapter()
 
 
 class RnnoiseFilter:
