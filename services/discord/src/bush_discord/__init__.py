@@ -71,7 +71,8 @@ TOPIC_FLAME      = "bush/flame/pulse"
 MQTT_PORT   = 1883
 REPO_DIR = Path(__file__).resolve().parents[4]  # …/services/discord/src/bush_discord → repo root
 WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
-AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".webm"}
+AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".webm", ".mp4", ".mov"}
+VIDEO_EXTS = {".mp4", ".mov"}
 
 from bushutil import build_sox_effects as _build_sox_effects
 
@@ -853,14 +854,22 @@ class BushBot(discord.Client):
                 wav_path = WAVS_DIR / f"{slug}.wav"
                 WAVS_DIR.mkdir(parents=True, exist_ok=True)
                 await audio_attachment.save(raw_path)
+                ext = Path(audio_attachment.filename).suffix.lower()
+                if ext in VIDEO_EXTS:
+                    conv_cmd = ("ffmpeg", "-loglevel", "error", "-y", "-i", str(raw_path),
+                                "-vn", "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+                                str(wav_path))
+                else:
+                    conv_cmd = ("sox", str(raw_path), "-r", "16000", "-c", "1", "-b", "16",
+                                str(wav_path))
                 conv = await asyncio.create_subprocess_exec(
-                    "sox", str(raw_path), "-r", "16000", "-c", "1", "-b", "16", str(wav_path),
+                    *conv_cmd,
                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
                 )
                 ret = await conv.wait()
                 raw_path.unlink(missing_ok=True)
                 if ret != 0:
-                    await message.channel.send(f"Failed to convert `{audio_attachment.filename}` — sox exited {ret}")
+                    await message.channel.send(f"Failed to convert `{audio_attachment.filename}` — {conv_cmd[0]} exited {ret}")
                     return
                 session = PipelineSession(self._bridge, phrase=label, file=wav_path)
                 is_file = True
