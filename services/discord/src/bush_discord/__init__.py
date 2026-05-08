@@ -692,8 +692,9 @@ def build_summary_embed(phrase: str, result: PipelineResult, is_file: bool = Fal
 class BushBot(discord.Client):
 
     AUTO_JOIN_CHANNEL = "General"
-    IDLE_LEAVE_S      = 300   # 5 minutes
-    VOICE_STALL_S     = 90    # stall + recent voice_recv error ⇒ rejoin (real wedge)
+    IDLE_LEAVE_S       = 300   # 5 minutes
+    VOICE_STALL_S      = 90    # stall + recent voice_recv error ⇒ rejoin (loud wedge)
+    VOICE_STALL_SLOW_S = 300   # stall + users present ⇒ rejoin even without error (silent wedge)
 
     def __init__(self, guild_id: Optional[int], bridge: MQTTBridge):
         intents = discord.Intents.default()
@@ -763,6 +764,20 @@ class BushBot(discord.Client):
 
     async def on_ready(self):
         print(f"[bot] Logged in as {self.user} (id={self.user.id})", flush=True)
+        # on_voice_state_update only fires on transitions, so users already in
+        # AUTO_JOIN_CHANNEL when the bot starts won't trigger auto-join. Scan
+        # explicitly here.
+        if self._voice_client and self._voice_client.is_connected():
+            return
+        for guild in self.guilds:
+            channel = discord.utils.get(guild.voice_channels, name=self.AUTO_JOIN_CHANNEL)
+            if channel and any(not m.bot for m in channel.members):
+                try:
+                    await self._join_voice(channel)
+                    print(f"[bot] Startup auto-join: {channel.name}", flush=True)
+                    return
+                except Exception as e:
+                    print(f"[bot] Startup auto-join failed: {e}", flush=True)
 
     async def on_voice_state_update(
         self,
@@ -818,11 +833,22 @@ class BushBot(discord.Client):
     async def _voice_watchdog(self):
         """Periodically check voice health; rejoin on WS drop or wedge.
 
-        Wedge detection: VC connected but voice_recv stopped delivering frames
-        (stall > VOICE_STALL_S) AND a voice_recv error was logged after the
-        last successful frame. Quiet conversation lulls update neither
-        timestamp, so they never trigger rejoin.
+        Two wedge triggers:
+        - Loud: stall > VOICE_STALL_S AND voice_recv logged an ERROR after the
+          last frame. Filters out conversation lulls (no error → no rejoin).
+        - Silent: stall > VOICE_STALL_SLOW_S AND non-bot users are in the
+          channel. Catches the wedge mode where the UDP reader stops without
+          ever raising — observed when packets accumulate in the kernel
+          recv-q with the bot's reader thread asleep.
         """
+        async def _rejoin(channel, reason):
+            print(f"[bot] Watchdog: {reason}, rejoining {channel.name}", flush=True)
+            try:
+                await self._leave_voice()
+                await self._join_voice(channel)
+            except Exception as e:
+                print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
+
         try:
             while True:
                 await asyncio.sleep(30)
@@ -831,24 +857,18 @@ class BushBot(discord.Client):
                     break
                 channel = vc.channel
                 if not vc.is_connected():
-                    print(f"[bot] Watchdog: voice connection lost, rejoining {channel.name}", flush=True)
-                    try:
-                        await self._leave_voice()
-                        await self._join_voice(channel)
-                    except Exception as e:
-                        print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
+                    await _rejoin(channel, "voice connection lost")
                     continue
                 stall = time.time() - self._last_audio_frame_ts
                 if stall < self.VOICE_STALL_S:
                     continue
-                if self._voice_recv_last_error_ts <= self._last_audio_frame_ts:
-                    continue  # users are just quiet, not wedged
-                print(f"[bot] Watchdog: receiver wedged (stall {stall:.0f}s, error after last frame), rejoining {channel.name}", flush=True)
-                try:
-                    await self._leave_voice()
-                    await self._join_voice(channel)
-                except Exception as e:
-                    print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
+                if self._voice_recv_last_error_ts > self._last_audio_frame_ts:
+                    await _rejoin(channel, f"receiver wedged (stall {stall:.0f}s, error after last frame)")
+                    continue
+                if stall >= self.VOICE_STALL_SLOW_S:
+                    non_bots = [m for m in channel.members if not m.bot]
+                    if non_bots:
+                        await _rejoin(channel, f"silent stall {stall:.0f}s with {len(non_bots)} user(s) present")
         except asyncio.CancelledError:
             pass
 
