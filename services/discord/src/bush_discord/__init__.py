@@ -693,8 +693,7 @@ class BushBot(discord.Client):
 
     AUTO_JOIN_CHANNEL = "General"
     IDLE_LEAVE_S       = 300   # 5 minutes
-    VOICE_STALL_S      = 90    # stall + recent voice_recv error ⇒ rejoin (loud wedge)
-    VOICE_STALL_SLOW_S = 300   # stall + users present ⇒ rejoin even without error (silent wedge)
+    VOICE_STALL_S      = 90    # stall + recent voice_recv error ⇒ rejoin
 
     def __init__(self, guild_id: Optional[int], bridge: MQTTBridge):
         intents = discord.Intents.default()
@@ -831,15 +830,12 @@ class BushBot(discord.Client):
             pass
 
     async def _voice_watchdog(self):
-        """Periodically check voice health; rejoin on WS drop or wedge.
+        """Periodically check voice health; rejoin on WS drop or hang.
 
-        Two wedge triggers:
-        - Loud: stall > VOICE_STALL_S AND voice_recv logged an ERROR after the
-          last frame. Filters out conversation lulls (no error → no rejoin).
-        - Silent: stall > VOICE_STALL_SLOW_S AND non-bot users are in the
-          channel. Catches the wedge mode where the UDP reader stops without
-          ever raising — observed when packets accumulate in the kernel
-          recv-q with the bot's reader thread asleep.
+        Hang detection: VC connected but voice_recv stopped delivering frames
+        (stall > VOICE_STALL_S) AND a voice_recv error was logged after the
+        last successful frame. Quiet conversation lulls update neither
+        timestamp, so they never trigger a rejoin.
         """
         async def _rejoin(channel, reason):
             print(f"[bot] Watchdog: {reason}, rejoining {channel.name}", flush=True)
@@ -863,12 +859,7 @@ class BushBot(discord.Client):
                 if stall < self.VOICE_STALL_S:
                     continue
                 if self._voice_recv_last_error_ts > self._last_audio_frame_ts:
-                    await _rejoin(channel, f"receiver wedged (stall {stall:.0f}s, error after last frame)")
-                    continue
-                if stall >= self.VOICE_STALL_SLOW_S:
-                    non_bots = [m for m in channel.members if not m.bot]
-                    if non_bots:
-                        await _rejoin(channel, f"silent stall {stall:.0f}s with {len(non_bots)} user(s) present")
+                    await _rejoin(channel, f"receiver hung (stall {stall:.0f}s, error after last frame)")
         except asyncio.CancelledError:
             pass
 
