@@ -63,6 +63,7 @@ off_ms_bigjet = None
 off_ms_poof   = None
 
 TOPIC_FLAME        = b"bush/flame/pulse"
+TOPIC_SAFETY_FORCED_OFF = b"bush/fire/safety/forced_off"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -90,6 +91,36 @@ def service_pins():
         pin_poof.value = False
         off_ms_poof = None
         print("Poof OFF")
+
+
+# ── Propane safety: force-OFF before blocking socket/wifi calls ──────────────
+# Eng review §2.3 + Codex eng#3 (autoplan 2026-05-07): mqtt_open() blocks up
+# to 5s during CONNECT/CONNACK; tcp_probe() blocks up to 0.5s; wifi_connect()
+# blocks for the duration of association. service_pins() runs before each
+# blocking call but not DURING it. A flare pulse OFF deadline arriving
+# inside the blocking window is delayed by the full socket timeout — for
+# solenoid-controlled propane that's the difference between a 220ms pulse
+# and "stuck open for 5 seconds."
+#
+# Quick-safe fix: before entering any blocking path, force-off all relays
+# and clear pulse deadlines. Truncated pulses are acceptable fail-safe
+# behavior. Best-effort publishes bush/fire/safety/forced_off so the
+# operator can correlate dropped pulses with reconnect events. The publish
+# is skipped when not connected (which is usually why we're about to block).
+def force_all_solenoids_off(reason="blocking"):
+    global off_ms_flare, off_ms_bigjet, off_ms_poof
+    pin_flare.value = False
+    pin_bigjet.value = False
+    pin_poof.value = False
+    off_ms_flare = None
+    off_ms_bigjet = None
+    off_ms_poof = None
+    if connected and sock is not None:
+        try:
+            payload = json.dumps({"reason": reason, "ts": supervisor.ticks_ms()}).encode()
+            sock.send(mqtt_publish_packet(TOPIC_SAFETY_FORCED_OFF, payload))
+        except Exception:
+            pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Minimal hand-rolled MQTT client over a non-blocking raw socket.
@@ -196,6 +227,7 @@ def encode_remaining(n):
 
 def wifi_connect():
     global pool
+    force_all_solenoids_off("wifi_connect")  # may block on association
     print("Connecting to Wi-Fi:", secrets["SSID"])
     wifi.radio.connect(secrets["SSID"], secrets["PASSWORD"])
     print("Wi-Fi OK, IP:", wifi.radio.ipv4_address)
@@ -212,7 +244,11 @@ def compute_scan_base():
 
 def tcp_probe(ip):
     """Try to TCP-connect to ip:MQTT_PORT with a short timeout.
-    Returns True if the port is open.  Always closes the socket."""
+    Returns True if the port is open.  Always closes the socket.
+    Force-offs all solenoids before connect — the 0.5s socket timeout
+    exceeds typical pulse durations.
+    """
+    force_all_solenoids_off("tcp_probe")
     s = None
     try:
         s = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
@@ -230,10 +266,16 @@ def tcp_probe(ip):
 
 
 def mqtt_open(broker=None):
-    """Open TCP socket, send CONNECT, wait for CONNACK, then go non-blocking."""
+    """Open TCP socket, send CONNECT, wait for CONNACK, then go non-blocking.
+
+    Blocks up to 5s on s.connect() during CONNECT/CONNACK. Force-offs all
+    solenoids before connect — see force_all_solenoids_off comment above
+    for the propane-safety rationale.
+    """
     global sock, rx_buf, connected, last_ping_ms
     if broker is None:
         broker = MQTT_BROKER
+    force_all_solenoids_off("mqtt_open")
     if sock:
         try:
             sock.close()

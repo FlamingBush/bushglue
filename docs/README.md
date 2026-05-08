@@ -30,6 +30,7 @@ See the [root README](../README.md) for setup and deploy instructions.
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
 | `bush/flame/pulse` | → | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control, sound-service |
+| `bush/fire/safety/forced_off` | ← | relay-control (Pico firmware) | (monitor/discord) |
 
 ### Needle Valve Topics
 
@@ -148,6 +149,18 @@ Float 0.0–1.0, current fractional position. Published at 5 Hz during motion, 1
 online
 ```
 Retained birth message. Value is `online` or `offline`.
+
+### `bush/fire/safety/forced_off`
+```json
+{ "reason": "mqtt_open", "ts": 1711234567 }
+```
+Published by the Pico firmware whenever it force-offs all solenoids before
+entering a blocking socket/wifi call. Non-retained. `reason` is one of
+`wifi_connect`, `mqtt_open`, `tcp_probe`. `ts` is `supervisor.ticks_ms()`
+on the Pico (29-day rolling counter — relative time, not wall-clock).
+Operators correlate this with reconnect events to confirm a "stuck pulse"
+report was actually a force-off-truncated pulse rather than a relay
+hardware fault.
 
 ### `bush/fire/valve/home`
 Empty payload. Triggers homing sequence (drive to open stop, zero).
