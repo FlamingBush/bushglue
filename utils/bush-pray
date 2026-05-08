@@ -20,15 +20,29 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+
+import paho.mqtt.client as mqtt
 
 WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
 LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "loopback-inject")
 LOOPBACK_SOURCE = "loopback-inject.monitor"
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
 TOPIC_STT_DEVICE = "bush/audio/stt/device"
 TOPIC_SET_STT_DEVICE = "bush/audio/stt/set-device"
+MQTT_PORT = 1883
+DEVICE_READY_TIMEOUT_S = float(os.environ.get("BUSH_PRAY_DEVICE_TIMEOUT", "5.0"))
+
+
+def _broker() -> str:
+    if "MQTT_BROKER" in os.environ:
+        return os.environ["MQTT_BROKER"]
+    try:
+        from bushutil import get_mqtt_broker
+        return get_mqtt_broker()
+    except ImportError:
+        return "localhost"
 
 
 def phrase_to_filename(phrase: str) -> str:
@@ -51,30 +65,71 @@ def synthesize(phrase: str, out_path: Path) -> None:
     espeak.wait()
 
 
-def get_stt_device() -> str | None:
-    """Query the current STT input device from the retained MQTT topic."""
-    try:
-        result = subprocess.run(
-            ["mosquitto_sub", "-h", MQTT_BROKER, "-t", TOPIC_STT_DEVICE,
-             "-C", "1", "-W", "3"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            data = json.loads(result.stdout.strip())
-            return data.get("device")
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
-        print(f"[bush-pray] Failed to query STT device: {e}", flush=True)
-    return None
+class SttDeviceController:
+    """Single MQTT connection that observes and controls the STT capture device.
 
+    `ensure_ready(device)` publishes set-device if needed and blocks until
+    bush-stt confirms `{"device": device, "status": "ok"}` on the retained
+    `bush/audio/stt/device` topic — which bush-stt now publishes only after the
+    first audio chunk has been read from parec/arecord. That's the readiness
+    signal: frames are demonstrably flowing, no fixed sleep needed.
+    """
 
-def set_stt_device(device: str) -> None:
-    """Tell the STT service to switch input device."""
-    payload = json.dumps({"device": device})
-    subprocess.run(
-        ["mosquitto_pub", "-h", MQTT_BROKER, "-t", TOPIC_SET_STT_DEVICE,
-         "-m", payload],
-        timeout=5,
-    )
+    def __init__(self, broker: str):
+        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self._client.on_connect = self._on_connect
+        self._client.on_message = self._on_message
+        self._lock = threading.Lock()
+        self._latest: dict | None = None
+        self._ready = threading.Event()
+        self._target: tuple[str, str] | None = None
+        self._client.connect(broker, MQTT_PORT, 10)
+        self._client.loop_start()
+
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        client.subscribe(TOPIC_STT_DEVICE)
+
+    def _on_message(self, client, userdata, msg):
+        try:
+            payload = json.loads(msg.payload)
+        except Exception:
+            return
+        with self._lock:
+            self._latest = payload
+            if self._target is not None:
+                t_dev, t_status = self._target
+                if payload.get("device") == t_dev and payload.get("status") == t_status:
+                    self._ready.set()
+
+    def get_device(self, timeout: float = 3.0) -> str | None:
+        """Return the device from the most recent retained status message,
+        waiting up to `timeout` for one to arrive."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._latest is not None:
+                    return self._latest.get("device")
+            time.sleep(0.05)
+        return None
+
+    def ensure_ready(self, device: str, timeout: float = DEVICE_READY_TIMEOUT_S) -> bool:
+        """Make sure STT is on `device` with status='ok'. Publishes set-device
+        only when not already on the target device. Returns True on confirmation."""
+        with self._lock:
+            self._target = (device, "ok")
+            latest = self._latest
+            if (latest and latest.get("device") == device
+                    and latest.get("status") == "ok"):
+                return True
+            on_target = bool(latest and latest.get("device") == device)
+            self._ready.clear()
+        if not on_target:
+            self._client.publish(TOPIC_SET_STT_DEVICE, json.dumps({"device": device}))
+        return self._ready.wait(timeout)
+
+    def close(self):
+        self._client.loop_stop()
+        self._client.disconnect()
 
 
 def main():
@@ -100,24 +155,32 @@ def main():
             print(f"[bush-pray] File not found: {wav}", file=sys.stderr)
             sys.exit(1)
 
-    # Switch STT to loopback source before playing, restore after
-    previous_device = get_stt_device()
-    switched = previous_device and previous_device != LOOPBACK_SOURCE
-    if switched:
-        print(f"[bush-pray] Switching STT device {previous_device} → {LOOPBACK_SOURCE}")
-        set_stt_device(LOOPBACK_SOURCE)
-        time.sleep(0.3)  # let STT service reopen the source
-
+    # Switch STT to loopback source before playing, restore after.
+    # Interlock against bush-stt's "ok" status (frames flowing) instead of a
+    # fixed sleep, so short clips can't outrun PulseAudio capture spin-up.
+    ctrl = SttDeviceController(_broker())
     try:
-        print(f"[bush-pray] Playing into {LOOPBACK_DEVICE}")
-        subprocess.run(
-            ["sox", str(wav), "-t", "pulseaudio", LOOPBACK_DEVICE],
-            check=True,
-        )
-    finally:
+        previous_device = ctrl.get_device()
+        switched = bool(previous_device and previous_device != LOOPBACK_SOURCE)
         if switched:
-            print(f"[bush-pray] Restoring STT device → {previous_device}")
-            set_stt_device(previous_device)
+            print(f"[bush-pray] Switching STT device {previous_device} → {LOOPBACK_SOURCE}")
+        if not ctrl.ensure_ready(LOOPBACK_SOURCE):
+            print(f"[bush-pray] WARN: STT did not confirm 'ok' on "
+                  f"{LOOPBACK_SOURCE} within {DEVICE_READY_TIMEOUT_S}s; playing anyway",
+                  flush=True)
+
+        try:
+            print(f"[bush-pray] Playing into {LOOPBACK_DEVICE}")
+            subprocess.run(
+                ["sox", str(wav), "-t", "pulseaudio", LOOPBACK_DEVICE],
+                check=True,
+            )
+        finally:
+            if switched:
+                print(f"[bush-pray] Restoring STT device → {previous_device}")
+                ctrl.ensure_ready(previous_device)
+    finally:
+        ctrl.close()
 
 
 if __name__ == "__main__":
