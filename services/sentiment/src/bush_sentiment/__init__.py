@@ -29,9 +29,9 @@ import random
 import threading
 import time
 
-import paho.mqtt.client as mqtt
+import paho.mqtt.client as mqtt  # imported for type hints on existing fire-loop signatures
 
-from bushutil import get_mqtt_broker
+from bushutil.mqtt_service_client import MqttServiceClient
 
 # ── MQTT topics ────────────────────────────────────────────────────────────
 TOPIC_VERSE    = "bush/pipeline/t2v/verse"
@@ -137,54 +137,60 @@ def _classify_and_fire(verse_text: str, mqttc: mqtt.Client):
     return scores, flare, bigjet
 
 
+_mqtt_client: MqttServiceClient | None = None
+
+
+def _on_tts_done(client, msg):
+    print("[sentiment] TTS done — stopping fire pattern", flush=True)
+    _stop_fire()
+
+
+def _on_verse(client, msg):
+    """Handle incoming verse: classify, start fire pattern, publish result."""
+    if classifier is None:
+        print("[sentiment] Model not ready — dropping verse", flush=True)
+        return
+    data = json.loads(msg.payload)
+    verse_text = data.get("text", "").strip()
+    if not verse_text:
+        return
+    print(f"[sentiment] Classifying verse: {verse_text!r}", flush=True)
+    scores, flare, bigjet = _classify_and_fire(verse_text, client)
+    result_payload = json.dumps({
+        "verse": verse_text,
+        "classification": scores,
+        "flare": flare,
+        "bigjet": bigjet,
+        "ts": time.time(),
+    })
+    client.publish(TOPIC_SENTIMENT, result_payload)
+
+
 def _start_mqtt_thread():
-    """Start MQTT subscriber in a background thread."""
-    broker = get_mqtt_broker()
-    print(f"[sentiment] Connecting to MQTT broker {broker}:{MQTT_PORT}...", flush=True)
+    """Start MQTT subscriber in a background thread.
 
-    mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    Wraps paho with the bush/<svc>/{status,version,fault} contract from
+    bushutil.MqttServiceClient. Publishes status=offline via LWT on crash,
+    status=starting on connect, status=ready when main() calls mark_ready().
 
-    def on_connect(client, userdata, flags, reason_code, properties):
-        print(f"[sentiment] MQTT connected (rc={reason_code})", flush=True)
-        client.subscribe(TOPIC_VERSE)
-        client.subscribe(TOPIC_TTS_DONE)
-        print(f"[sentiment] Subscribed to {TOPIC_VERSE}, {TOPIC_TTS_DONE}", flush=True)
-
-    def on_message(client, userdata, msg):
-        try:
-            if msg.topic == TOPIC_TTS_DONE:
-                print("[sentiment] TTS done — stopping fire pattern", flush=True)
-                _stop_fire()
-                return
-
-            if classifier is None:
-                print("[sentiment] Model not ready — dropping verse", flush=True)
-                return
-
-            data = json.loads(msg.payload)
-            verse_text = data.get("text", "").strip()
-            if not verse_text:
-                return
-            print(f"[sentiment] Classifying verse: {verse_text!r}", flush=True)
-            scores, flare, bigjet = _classify_and_fire(verse_text, client)
-            result_payload = json.dumps({
-                "verse": verse_text,
-                "classification": scores,
-                "flare": flare,
-                "bigjet": bigjet,
-                "ts": time.time(),
-            })
-            client.publish(TOPIC_SENTIMENT, result_payload)
-        except Exception as e:
-            print(f"[sentiment] MQTT message error: {e}", flush=True)
-
-    mqttc.on_connect = on_connect
-    mqttc.on_message = on_message
+    NOTE: still hosts loop_forever in a daemon thread. The "load model first,
+    MQTT in main thread" fix from eng review §2.1 is P0 #3 part 2 — separate
+    PR. This PR is purely the contract migration.
+    """
+    global _mqtt_client
+    _mqtt_client = MqttServiceClient(service_name="sentiment", port=MQTT_PORT)
+    print(
+        f"[sentiment] Connecting to MQTT broker {_mqtt_client.broker}:{MQTT_PORT} "
+        f"(version={_mqtt_client.version})...",
+        flush=True,
+    )
+    _mqtt_client.subscribe(TOPIC_VERSE, _on_verse)
+    _mqtt_client.subscribe(TOPIC_TTS_DONE, _on_tts_done)
 
     def _loop():
         try:
-            mqttc.connect(broker, MQTT_PORT, 60)
-            mqttc.loop_forever()
+            _mqtt_client.connect()
+            _mqtt_client.loop_forever()
         except Exception as e:
             print(f"[sentiment] MQTT loop error: {e}", flush=True)
 
@@ -226,6 +232,8 @@ class Server(BaseHTTPRequestHandler):
 def main():
     _start_mqtt_thread()   # subscribe first — messages queue while model loads
     _load_model()          # now load DistilBERT (~20s on ODROID)
+    if _mqtt_client is not None:
+        _mqtt_client.mark_ready()  # publishes bush/sentiment/status=ready
     address = ("0.0.0.0", 8585)
     httpd = HTTPServer(address, Server)
     print("Starting server ...")

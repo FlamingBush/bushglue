@@ -69,4 +69,20 @@ digraph bushglue {
     TTS -> FLAME_EXPR [label="bush/pipeline/tts/\nspeaking, done" color="#1155cc"]
     FLAME_EXPR -> RELAYS [label="bush/fire/valve/target" color="#1155cc"]
     RELAYS -> NEEDLE_VALVE [color="#38761d"]
+
+    // ── Service Health Contract (per-service observability, not data flow) ──
+    // Every service using bushutil.MqttServiceClient publishes:
+    //   bush/<service>/status   retained: offline|starting|ready  (LWT-backed)
+    //   bush/<service>/version  retained: git short hash
+    //   bush/<service>/fault    non-retained: {"error":..., "ts":..., ...}
+    //
+    // Subscribers: bush-monitor (terminal dashboard), bush-discord (alerting),
+    //              integration test (gates audio inject on status=ready).
+    // See docs/README.md "Service Health Contract" section for full spec.
+    MONITOR [label="bush-monitor\n+ bush-discord alerts\n──────────────\nstatus / version / fault\nsubscribers" shape=box style="rounded,dashed,filled" fillcolor="#fff2cc" color="#bf9000"]
+    STT -> MONITOR [label="bush/stt/\n{status,version,fault}" style="dashed" color="#bf9000"]
+    T2V -> MONITOR [label="bush/t2v/\n{status,version,fault}" style="dashed" color="#bf9000"]
+    TTS -> MONITOR [label="bush/tts/\n{status,version,fault}" style="dashed" color="#bf9000"]
+    SENTIMENT -> MONITOR [label="bush/sentiment/\n{status,version,fault}" style="dashed" color="#bf9000"]
+    FLAME_EXPR -> MONITOR [label="bush/flame-expression/\n{status,version,fault}" style="dashed" color="#bf9000"]
 }

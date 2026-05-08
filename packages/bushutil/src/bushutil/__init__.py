@@ -108,3 +108,16 @@ def get_mqtt_broker() -> str:
         if line.startswith("default"):
             return line.split()[2]
     return "localhost"
+
+
+# Re-export the MQTT contract wrapper. Imported lazily inside the function so
+# `bushutil` itself stays import-light (paho-mqtt only loaded when needed).
+def _mqtt_service_client():
+    from .mqtt_service_client import MqttServiceClient
+    return MqttServiceClient
+
+
+def __getattr__(name):
+    if name == "MqttServiceClient":
+        return _mqtt_service_client()
+    raise AttributeError(f"module 'bushutil' has no attribute {name!r}")
