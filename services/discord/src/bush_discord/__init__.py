@@ -508,13 +508,23 @@ class PipelineSession:
                 pray_args = ["--phrase", self._phrase]
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, str(inject_script), *pray_args,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
             )
+
+            async def _drain_pray_output():
+                if proc.stdout is None:
+                    return
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    print(f"[pray] {line.decode(errors='replace').rstrip()}", flush=True)
 
             async def _record_inject_end():
                 await proc.wait()
                 self._inject_end = time.monotonic()
+            asyncio.ensure_future(_drain_pray_output())
             asyncio.ensure_future(_record_inject_end())
 
             # wait for STT transcript

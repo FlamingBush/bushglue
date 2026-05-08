@@ -37,18 +37,27 @@ def phrase_to_filename(phrase: str) -> str:
 
 
 def synthesize(phrase: str, out_path: Path) -> None:
+    # Write to a sibling tmp path and rename on success — sox writes the WAV
+    # header up-front and only finalizes on close, so a crash mid-encode would
+    # otherwise leave a 0-byte or truncated file at the cache path.
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
     espeak = subprocess.Popen(
         ["espeak-ng", "-v", "en-us", "-s", "130", "--stdout", phrase],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
-    subprocess.run(
-        ["sox", "-t", "wav", "-", "-r", "16000", "-c", "1", "-b", "16", str(out_path)],
-        stdin=espeak.stdout,
-        check=True,
-    )
-    espeak.stdout.close()
-    espeak.wait()
+    try:
+        subprocess.run(
+            ["sox", "-t", "wav", "-", "-r", "16000", "-c", "1", "-b", "16", str(tmp_path)],
+            stdin=espeak.stdout,
+            check=True,
+        )
+        espeak.stdout.close()
+        espeak.wait()
+        tmp_path.rename(out_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def get_stt_device() -> str | None:
@@ -89,7 +98,9 @@ def main():
     if args.phrase:
         WAVS_DIR.mkdir(parents=True, exist_ok=True)
         wav = WAVS_DIR / phrase_to_filename(args.phrase)
-        if not wav.exists():
+        # Treat zero-byte cache hits as missing — historically these came from
+        # crashed synth runs and made sox fail silently.
+        if not wav.exists() or wav.stat().st_size == 0:
             print(f"[bush-pray] Synthesizing → {wav}")
             synthesize(args.phrase, wav)
         else:
