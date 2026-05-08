@@ -683,6 +683,7 @@ class BushBot(discord.Client):
 
     AUTO_JOIN_CHANNEL = "General"
     IDLE_LEAVE_S      = 300   # 5 minutes
+    VOICE_STALL_S     = 90    # rejoin if no audio frames seen for this long with users in VC
 
     def __init__(self, guild_id: Optional[int], bridge: MQTTBridge):
         intents = discord.Intents.default()
@@ -700,6 +701,7 @@ class BushBot(discord.Client):
         self._loopback_writer: Optional[LoopbackWriter]     = None
         self._idle_task:      Optional[asyncio.Task]        = None
         self._watchdog_task:  Optional[asyncio.Task]        = None
+        self._last_audio_frame_ts: float = 0.0
 
         @self.tree.command(name="pray", description="Run the Bush pipeline with a phrase")
         @app_commands.describe(phrase="The phrase to inject into the pipeline")
@@ -793,16 +795,33 @@ class BushBot(discord.Client):
             pass
 
     async def _voice_watchdog(self):
-        """Periodically check the voice connection; rejoin if it has dropped."""
+        """Periodically check voice health; rejoin if WS dropped OR receiver wedged.
+
+        Two failure modes are covered:
+          1. WS 1006 disconnect — vc.is_connected() goes False.
+          2. voice_recv decoder thread dies on CryptoError but VC stays connected,
+             so on_audio stops firing. Detected via VOICE_STALL_S since last frame
+             while users are in the channel.
+        """
         try:
             while True:
                 await asyncio.sleep(30)
                 vc = self._voice_client
                 if not vc:
                     break
+                channel = vc.channel
                 if not vc.is_connected():
-                    channel = vc.channel
                     print(f"[bot] Watchdog: voice connection lost, rejoining {channel.name}", flush=True)
+                    try:
+                        await self._leave_voice()
+                        await self._join_voice(channel)
+                    except Exception as e:
+                        print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
+                    continue
+                stall = time.time() - self._last_audio_frame_ts
+                has_users = channel and any(not m.bot for m in channel.members)
+                if has_users and stall > self.VOICE_STALL_S:
+                    print(f"[bot] Watchdog: receiver stalled {stall:.0f}s with users in {channel.name}, rejoining", flush=True)
                     try:
                         await self._leave_voice()
                         await self._join_voice(channel)
@@ -1029,6 +1048,7 @@ class BushBot(discord.Client):
 
 
             def on_audio(user, data: voice_recv.VoiceData):
+                self._last_audio_frame_ts = time.time()
                 raw = data.opus  # RTP-decrypted, DAVE-encrypted Opus bytes
                 if not raw:
                     return
@@ -1057,6 +1077,7 @@ class BushBot(discord.Client):
                     print(f"[voice-recv] reader stopped with error: {error}", flush=True)
 
             vc.listen(voice_recv.BasicSink(on_audio, decode=False), after=on_listen_end)
+            self._last_audio_frame_ts = time.time()
             print(f"[bot] Voice receive active → loopback", flush=True)
 
             # echo mute gate: mute loopback while TTS is speaking
