@@ -265,6 +265,7 @@ def compute_scan_base():
 def tcp_probe(ip):
     """Try to TCP-connect to ip:MQTT_PORT with a short timeout.
     Returns True if the port is open.  Always closes the socket."""
+    force_pins_off()
     s = None
     try:
         s = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
@@ -284,6 +285,7 @@ def tcp_probe(ip):
 def mqtt_open(broker=None):
     """Open TCP socket, send CONNECT, wait for CONNACK, then go non-blocking."""
     global sock, rx_buf, connected, last_ping_ms
+    force_pins_off()
     if broker is None:
         broker = MQTT_BROKER
     if sock:
