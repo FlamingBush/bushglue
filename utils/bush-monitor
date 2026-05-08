@@ -384,7 +384,7 @@ def build_log_panel(s: State) -> Panel:
         term_h = os.get_terminal_size().lines
     except OSError:
         term_h = 40
-    _FIXED_ROWS = 1 + 5 + 4 + 11  # header + top + sentiment + bottom
+    _FIXED_ROWS = 1 + 5 + 4 + 14  # header + top + sentiment + bottom
     content_rows = max(1, term_h - _FIXED_ROWS - 2)  # -2 for panel border
 
     entries = list(s.log)[-content_rows:]  # newest at bottom
@@ -470,7 +470,7 @@ def render(s: State) -> Layout:
         Layout(name="header",    size=1),
         Layout(name="top",       size=5),
         Layout(name="sentiment", size=4),
-        Layout(name="bottom",    size=11),
+        Layout(name="bottom",    size=14),
         Layout(name="log"),
     )
     if s.ui_mode in ("select_input", "select_output"):
