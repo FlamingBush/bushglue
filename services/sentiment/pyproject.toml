@@ -10,6 +10,12 @@ dependencies = [
     "bushutil",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-mock>=3.0",
+]
+
 [project.scripts]
 bush-sentiment = "bush_sentiment:main"
 
@@ -19,3 +25,7 @@ bushutil = { workspace = true }
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
