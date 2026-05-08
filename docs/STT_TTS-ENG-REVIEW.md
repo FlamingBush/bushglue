@@ -11,17 +11,17 @@
 
 ## TL;DR
 
-honestly the external review is sharp — five concrete code-cited findings beyond what i had in `STT_TTS-EFFICACY.md`. this doc extends it with **what falls out of reading the rest of the surface**: sentiment, t2v, audio-agent, flame-expression, the Pico firmware (both `code.py` and `valve.py`), and `bushutil`. ~400 lines.
+honestly the external review is sharp — five concrete code-cited findings beyond what i had in `STT_TTS-EFFICACY.md`. this doc extends it with **what falls out of reading the rest of the surface**: sentiment, t2v, audio-agent, variable-valves, the Pico firmware (both `code.py` and `valve.py`), and `bushutil`. ~400 lines.
 
 new findings beyond the external review, in rough severity order:
 
 1. **sentiment's MQTT loop runs in a daemon thread.** initial connect failure or `loop_forever()` exit kills the thread silently; HTTP server keeps responding so systemd sees a healthy process. (the on_message handler itself is wrapped in try/except — the silent-failure path is the loop, not callback exceptions.) ([§2.1 amended](#21-sentiments-mqtt-loop-is-a-daemon-thread))
 2. **mid-motion valve stall is undetected.** `_read_stall()` only polls during `_home_phase == "running"`. the docstring claims "we poll for that during both homing and normal moves" — code disagrees.
 3. **Pico reconnect/discovery can delay pin OFF deadlines by up to 5 seconds, not just 500 ms.** `tcp_probe` blocks 500ms; `mqtt_open()` blocks up to 5s in retry + scan-connect states. one of the project's named CRITICAL INVARIANTS is violated during scan or reconnect. risky on a propane installation. ([§2.3 amended](#23-pico-reconnectdiscovery-blocks-pin-service))
-4. **flame-expression's silence drop never resets.** after one utterance + one silence period, flame stays at `baseline - SPEECH_DROP` forever, no return-to-baseline-on-long-silence. cosmetic but wrong.
+4. **variable-valves's silence drop never resets.** after one utterance + one silence period, flame stays at `baseline - SPEECH_DROP` forever, no return-to-baseline-on-long-silence. cosmetic but wrong.
 5. **`bushutil.get_mqtt_broker()` has no timeout on its `ip route` subprocess** — but the subprocess is only reached on the WSL2 path; native ODROID returns "localhost" before subprocess. low severity, one-line fix. ([§2.5 amended](#25-bushutilget_mqtt_broker-no-subprocess-timeout-wsl2-path-only))
 6. **TTS speaking/done payload asymmetry.** speaking carries `{text, ts}`, done carries `{ts}` only. `payload.get("text")` returns `None` on done — current subscribers tolerate it. footgun for stricter `payload["text"]` code; not a live defect. ([§2.6 amended](#26-tts-payload-asymmetry-footgun-not-defect))
-7. **flame-expression is missing from `docs/README.md` data flow.** the doc was written before flame-expression existed; new operators reading it will be confused why the valve ramps without an obvious publisher.
+7. **variable-valves is missing from `docs/README.md` data flow.** the doc was written before variable-valves existed; new operators reading it will be confused why the valve ramps without an obvious publisher.
 8. **classifier inference blocks the MQTT thread** in sentiment. ~150 ms × multiple verses arriving fast = MQTT thread falls behind, classifier queue isn't real, and incoming `tts/done` messages compete for the same handler.
 9. **t2v query timeout publishes nothing.** if Ollama or chroma is slow + the 15s urlopen hits, no `verse` is published and no `processing` failure topic exists. the bush goes quiet, the visitor walks off.
 10. **No retained `ready` topics, no `fault` topics, no version field anywhere.** the MQTT contract has only positive signals — every failure mode is communicated by silence. **including the Pico**: `bush/fire/valve/online` is published as `online` but is neither retained nor a real MQTT LWT (CONNECT flags set no will, PUBLISH header `0x30` clears retain). late subscribers won't see it. (the original v1 of this doc credited the Pico for this; that was wrong — see §9.) ([§2.10 amended](#210-the-mqtt-contract-has-no-ready-no-fault-no-version))
@@ -162,7 +162,7 @@ note: the scan only triggers when configured broker fails 3× (line 128). under 
 
 ### 2.4 Flame-expression silence drop is one-way
 
-**Where:** `services/core/src/bush_flame_expression/__init__.py:184-190`
+**Where:** `services/core/src/bush_variable_valves/__init__.py:184-190`
 
 ```python
 else:
@@ -219,7 +219,7 @@ bush/pipeline/tts/speaking → {"text": "the text being spoken", "ts": <epoch>}
 bush/pipeline/tts/done     → {"ts": <epoch>}
 ```
 
-a subscriber writing `payload.get("text")` on the wrong topic gets `None` (safe). a subscriber writing `payload["text"]` would raise `KeyError`. a subscriber pattern-matching assumes both have the same shape. discord and flame-expression both subscribe to both topics; both currently handle this OK by reading only `ts` from done. it's a contract asymmetry, not a live defect.
+a subscriber writing `payload.get("text")` on the wrong topic gets `None` (safe). a subscriber writing `payload["text"]` would raise `KeyError`. a subscriber pattern-matching assumes both have the same shape. discord and variable-valves both subscribe to both topics; both currently handle this OK by reading only `ts` from done. it's a contract asymmetry, not a live defect.
 
 **Fix shape:**
 - emit `{"text": <last-utterance>, "ts": ...}` on done too. cheap, symmetric, doesn't break existing subscribers.
@@ -229,15 +229,15 @@ a subscriber writing `payload.get("text")` on the wrong topic gets `None` (safe)
 
 ---
 
-### 2.7 flame-expression is missing from `docs/README.md` data flow
+### 2.7 variable-valves is missing from `docs/README.md` data flow
 
 **Where:** `docs/README.md:215-233`
 
-the data-flow section walks step 1–6 through STT → t2v → tts + sentiment → fire pulses (flare/bigjet). there's no step 5c showing flame-expression subscribing to sentiment + tts/speaking + tts/done and publishing `bush/fire/valve/target`. the root README (`README.md`) has it, the docs README doesn't.
+the data-flow section walks step 1–6 through STT → t2v → tts + sentiment → fire pulses (flare/bigjet). there's no step 5c showing variable-valves subscribing to sentiment + tts/speaking + tts/done and publishing `bush/fire/valve/target`. the root README (`README.md`) has it, the docs README doesn't.
 
 (this is the same family of drift the external reviewer caught with the 2 Hz / 10 Hz mismatch.)
 
-**Fix:** sync `docs/README.md` data flow to match `README.md`. add flame-expression to the topic table (it subscribes to `tts/speaking` and `tts/done` — neither of those subscriber lists currently lists it).
+**Fix:** sync `docs/README.md` data flow to match `README.md`. add variable-valves to the topic table (it subscribes to `tts/speaking` and `tts/done` — neither of those subscriber lists currently lists it).
 
 **Severity:** docs hygiene; bigger fix is "add a CI step that grep-greps documented topic subscribers against actual `client.subscribe()` calls".
 
@@ -323,7 +323,7 @@ phases A and A.5 alone are the highest-leverage MQTT-contract change in the repo
 | bush-tts | ✗ | partial (stderr→log only) | ✗ | ✓ | sox-fail path skips `done`; external reviewer wants explicit `fault` |
 | bush-t2v | ✗ | ✗ | ✗ | ✓ | child-process death silently logged; see §2.9 |
 | bush-sentiment | ✗ | ✗ | ✗ | **✗ — daemon thread comment misleads** | see §2.1 |
-| bush-flame-expression | ✗ | ✗ | ✗ | **✗ — 2 vs 10 Hz** | see external review §3 |
+| bush-variable-valves | ✗ | ✗ | ✗ | **✗ — 2 vs 10 Hz** | see external review §3 |
 | bush-audio-agent | ✗ | ✗ | ✗ | ✓ | retained `bush/audio/devices` is the closest thing |
 | relay-control (Pico) | ✗ | ✗ | **✗ — best-effort birth, not retained, no LWT** | **✗ — mid-motion stall undetected; `moving` state not emitted** | publishes `online` but neither retained nor MQTT will (`code.py:148-164` CONNECT flags omit will, `code.py:173-177` PUBLISH header `0x30` clears retain) |
 | bush-discord | n/a (subscriber-only) | n/a | ✗ | ✓ | also runs voice channel; T_TRANSCRIPT/T_VERSE timeouts shown |
@@ -346,14 +346,14 @@ bush-discord is the only service with timeouts named after pipeline stages (T_TR
 | t2v subprocess dies (Rust crash) | wrapper logs; future queries error | wrapper exits → systemd restart; `fault` retained | external reviewer §7 |
 | t2v query times out (Ollama/chroma slow) | logs error, no verse published | publish `bush/pipeline/t2v/fault`; STT mutes briefly | §2.9 |
 | Ollama down at startup | wrapper logs warning, query fails on first verse | same + `fault` retained until first successful query | §2.9 |
-| TTS engine error (espeak/Piper exception) | publishes `done` and skips | publish `fault` + `done`; flame-expression sees fault | external reviewer §8 |
+| TTS engine error (espeak/Piper exception) | publishes `done` and skips | publish `fault` + `done`; variable-valves sees fault | external reviewer §8 |
 | TTS sox device-error | publishes neither `done` nor `fault` | publish `fault` distinctly | external reviewer §8 |
 | sentiment classifier model not loaded | drops verse silently (logs) | queue OR publish `ready=false` (currently lies in comment) | external reviewer §2 |
 | sentiment MQTT thread dies | HTTP keeps responding; systemd happy | service exit; systemd restart | §2.1 |
 | sentiment fire-loop hangs past tts/done | bounded by FIRE_MAX_SECONDS=30 | unchanged | OK as-is |
-| flame-expression rate misconfigured | publishes 2 Hz, doc says 10 Hz | match doc to code or vice-versa | external reviewer §3 |
-| flame-expression `target` stale (no sentiment for >60s) | reverts to DEFAULT_BASELINE | unchanged + heartbeat | OK |
-| flame-expression silence drop never resets | flame at `baseline-0.12` forever after silence | drift back to baseline after IDLE_RETURN_S | §2.4 |
+| variable-valves rate misconfigured | publishes 2 Hz, doc says 10 Hz | match doc to code or vice-versa | external reviewer §3 |
+| variable-valves `target` stale (no sentiment for >60s) | reverts to DEFAULT_BASELINE | unchanged + heartbeat | OK |
+| variable-valves silence drop never resets | flame at `baseline-0.12` forever after silence | drift back to baseline after IDLE_RETURN_S | §2.4 |
 | valve mid-motion stall | undetected; `current_pos` lies | poll stalls during moves; mark `stalled` | §2.2 |
 | valve target sent during homing | ignored (state != idle) | OK; could publish "queued" | OK |
 | valve "actual" reported but not encoder-confirmed | misleading topic name | rename to `commanded` or `estimated_position` | external reviewer §4 |
@@ -374,10 +374,10 @@ beyond the external reviewer's "wait on readiness" — concrete fixtures the int
 3. **domain ASR error correction.** inject a TTS-synthesized "burning bus." with `STT_LLM_CORRECT=1`, assert transcript is "burning bush." with `STT_LLM_CORRECT=0`, assert raw passthrough.
 4. **t2v Ollama-down failure.** kill ollama service; inject transcript; assert `bush/pipeline/t2v/fault` (after fix) within 16 seconds. without fix, current behavior is silence — this is the doc check that motivates §2.9.
 5. **t2v subprocess kill.** SIGKILL t2v Rust binary; assert wrapper exits within N seconds (after fix); assert no further queries log errors silently. tests external reviewer §7.
-6. **TTS sox-device error.** point bush-tts at a non-existent ALSA device; inject verse; assert `bush/pipeline/tts/fault` (after fix) and that flame-expression doesn't end up waiting forever.
+6. **TTS sox-device error.** point bush-tts at a non-existent ALSA device; inject verse; assert `bush/pipeline/tts/fault` (after fix) and that variable-valves doesn't end up waiting forever.
 7. **sentiment classifier load failure.** start sentiment with HF_HOME pointing somewhere empty; assert `ready=false` retained (after fix); assert verses are queued or rejected explicitly (not silently dropped).
 8. **sentiment MQTT thread death.** force the daemon thread to raise; assert service exits within N seconds (after §2.1 fix). this is one regression test that catches the silent-failure mode.
-9. **flame-expression rate.** subscribe to `bush/fire/valve/target`; count messages over 5s; assert rate within ±20% of documented (whatever 2 or 10 ends up being).
+9. **variable-valves rate.** subscribe to `bush/fire/valve/target`; count messages over 5s; assert rate within ±20% of documented (whatever 2 or 10 ends up being).
 10. **valve mid-motion stall.** inject a stall event over UART (test fixture); assert state moves to "stalled" within HOME_POLL_MS (after §2.2 fix).
 11. **broker subnet-scan pin safety.** with broker offline + a pulse mid-flight, measure relay-OFF latency. with the fix, should be <50 ms; without, can be 500 ms.
 12. **whisper-bindings warmup.** time from process start to first successful transcription; assert `ready=true` published only after.
@@ -401,7 +401,7 @@ if i were running the next 10 days of work, this is the sequence i'd land:
 - **TTS `fault` topic** separate from `done` (external reviewer §8; ~half day).
 
 **Tier 1 — readiness + sentiment-CI (~1 day, was tier B):**
-1. fix flame-expression rate truth (15 min) — external reviewer §3
+1. fix variable-valves rate truth (15 min) — external reviewer §3
 2. rename `valve/actual` → `valve/commanded` (30 min) — external reviewer §4
 3. instrument the UART resync hack (30 min) — external reviewer §5
 4. `bush/<service>/ready` retained-msg convention across all services
@@ -422,7 +422,7 @@ if i were running the next 10 days of work, this is the sequence i'd land:
 15. (better Pico fix) non-blocking connect + probe state machines (§2.3 deeper)
 
 **Tier 4 — polish + structural:**
-16. flame-expression silence drop reset (§2.4)
+16. variable-valves silence drop reset (§2.4)
 17. TTS payload symmetry (§2.6, low severity)
 18. `docs/README.md` data flow + topic table sync (§2.7 + external reviewer §3 + §9.B,C)
 19. fix valve `moving`/`initializing` state mismatch (§9.B)
@@ -464,12 +464,12 @@ honestly worth being explicit:
 | 2.3 | `firmware/relay-control/CIRCUITPY/code.py` | 4–13 | named CRITICAL INVARIANTS |
 | 2.3 | `firmware/relay-control/CIRCUITPY/code.py` | 213–229 | `tcp_probe` with 0.5s settimeout |
 | 2.3 | `firmware/relay-control/CIRCUITPY/code.py` | 491–522 | SCAN_PROBE state body |
-| 2.4 | `services/core/src/bush_flame_expression/__init__.py` | 184–190 | silence drop never resets |
-| 2.4 | `services/core/src/bush_flame_expression/__init__.py` | 67–68 | `PUBLISH_HZ = 2` (vs README "10 Hz") |
+| 2.4 | `services/core/src/bush_variable_valves/__init__.py` | 184–190 | silence drop never resets |
+| 2.4 | `services/core/src/bush_variable_valves/__init__.py` | 67–68 | `PUBLISH_HZ = 2` (vs README "10 Hz") |
 | 2.5 | `packages/bushutil/src/bushutil/__init__.py` | 106–110 | `subprocess.run(["ip", "route"], ...)` no timeout |
 | 2.6 | `services/core/src/bush_tts/__init__.py` | 143, 157 | `done` payload `{ts}` vs `speaking` `{text, ts}` |
-| 2.7 | `docs/README.md` | 215–233 | data flow missing flame-expression |
-| 2.7 | `docs/README.md` | 22–25 | topic table missing flame-expression as subscriber |
+| 2.7 | `docs/README.md` | 215–233 | data flow missing variable-valves |
+| 2.7 | `docs/README.md` | 22–25 | topic table missing variable-valves as subscriber |
 | 2.8 | `services/sentiment/src/bush_sentiment/__init__.py` | 153–179 | classify-and-fire blocks MQTT thread |
 | 2.9 | `services/core/src/bush_t2v/__init__.py` | 60–73 | `query_t2v` urlopen timeout=15 |
 | 2.9 | `services/core/src/bush_t2v/__init__.py` | 137–145 | exception swallowed, no fault published |

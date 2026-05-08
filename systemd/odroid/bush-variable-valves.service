@@ -1,0 +1,16 @@
+[Unit]
+Description=Variable Valves — sentiment-driven needle valve control
+After=network.target
+
+[Service]
+Type=simple
+User=odroid
+ExecStart=/home/odroid/bushglue/.venv/bin/bush-variable-valves
+WorkingDirectory=/home/odroid/bushglue
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

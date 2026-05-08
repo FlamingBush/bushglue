@@ -35,7 +35,7 @@ See the [root README](../README.md) for setup and deploy instructions.
 
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
-| `bush/fire/valve/target` | → | bush-flame-expression, bush-valve | relay-control |
+| `bush/fire/valve/target` | → | bush-variable-valves, bush-valve | relay-control |
 | `bush/fire/valve/home` | → | bush-valve, (external) | relay-control |
 | `bush/fire/valve/stop` | → | bush-valve, (external) | relay-control |
 | `bush/fire/valve/calibrate` | → | bush-valve, (external) | relay-control |

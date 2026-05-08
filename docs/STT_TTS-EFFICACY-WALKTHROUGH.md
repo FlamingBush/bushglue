@@ -122,7 +122,7 @@ mic audio
     → bush-sentiment     classifies verse with DistilBERT
                          publishes bush/pipeline/sentiment/result
                          drives bush/flame/pulse (binary poofer, looped to tts/done)
-    → bush-flame-expression    smooths sentiment → bush/fire/valve/target (10 Hz)
+    → bush-variable-valves    smooths sentiment → bush/fire/valve/target (10 Hz)
                               relay-control on Pico forwards target to MKS SERVO42C
 ```
 
@@ -353,7 +353,7 @@ STEP 4 — Walk through the material at the right depth.
       - if transcript but no verse → t2v; check Ollama + ChromaDB
       - if verse but no audio → TTS; check journalctl for bush-tts +
         sox stderr in the journal
-      - if audio but no flame → sentiment + flame-expression + Pico
+      - if audio but no flame → sentiment + variable-valves + Pico
     Use only read-only commands (`journalctl`, `mosquitto_sub`,
     `systemctl status` is read-only; `systemctl restart` is NOT).
     If a fix would require restarting services, hand them the command

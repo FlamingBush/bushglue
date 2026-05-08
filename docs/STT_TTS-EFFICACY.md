@@ -159,7 +159,7 @@ a default TTS bench corpus ships at `data/tts-bench-corpus.tsv` (9 utterances sp
 
 - **Piper sounds human-shaped.** espeak is intelligible but robotic; Piper en_GB-alan-medium is naturalistic. the bush's reverb/pitch/gain effects ride on top, so the *character* (deep, distant, oracular) is preserved across the engine swap. think "old man's voice from across the cliff" instead of "synthesizer's voice from across the cliff."
 - **Engine adapter preserves shipping path.** same env-var swap argument as STT.
-- **Same MQTT contract.** `bush/pipeline/tts/speaking` and `bush/pipeline/tts/done` semantics unchanged; the flame-expression service, sentiment fire loop, and STT mute gate all keep working.
+- **Same MQTT contract.** `bush/pipeline/tts/speaking` and `bush/pipeline/tts/done` semantics unchanged; the variable-valves service, sentiment fire loop, and STT mute gate all keep working.
 
 ### 2.3 What the new pipelines do NOT buy us
 

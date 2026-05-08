@@ -6,7 +6,7 @@
 # sentiment, audio-agent, discord, chroma).  Omit SERVICE to target all
 # pipeline daemons.
 
-PIPELINE=(bush-stt bush-t2v bush-tts bush-sentiment bush-audio-agent bush-flame-expression)
+PIPELINE=(bush-stt bush-t2v bush-tts bush-sentiment bush-audio-agent bush-variable-valves)
 
 # Expand short names to full unit names
 resolve() {
@@ -16,7 +16,7 @@ resolve() {
         tts)          echo bush-tts ;;
         sentiment)    echo bush-sentiment ;;
         audio-agent)  echo bush-audio-agent ;;
-        flame*)       echo bush-flame-expression ;;
+        flame*|valve*|variable*) echo bush-variable-valves ;;
         discord)      echo bush-discord ;;
         chroma*)      echo chromadb ;;
         *)            echo "$1" ;;

@@ -72,7 +72,7 @@ legacy fallback is one env-var away: `STT_USE_VAD=0`, `TTS_ENGINE=espeak`. keep 
 | Board | **Raspberry Pi Pico 2 W** | RP2350, CircuitPython, MQTT-over-WiFi |
 | Output 1 | Solenoid relay → poofer | binary on/off, the explosive one |
 | Output 2 | UART → MKS SERVO42C-MT V1.1 | drives motorized needle valve for smooth flame modulation (PLAN2) |
-| Inputs | retained MQTT `bush/fire/valve/target` etc. | 10 Hz target stream from `bush-flame-expression` |
+| Inputs | retained MQTT `bush/fire/valve/target` etc. | 10 Hz target stream from `bush-variable-valves` |
 
 ### Stepper servo (motorized needle valve, per PLAN2)
 

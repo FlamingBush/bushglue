@@ -37,7 +37,7 @@ digraph bushglue {
     TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
     SENTIMENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nsentiment analysis\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
     RELAYS [label="relay-control/\nCIRCUITPY/code.py\n──────────────\nrpi pico 2\nlives in orange box" fillcolor="#cfe2f3" color="#1155cc"]
-    FLAME_EXPR [label="bush-flame-expression\n──────────────\nsentiment → valve\nspeech modulation\n10 Hz target" fillcolor="#cfe2f3" color="#1155cc"]
+    FLAME_EXPR [label="bush-variable-valves\n──────────────\nsentiment → valve\nspeech modulation\n10 Hz target" fillcolor="#cfe2f3" color="#1155cc"]
     NEEDLE_VALVE [label="Needle Valve\n(propane modulation)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
 
     // Layout hints

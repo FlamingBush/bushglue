@@ -18,13 +18,13 @@ test = [
 bush-audio-agent = "bush_audio_agent:main"
 bush-t2v = "bush_t2v:main"
 bush-tts = "bush_tts:main"
-bush-flame-expression = "bush_flame_expression:main"
+bush-variable-valves = "bush_variable_valves:main"
 
 [tool.uv.sources]
 bushutil = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bush_audio_agent", "src/bush_t2v", "src/bush_tts", "src/bush_flame_expression"]
+packages = ["src/bush_audio_agent", "src/bush_t2v", "src/bush_tts", "src/bush_variable_valves"]
 
 [build-system]
 requires = ["hatchling"]
