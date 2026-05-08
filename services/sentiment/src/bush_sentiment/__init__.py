@@ -17,9 +17,27 @@ classifier = None
 def _load_model():
     global classifier
     print("[sentiment] Loading DistilBERT model...", flush=True)
-    classifier = hf_pipeline("text-classification", model='bhadresh-savani/distilbert-base-uncased-emotion', return_all_scores=True)
-    classifier("Weeeeee!")  # warmup
-    print("[sentiment] Model ready.", flush=True)
+    # transformers 5.x removed `return_all_scores=True`; the equivalent is `top_k=None`.
+    # Output shape is now `[[{label, score}, ...]]` — outer list is the batch dim,
+    # inner list is one dict per emotion class. Callers unwrap via `[0]`.
+    classifier = hf_pipeline(
+        "text-classification",
+        model='bhadresh-savani/distilbert-base-uncased-emotion',
+        top_k=None,
+    )
+    out = classifier("Weeeeee!")
+    if not (
+        isinstance(out, list)
+        and len(out) == 1
+        and isinstance(out[0], list)
+        and out[0]
+        and all(isinstance(x, dict) and "label" in x and "score" in x for x in out[0])
+    ):
+        raise RuntimeError(
+            f"[sentiment] classifier warmup returned unexpected shape: {out!r}. "
+            "Expected `[[{label, score}, ...]]`. transformers API may have shifted again."
+        )
+    print(f"[sentiment] Model ready ({len(out[0])} emotion classes).", flush=True)
 
 
 # For the HTTP server
@@ -119,7 +137,7 @@ def _start_fire(pattern: dict, score: float, mqttc: mqtt.Client):
 
 def _classify_and_fire(verse_text: str, mqttc: mqtt.Client):
     """Classify verse_text, start sustained fire pattern, return (scores, label, score)."""
-    scores = classifier(verse_text)  # list of {label, score} dicts
+    scores = classifier(verse_text)[0]  # unwrap batch dim → list of {label, score} dicts
     top = sorted(scores, key=lambda x: x["score"], reverse=True)[0]
     label = top["label"]
     score = top["score"]
@@ -221,7 +239,7 @@ class Server(BaseHTTPRequestHandler):
             self.resp(400, {'error': "Post must contain json object with affected_text or text key"})
             return
 
-        self.resp(200, {'message': message, 'classification': classifier(message)})
+        self.resp(200, {'message': message, 'classification': classifier(message)[0]})
 
 def main():
     _start_mqtt_thread()   # subscribe first — messages queue while model loads
