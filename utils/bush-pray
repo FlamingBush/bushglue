@@ -39,8 +39,9 @@ def phrase_to_filename(phrase: str) -> str:
 def synthesize(phrase: str, out_path: Path) -> None:
     # Write to a sibling tmp path and rename on success — sox writes the WAV
     # header up-front and only finalizes on close, so a crash mid-encode would
-    # otherwise leave a 0-byte or truncated file at the cache path.
-    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    # otherwise leave a 0-byte or truncated file at the cache path. Tmp name
+    # keeps the .wav suffix because sox infers output format from extension.
+    tmp_path = out_path.with_name(f"{out_path.stem}.tmp{out_path.suffix}")
     espeak = subprocess.Popen(
         ["espeak-ng", "-v", "en-us", "-s", "130", "--stdout", phrase],
         stdout=subprocess.PIPE,
