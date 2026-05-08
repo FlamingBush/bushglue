@@ -683,7 +683,7 @@ class BushBot(discord.Client):
 
     AUTO_JOIN_CHANNEL = "General"
     IDLE_LEAVE_S      = 300   # 5 minutes
-    VOICE_STALL_S     = 90    # rejoin if no audio frames seen for this long with users in VC
+    VOICE_STALL_S     = 90    # stall + recent voice_recv error ⇒ rejoin (real wedge)
 
     def __init__(self, guild_id: Optional[int], bridge: MQTTBridge):
         intents = discord.Intents.default()
@@ -702,6 +702,17 @@ class BushBot(discord.Client):
         self._idle_task:      Optional[asyncio.Task]        = None
         self._watchdog_task:  Optional[asyncio.Task]        = None
         self._last_audio_frame_ts: float = 0.0
+        self._voice_recv_last_error_ts: float = 0.0
+        # Capture ERROR-level events from discord.ext.voice_recv (e.g. CryptoError
+        # in the reader thread) — these are the breadcrumb that the receiver has
+        # wedged. Watchdog uses this to distinguish "wedged" from "users quiet".
+        _bot_self = self
+        class _VRErrorHandler(logging.Handler):
+            def emit(self, record):
+                _bot_self._voice_recv_last_error_ts = time.time()
+        _vr_handler = _VRErrorHandler()
+        _vr_handler.setLevel(logging.ERROR)
+        logging.getLogger("discord.ext.voice_recv").addHandler(_vr_handler)
 
         @self.tree.command(name="pray", description="Run the Bush pipeline with a phrase")
         @app_commands.describe(phrase="The phrase to inject into the pipeline")
@@ -795,13 +806,12 @@ class BushBot(discord.Client):
             pass
 
     async def _voice_watchdog(self):
-        """Periodically check voice health; rejoin if WS dropped OR receiver wedged.
+        """Periodically check voice health; rejoin on WS drop or wedge.
 
-        Two failure modes are covered:
-          1. WS 1006 disconnect — vc.is_connected() goes False.
-          2. voice_recv decoder thread dies on CryptoError but VC stays connected,
-             so on_audio stops firing. Detected via VOICE_STALL_S since last frame
-             while users are in the channel.
+        Wedge detection: VC connected but voice_recv stopped delivering frames
+        (stall > VOICE_STALL_S) AND a voice_recv error was logged after the
+        last successful frame. Quiet conversation lulls update neither
+        timestamp, so they never trigger rejoin.
         """
         try:
             while True:
@@ -819,14 +829,16 @@ class BushBot(discord.Client):
                         print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
                     continue
                 stall = time.time() - self._last_audio_frame_ts
-                has_users = channel and any(not m.bot for m in channel.members)
-                if has_users and stall > self.VOICE_STALL_S:
-                    print(f"[bot] Watchdog: receiver stalled {stall:.0f}s with users in {channel.name}, rejoining", flush=True)
-                    try:
-                        await self._leave_voice()
-                        await self._join_voice(channel)
-                    except Exception as e:
-                        print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
+                if stall < self.VOICE_STALL_S:
+                    continue
+                if self._voice_recv_last_error_ts <= self._last_audio_frame_ts:
+                    continue  # users are just quiet, not wedged
+                print(f"[bot] Watchdog: receiver wedged (stall {stall:.0f}s, error after last frame), rejoining {channel.name}", flush=True)
+                try:
+                    await self._leave_voice()
+                    await self._join_voice(channel)
+                except Exception as e:
+                    print(f"[bot] Watchdog rejoin failed: {e}", flush=True)
         except asyncio.CancelledError:
             pass
 
@@ -1061,6 +1073,7 @@ class BushBot(discord.Client):
                         # UnencryptedWhenPassthroughDisabled = transitional packet, skip silently
                         if "UnencryptedWhenPassthroughDisabled" not in str(e):
                             print(f"[voice-recv] DAVE decrypt error: {e}", flush=True)
+                            self._voice_recv_last_error_ts = time.time()
                         return
                 elif dave and not user:
                     return  # user unknown, can't decrypt
@@ -1069,6 +1082,7 @@ class BushBot(discord.Client):
                     pcm = opus_dec.decode(raw, fec=False)
                 except Exception as e:
                     print(f"[voice-recv] opus decode error: {e}", flush=True)
+                    self._voice_recv_last_error_ts = time.time()
                     return
                 loopback.push(pcm)
 
