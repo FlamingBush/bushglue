@@ -56,6 +56,34 @@ See the [root README](../README.md) for setup and deploy instructions.
 | `bush/audio/tts/set-clarity` | → | (external) | bush-tts |
 | `bush/audio/tts/clarity` | ← | bush-tts | (external tools) |
 
+### Service Health Contract (per-service observability)
+
+Every service that uses `bushutil.MqttServiceClient` publishes three topics
+so operators can tell at a glance what's alive, what's loading, what's
+crashed, and what version is running:
+
+| Topic | Direction | Publisher | Subscribers | Retained | Payload |
+|-------|-----------|-----------|-------------|----------|---------|
+| `bush/<service>/status` | ← | each service | bush-monitor, bush-discord | YES | `offline` \| `starting` \| `ready` |
+| `bush/<service>/version` | ← | each service | bush-monitor, bush-discord | YES | git short hash, e.g. `a2094e4` |
+| `bush/<service>/fault` | ← | each service | bush-monitor, bush-discord, alerts | NO | `{"error": "...", "ts": ..., ...context}` |
+
+`<service>` ∈ {`stt`, `t2v`, `tts`, `sentiment`, `flame-expression`, `audio-agent`, `discord`, ...} as services migrate to the new contract.
+
+**Lifecycle:**
+
+```
+  systemctl start  →  status=offline  (LWT pre-set, will fire on crash)
+  MQTT connected   →  status=starting + version=<hash>   (retained)
+  model loaded     →  status=ready                       (retained)
+  service crashes  →  status=offline   (LWT, broker-side, retained)
+  systemctl stop   →  status=offline   (explicit, retained — overrides LWT)
+```
+
+**Fault topic** carries live exceptions and is **not retained** so the topic
+doesn't accumulate stale errors across restarts. Operator-facing alerting
+(Discord bot subscriptions, dashboards) consume this for real-time signaling.
+
 ---
 
 ## Message Payloads
