@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""
+bush-stt-leak-bisect — unattended memory-leak bisect for bush-stt.
+
+Runs three configurations of bush-stt back-to-back via a systemd drop-in,
+samples /proc/<pid>/status RSS every 30 s, drives pipeline activity by
+injecting a phrase every 60 s with bush-pray, and at the end fits a
+linear slope (MB/min) to the last 30 min of each run to identify which
+subsystem leaks.
+
+Configurations:
+  A  STT_USE_VAD=1 STT_USE_RNNOISE=1   baseline (current production)
+  B  STT_USE_VAD=1 STT_USE_RNNOISE=0   new VAD without RNNoise
+  D  STT_USE_VAD=0 STT_USE_RNNOISE=0   legacy pure-Vosk path
+
+Run as the odroid user; uses `sudo` only for the privileged systemd
+operations (drop-in install/remove, daemon-reload, restart).
+
+Total wall-clock: ~2 h 30 min. Output under /tmp/bush-stt-leak-bisect/.
+"""
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CONFIGS = [
+    ("A", "baseline",   {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "1"}),
+    ("B", "no-rnnoise", {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "0"}),
+    ("D", "legacy",     {"STT_USE_VAD": "0", "STT_USE_RNNOISE": "0"}),
+]
+
+WARMUP_S        = 30
+SAMPLE_PERIOD_S = 30
+INJECT_PERIOD_S = 60
+PHASE_S         = 45 * 60
+SLOPE_TAIL_S    = 30 * 60
+
+LEAK_THRESHOLD_MB_MIN   = 10.0
+STABLE_THRESHOLD_MB_MIN = 2.0
+
+DROPIN_DIR  = Path("/etc/systemd/system/bush-stt.service.d")
+DROPIN_PATH = DROPIN_DIR / "leak-bisect.conf"
+OUTPUT_DIR  = Path("/tmp/bush-stt-leak-bisect")
+PHRASE      = "what is the meaning of fire"
+INJECT_PY   = "/home/odroid/bushglue/.venv/bin/python3"
+INJECT_BIN  = "/home/odroid/bushglue/utils/bush-pray"
+
+
+def log(msg: str) -> None:
+    print(f"[bisect {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def sh(cmd, **kw):
+    return subprocess.run(cmd, **kw)
+
+
+def write_dropin(env: dict[str, str]) -> None:
+    body = "[Service]\n" + "".join(f"Environment={k}={v}\n" for k, v in env.items())
+    sh(["sudo", "mkdir", "-p", str(DROPIN_DIR)], check=True)
+    sh(["sudo", "tee", str(DROPIN_PATH)],
+       input=body, text=True, check=True, stdout=subprocess.DEVNULL)
+
+
+def remove_dropin() -> None:
+    sh(["sudo", "rm", "-f", str(DROPIN_PATH)], check=False)
+
+
+def daemon_reload_restart() -> None:
+    sh(["sudo", "systemctl", "daemon-reload"], check=True)
+    sh(["sudo", "systemctl", "restart", "bush-stt"], check=True)
+
+
+def get_pid() -> int | None:
+    out = sh(["systemctl", "show", "bush-stt", "-p", "MainPID", "--value"],
+             capture_output=True, text=True, check=True).stdout.strip()
+    return int(out) if out.isdigit() and int(out) > 0 else None
+
+
+def read_rss(pid: int) -> tuple[int, int] | None:
+    try:
+        text = Path(f"/proc/{pid}/status").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    rss = vsz = None
+    for line in text.splitlines():
+        if line.startswith("VmRSS:"):
+            rss = int(line.split()[1]) // 1024
+        elif line.startswith("VmSize:"):
+            vsz = int(line.split()[1]) // 1024
+    return (rss, vsz) if rss is not None and vsz is not None else None
+
+
+def inject_async(state: dict) -> None:
+    """Fire-and-forget bush-pray. Skips if a previous one is still running."""
+    prev = state.get("inject_proc")
+    if prev is not None and prev.poll() is None:
+        log("  injection skipped: previous bush-pray still running")
+        return
+    proc = subprocess.Popen(
+        [INJECT_PY, INJECT_BIN, "--phrase", PHRASE],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    state["inject_proc"] = proc
+
+
+def slope_mb_per_min(samples: list[tuple[float, int, int, int]],
+                     tail_s: int) -> float | None:
+    """Linear-fit slope of rss_mb vs uptime_s over last `tail_s`. Returns MB/min."""
+    if len(samples) < 2:
+        return None
+    t_end = samples[-1][1]
+    cutoff = t_end - tail_s
+    tail = [(s[1], s[2]) for s in samples if s[1] >= cutoff]
+    if len(tail) < 2:
+        return None
+    n = len(tail)
+    sx  = sum(t for t, _ in tail)
+    sy  = sum(r for _, r in tail)
+    sxx = sum(t * t for t, _ in tail)
+    sxy = sum(t * r for t, r in tail)
+    denom = n * sxx - sx * sx
+    if denom == 0:
+        return None
+    slope_mb_s = (n * sxy - sx * sy) / denom
+    return slope_mb_s * 60.0
+
+
+def run_phase(name: str, label: str, env: dict[str, str]) -> dict:
+    log(f"=== Config {name} ({label}): {env} ===")
+    write_dropin(env)
+    daemon_reload_restart()
+    log(f"warmup {WARMUP_S}s")
+    time.sleep(WARMUP_S)
+
+    pid = get_pid()
+    if pid is None:
+        log(f"ERROR: bush-stt has no PID after restart; skipping {name}")
+        return {"name": name, "label": label, "samples": [], "error": "no PID"}
+
+    out_dir = OUTPUT_DIR / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = out_dir / "rss.csv"
+
+    samples: list[tuple[float, int, int, int]] = []
+    inject_state: dict = {}
+    start = time.monotonic()
+    last_inject = -INJECT_PERIOD_S  # inject immediately on first iter
+
+    with csv_path.open("w") as f:
+        f.write("ts,uptime_s,rss_mb,vsz_mb\n")
+        while True:
+            elapsed = time.monotonic() - start
+            if elapsed >= PHASE_S:
+                break
+            now = time.time()
+            if (time.monotonic() - last_inject - start) >= INJECT_PERIOD_S:
+                inject_async(inject_state)
+                last_inject = time.monotonic() - start
+
+            r = read_rss(pid)
+            if r is None:
+                # bush-stt may have restarted under us (e.g. OOM-killed during run)
+                new_pid = get_pid()
+                if new_pid is not None and new_pid != pid:
+                    log(f"  PID changed {pid} -> {new_pid} (bush-stt restarted mid-run)")
+                    pid = new_pid
+                    r = read_rss(pid)
+
+            if r is not None:
+                rss, vsz = r
+                row = (now, int(elapsed), rss, vsz)
+                samples.append(row)
+                f.write(f"{now:.1f},{int(elapsed)},{rss},{vsz}\n")
+                f.flush()
+                log(f"  t={int(elapsed):4d}s  rss={rss} MB  vsz={vsz} MB")
+            else:
+                log(f"  t={int(elapsed):4d}s  rss=?? (no PID)")
+
+            time.sleep(SAMPLE_PERIOD_S)
+
+    return {"name": name, "label": label, "samples": samples}
+
+
+def cleanup() -> None:
+    log("cleanup: removing drop-in and restarting bush-stt to production env")
+    try:
+        remove_dropin()
+        daemon_reload_restart()
+    except Exception as e:
+        log(f"cleanup error: {e}")
+
+
+def write_summary(results: list[dict]) -> str:
+    lines: list[str] = []
+    slopes: list[tuple[str, str, float]] = []
+    for r in results:
+        if r.get("error") or not r.get("samples"):
+            lines.append(f"config {r['name']:1} {r['label']:<12}  "
+                         f"{'ERROR: ' + r['error'] if r.get('error') else 'no samples'}")
+            continue
+        samples = r["samples"]
+        rss_start = samples[0][2]
+        rss_end   = samples[-1][2]
+        slope     = slope_mb_per_min(samples, SLOPE_TAIL_S)
+        slope_str = f"{slope:>5.1f}" if slope is not None else "  n/a"
+        if slope is not None:
+            slopes.append((r["name"], r["label"], slope))
+        lines.append(
+            f"config {r['name']:1} {r['label']:<12}  "
+            f"start={rss_start:5} MB  end={rss_end:5} MB  "
+            f"slope={slope_str} MB/min  samples={len(samples)}"
+        )
+
+    leaky  = [(n, l, s) for n, l, s in slopes if s >= LEAK_THRESHOLD_MB_MIN]
+    stable = [(n, l, s) for n, l, s in slopes if s <= STABLE_THRESHOLD_MB_MIN]
+
+    lines.append("----")
+    if leaky and stable and (len(leaky) + len(stable) == len(slopes)):
+        leaky_names  = ", ".join(n for n, _, _ in leaky)
+        stable_names = ", ".join(n for n, _, _ in stable)
+        verdict = (f"Verdict: leaky configs: {leaky_names}; stable: {stable_names}. "
+                   f"Suspect: {suspect_for(leaky)}")
+    else:
+        verdict = "Verdict: ambiguous; inspect rss.csv per config manually"
+    lines.append(verdict)
+    return "\n".join(lines) + "\n"
+
+
+def suspect_for(leaky: list[tuple[str, str, float]]) -> str:
+    names = {n for n, _, _ in leaky}
+    if names == {"A"}:
+        return "RNNoise / denoise.py (B excluded; legacy excluded)"
+    if names == {"A", "B"}:
+        return "new VAD pipeline (vad.py / Silero / per-utterance KaldiRecognizer)"
+    if names == {"A", "B", "D"}:
+        return "shared code: capture loop / Vosk model / MQTT thread (legacy also leaks)"
+    if names == {"A", "D"}:
+        return "unusual pattern (A and D leak but B doesn't); inspect manually"
+    if names == {"D"}:
+        return "legacy-only pattern (very unusual); inspect manually"
+    return ", ".join(sorted(names))
+
+
+def main() -> int:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    def on_signal(*_):
+        log("signal received, cleaning up")
+        cleanup()
+        sys.exit(130)
+    signal.signal(signal.SIGINT,  on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+
+    results: list[dict] = []
+    try:
+        for name, label, env in CONFIGS:
+            try:
+                results.append(run_phase(name, label, env))
+            except Exception as e:
+                log(f"phase {name} crashed: {type(e).__name__}: {e}")
+                results.append({"name": name, "label": label, "samples": [],
+                                "error": f"{type(e).__name__}: {e}"})
+    finally:
+        log("=== final cleanup ===")
+        cleanup()
+
+    summary = write_summary(results)
+    log("\n" + summary)
+    (OUTPUT_DIR / "summary.txt").write_text(summary)
+    log(f"summary written to {OUTPUT_DIR / 'summary.txt'}")
+
+    # exit code: 0 if conclusive, 1 if ambiguous
+    return 0 if "Verdict: leaky configs" in summary else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
