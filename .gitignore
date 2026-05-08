@@ -3,3 +3,4 @@ __pycache__
 *.egg-info/
 t2v/target/
 data/chromadb/
+.gstack/
