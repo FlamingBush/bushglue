@@ -321,26 +321,13 @@ def main():
     audio_queue: queue.Queue[bytes] = queue.Queue()
     current_device = STT_DEVICE
 
-    def _feed_capture(proc, stop_evt, device):
-        """Background thread: reads parec/arecord stdout into audio_queue.
-
-        Publishes status='ok' on TOPIC_DEVICE_STATUS once the first non-empty
-        chunk has been read — this is the readiness signal external injectors
-        (bush-pray) interlock against. Until then the topic carries 'starting'.
-        """
-        first_chunk = True
+    def _feed_capture(proc, stop_evt):
+        """Background thread: reads parec/arecord stdout into audio_queue."""
         while not stop_evt.is_set():
             try:
                 data = proc.stdout.read(CHUNK)
                 if not data:
                     break
-                if first_chunk:
-                    first_chunk = False
-                    mqttc.publish(
-                        TOPIC_DEVICE_STATUS,
-                        json.dumps({"device": device, "status": "ok"}),
-                        retain=True,
-                    )
                 audio_queue.put(data)
             except Exception:
                 break
@@ -553,14 +540,12 @@ def main():
             try:
                 parec_proc = _open_capture(current_device, CAPTURE_SAMPLE_RATE)
                 reader_thread = threading.Thread(
-                    target=_feed_capture,
-                    args=(parec_proc, reader_stop, current_device),
-                    daemon=True,
+                    target=_feed_capture, args=(parec_proc, reader_stop), daemon=True
                 )
                 reader_thread.start()
 
                 mqttc.publish(TOPIC_DEVICE_STATUS,
-                              json.dumps({"device": current_device, "status": "starting"}),
+                              json.dumps({"device": current_device, "status": "ok"}),
                               retain=True)
                 log("Listening. Speak a query...")
 
