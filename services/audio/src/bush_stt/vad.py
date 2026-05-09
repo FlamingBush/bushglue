@@ -153,6 +153,7 @@ class VadEndpointer:
         # point is contaminated by what triggered the TTS.
         self._pre_roll.clear()
         self._partial.clear()
+        self._reset_model_states()
 
     def reset(self) -> None:
         """Full state reset. Used on tts/done."""
@@ -164,6 +165,13 @@ class VadEndpointer:
         self._voice_ms = 0
         self._pre_roll.clear()
         self._partial.clear()
+        self._reset_model_states()
+
+    def _reset_model_states(self) -> None:
+        """Clear Silero's LSTM hidden state so it doesn't carry across utterances."""
+        reset_fn = getattr(self._model, "reset_states", None)
+        if callable(reset_fn):
+            reset_fn()
 
     def close(self) -> None:
         """Release model resources. Idempotent."""
@@ -263,18 +271,18 @@ class VadEndpointer:
 
     def _frame_voice_prob(self, frame_bytes: bytes) -> float:
         """Run Silero VAD on one 512-sample frame, return voice probability in [0,1]."""
-        # Convert int16 LE bytes to float32 in [-1, 1]
         arr = np.frombuffer(frame_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        # Silero expects torch.Tensor of shape (n,) for one frame.
-        # If torch is available, wrap as tensor; otherwise pass numpy through
-        # so test stubs (which return plain floats) can run without torch.
         try:
             import torch
             audio_in = torch.from_numpy(arr)
+            # inference_mode is required: without it Silero's LSTM accumulates
+            # autograd graph through its hidden-state buffers across forward
+            # calls, leaking ~27 KB per frame (~50 MB/min at 31 fps).
+            with torch.inference_mode():
+                result = self._model(audio_in, SAMPLE_RATE)
         except ImportError:
             audio_in = arr
-        result = self._model(audio_in, SAMPLE_RATE)
-        # Real Silero returns a torch.Tensor; test stubs return float/int.
+            result = self._model(audio_in, SAMPLE_RATE)
         if hasattr(result, "item"):
             result = result.item()
         return float(result)
