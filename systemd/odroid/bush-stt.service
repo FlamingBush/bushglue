@@ -9,6 +9,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 Environment=STT_USE_VAD=1
 Environment=STT_USE_RNNOISE=1
+Environment=STT_ENGINE=whisper-rknn
 ExecStart=/home/odroid/bushglue/.venv/bin/bush-stt
 Restart=on-failure
 RestartSec=5
