@@ -362,8 +362,12 @@ def main():
     # ── pipeline-specific pre-flight ──────────────────────────────────────
     if STT_USE_VAD:
         log("starting NEW pipeline (VAD enabled)")
-        engine = _build_engine()
+        # Build VAD before the engine: with STT_ENGINE=whisper-rknn, importing
+        # rknnlite/librknnrt.so first leaves Python's logging module in a
+        # state that breaks silero-vad's transitive torch.fx import. Loading
+        # silero first sidesteps the issue.
         vad, denoise, resampler = _build_pipeline()
+        engine = _build_engine()
         vad_ref[0] = vad
     else:
         log("starting LEGACY pipeline (Vosk streaming)")
