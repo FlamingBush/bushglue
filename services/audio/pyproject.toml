@@ -6,12 +6,14 @@ requires-python = ">=3.11"
 dependencies = [
     "paho-mqtt>=2.0",
     "numpy>=1.24",
+    "scipy>=1.10",
     "sounddevice>=0.4",
     "vosk>=0.3",
     "silero-vad>=5.0",
     "soxr>=0.5",
     "pyrnnoise>=0.4",
     "pywhispercpp>=1.2.0",
+    "rknn-toolkit-lite2; platform_machine == 'aarch64' and sys_platform == 'linux'",
     "bushutil",
 ]
 
@@ -19,9 +21,6 @@ dependencies = [
 test = [
     "pytest>=7.0",
     "pytest-mock>=3.0",
-]
-npu = [
-    "rknn-toolkit-lite2; platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 
 [project.scripts]

@@ -71,10 +71,20 @@ def log(msg: str) -> None:
 # ── model loading ─────────────────────────────────────────────────────────────
 
 def _default_load_model():
-    """Load Silero VAD via the official package. Returns a callable
-    (audio_tensor: torch.Tensor, sample_rate: int) -> torch.Tensor of probs.
+    """Load Silero VAD. Returns a callable
+    (audio: torch.Tensor|ndarray, sample_rate: int) -> tensor|scalar of probs.
+
+    Backend selected by VAD_BACKEND env var: "torch" (default) or "rknn".
     """
+    backend = os.environ.get("VAD_BACKEND", "torch").lower()
+    if backend == "rknn":
+        from bush_stt.engines.silero_rknn import load_silero_vad_rknn
+        log("backend: rknn")
+        return load_silero_vad_rknn()
+    if backend != "torch":
+        raise RuntimeError(f"Unknown VAD_BACKEND={backend!r}; must be torch|rknn")
     from silero_vad import load_silero_vad
+    log("backend: torch")
     return load_silero_vad()
 
 

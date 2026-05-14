@@ -179,10 +179,14 @@ def _build_engine():
         from bush_stt.engines.whisper_subprocess import WhisperSubprocessEngine
         log("using engine: whisper-subprocess")
         return WhisperSubprocessEngine()
+    elif STT_ENGINE_NAME == "whisper-rknn":
+        from bush_stt.engines.whisper_rknn import WhisperRknnEngine
+        log("using engine: whisper-rknn")
+        return WhisperRknnEngine()
     else:
         raise RuntimeError(
             f"Unknown STT_ENGINE={STT_ENGINE_NAME!r}; "
-            f"must be vosk|whisper-bindings|whisper-subprocess"
+            f"must be vosk|whisper-bindings|whisper-subprocess|whisper-rknn"
         )
 
 

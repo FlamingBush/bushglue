@@ -115,6 +115,25 @@ ssh odroid 'sudo cp ~/bushglue/systemd/odroid/*.service /etc/systemd/system/ && 
 ssh odroid 'sudo systemctl restart bush-stt bush-tts bush-t2v bush-sentiment bush-variable-valves bush-audio-agent'
 ```
 
+### NPU runtime (one-time, odroid)
+
+bush-stt's `VAD_BACKEND=rknn` and `STT_ENGINE=whisper-rknn` paths need the RK3588 NPU live. Once per host:
+
+```bash
+ssh odroid 'echo rknpu | sudo tee /etc/modules-load.d/rknpu.conf && sudo modprobe rknpu'
+ssh odroid 'echo '\''KERNEL=="renderD129", MODE="0660", GROUP="render"'\'' | sudo tee /etc/udev/rules.d/99-rknpu.rules && sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=drm'
+ssh odroid 'sudo usermod -aG render odroid'
+ssh odroid 'cd ~/bushglue && .venv/bin/python utils/bush-npu-check'
+```
+
+Models live in `models/rknn/` (git-lfs). Build them on an x86_64 Linux host:
+
+```bash
+pip install rknn-toolkit2  # x86 host, not the odroid
+python tools/convert-rknn.py --all
+git add models/rknn/*.rknn && git commit -m 'rknn: add converted artifacts'
+```
+
 ## Detailed docs
 
 See [docs/README.md](docs/README.md) for audio management topics, message payloads, timing constants, and emotion-to-fire patterns.

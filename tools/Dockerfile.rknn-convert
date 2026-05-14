@@ -1,0 +1,42 @@
+# Conversion environment for rknn-toolkit2. amd64-only.
+# Build: docker build --platform linux/amd64 -f tools/Dockerfile.rknn-convert -t bushglue-rknn .
+# Run:   docker run --rm --platform linux/amd64 -v "$PWD:/work" -w /work bushglue-rknn python tools/convert-rknn.py --all
+#
+# Pinned to rknn-toolkit2 v2.3.2 to match the rknn-toolkit-lite2 2.3.2
+# installed on the odroid runtime (a converter newer than the runtime
+# produces .rknn files the runtime cannot load).
+FROM python:3.10-bookworm
+
+ARG RKNN_REV=v2.3.2
+ARG RKNN_WHL=rknn_toolkit2-2.3.2-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ARG RKNN_RAW=https://github.com/airockchip/rknn-toolkit2/raw/${RKNN_REV}/rknn-toolkit2/packages/x86_64
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/rknn
+
+# Fetch wheel + requirements in their own layer so a transient network
+# failure doesn't blow away the slow pip-install layer below.
+RUN curl -fsSL -o requirements.txt ${RKNN_RAW}/requirements_cp310-2.3.2.txt \
+ && curl -fsSL -O ${RKNN_RAW}/${RKNN_WHL}
+
+# Heavy install (torch + opencv + onnx + scipy + ...) — ~20 min under amd64
+# emulation on Apple Silicon. Cached after the first success.
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN pip install --no-cache-dir ./${RKNN_WHL}
+
+# rknn-toolkit2 2.3.2 calls onnx.mapping which onnx removed in 1.18+. The
+# upstream requirements_cp310-2.3.2.txt is open-ended ("onnx>=1.16.1"), so
+# pip resolves to a too-new version. Pin to the last working release.
+RUN pip install --no-cache-dir 'onnx==1.17.0'
+
+# --no-deps on silero-vad — we only need its bundled silero_vad.onnx; pulling
+# the torch+torchaudio chain drags in CUDA libs that don't exist in this image.
+RUN pip install --no-cache-dir --no-deps silero-vad \
+ && pip install --no-cache-dir soundfile
+
+CMD ["python", "tools/convert-rknn.py", "--all"]

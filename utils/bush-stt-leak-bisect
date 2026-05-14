@@ -9,14 +9,24 @@ linear slope (MB/min) to the last 30 min of each run to identify which
 subsystem leaks.
 
 Configurations:
-  A  STT_USE_VAD=1 STT_USE_RNNOISE=1   baseline (current production)
+  A  STT_USE_VAD=1 STT_USE_RNNOISE=1   baseline (current production: Vosk + torch VAD)
   B  STT_USE_VAD=1 STT_USE_RNNOISE=0   new VAD without RNNoise
+  C  torch VAD, Whisper on NPU         runnable today (whisper-rknn only)
   D  STT_USE_VAD=0 STT_USE_RNNOISE=0   legacy pure-Vosk path
+  E  VAD on NPU, Whisper.cpp on CPU    pending Silero RKNN conversion
+  F  VAD on NPU, Whisper on NPU        pending Silero RKNN conversion
+
+C requires models/rknn/whisper_*.rknn (committed via git-lfs). E and F also
+need models/rknn/silero_vad.rknn — Silero's ONNX export has an If-node
+sample-rate branch that rknn-toolkit2 won't accept without graph surgery
+(separate work). All NPU configs need the rknpu kernel module — see README
+"Deploy to ODROID".
 
 Run as the odroid user; uses `sudo` only for the privileged systemd
 operations (drop-in install/remove, daemon-reload, restart).
 
-Total wall-clock: ~2 h 30 min. Output under /tmp/bush-stt-leak-bisect/.
+Total wall-clock: ~3 h 45 min for all five configs (45 min each, plus warmup
+and inter-phase restart settle). Output under /tmp/bush-stt-leak-bisect/.
 """
 from __future__ import annotations
 
@@ -28,9 +38,17 @@ import time
 from pathlib import Path
 
 CONFIGS = [
-    ("A", "baseline",   {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "1"}),
-    ("B", "no-rnnoise", {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "0"}),
-    ("D", "legacy",     {"STT_USE_VAD": "0", "STT_USE_RNNOISE": "0"}),
+    ("A", "baseline",     {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "1"}),
+    ("B", "no-rnnoise",   {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "0"}),
+    ("C", "whisper-rknn", {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "1",
+                           "STT_ENGINE": "whisper-rknn"}),
+    ("D", "legacy",       {"STT_USE_VAD": "0", "STT_USE_RNNOISE": "0"}),
+    ("E", "vad-rknn",     {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "1",
+                           "VAD_BACKEND": "rknn",
+                           "STT_ENGINE": "whisper-bindings"}),
+    ("F", "all-rknn",     {"STT_USE_VAD": "1", "STT_USE_RNNOISE": "1",
+                           "VAD_BACKEND": "rknn",
+                           "STT_ENGINE": "whisper-rknn"}),
 ]
 
 WARMUP_S        = 30
@@ -242,6 +260,12 @@ def suspect_for(leaky: list[tuple[str, str, float]]) -> str:
         return "unusual pattern (A and D leak but B doesn't); inspect manually"
     if names == {"D"}:
         return "legacy-only pattern (very unusual); inspect manually"
+    if names == {"C"} or names == {"C", "F"}:
+        return "whisper-rknn engine (encoder/decoder state retention)"
+    if names == {"E"} or names == {"E", "F"}:
+        return "silero-rknn / rknnlite runtime (VAD-NPU path leaks)"
+    if names == {"F"}:
+        return "whisper-rknn or silero-rknn (need C/E to disambiguate)"
     return ", ".join(sorted(names))
 
 
