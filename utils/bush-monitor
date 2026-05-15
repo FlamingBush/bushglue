@@ -57,7 +57,11 @@ TOPICS = [
     "bush/audio/tts/device",
     "bush/audio/tts/clarity",
     "bush/monitor/restart",
+    "bush/monitor/heartbeat",
 ]
+HEARTBEAT_TOPIC = "bush/monitor/heartbeat"
+HEARTBEAT_PERIOD_S = 5      # publish every N seconds
+HEARTBEAT_STALL_S = 20      # reconnect if no echo back in this window
 
 # ── fire hardware limits (ms valve on-time) ────────────────────────────────
 FLARE_MAX = 3000
@@ -191,6 +195,10 @@ class State:
         self.tts_speaking = False
         self.tts_clarity: int = 0
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
+        # Last time on_message fired for ANY topic. Watchdog uses this to
+        # detect silent paho-mqtt receive-thread stalls (TCP socket stays
+        # alive, no on_disconnect, but callbacks stop firing).
+        self.last_msg_ts: float = time.time()
         # audio device selection
         self.capture_devices: list[dict] = []
         self.playback_devices: list[dict] = []
@@ -668,6 +676,9 @@ def on_message(client, userdata, msg):
     now = time.time()
     try:
         with state.lock:
+            state.last_msg_ts = now
+            if topic == HEARTBEAT_TOPIC:
+                return
             if topic == "bush/pipeline/stt/partial":
                 data = json.loads(msg.payload)
                 state.stt_partial = data.get("text", "")
@@ -801,6 +812,32 @@ def main():
     except Exception as e:
         print(f"Cannot connect to MQTT broker at {broker}:{MQTT_PORT}: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Watchdog: paho's receive thread can stall silently (TCP stays alive,
+    # no on_disconnect, callbacks stop firing). Publish a heartbeat we also
+    # subscribe to; if it doesn't echo back within HEARTBEAT_STALL_S, force
+    # a reconnect.
+    def _watchdog():
+        while True:
+            time.sleep(HEARTBEAT_PERIOD_S)
+            try:
+                mqttc.publish(HEARTBEAT_TOPIC, str(time.time()))
+                with state.lock:
+                    since = time.time() - state.last_msg_ts
+                if since > HEARTBEAT_STALL_S:
+                    with state.lock:
+                        state.log.append((time.time(), "MQTT STALL",
+                                          f"no echo for {int(since)}s — reconnecting"))
+                        state.last_msg_ts = time.time()
+                    try:
+                        mqttc.reconnect()
+                    except Exception as e:
+                        with state.lock:
+                            state.log.append((time.time(), "MQTT RECONNECT",
+                                              f"failed: {e}"))
+            except Exception:
+                pass
+    threading.Thread(target=_watchdog, daemon=True).start()
 
     mqttc.loop_start()
 
