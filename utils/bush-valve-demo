@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# bush-valve-demo -- end-to-end demo of needle valve homing + position cycle.
+#
+# Stops bush-variable-valves while running so sentiment publishing doesn't
+# fight the demo targets. Restarts it on exit (only if it was running before).
+#
+# Usage:
+#   bush-valve-demo                  # full demo (home + position cycle)
+#   bush-valve-demo no-home          # skip homing (use current calibration)
+#   DWELL=6 bush-valve-demo          # hold each position 6 s instead of 4
+
+set -euo pipefail
+
+DWELL="${DWELL:-4}"
+HOME_WAIT="${HOME_WAIT:-12}"
+SENT_SVC="bush-variable-valves.service"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+VALVE="$HERE/bush-valve"
+
+# Restart the sentiment publisher on exit if it was running before.
+sentiment_was_running="$(systemctl is-active "$SENT_SVC" 2>/dev/null || echo inactive)"
+WATCH_PID=""
+cleanup() {
+    if [[ -n "$WATCH_PID" ]]; then
+        kill "$WATCH_PID" 2>/dev/null || true
+        wait "$WATCH_PID" 2>/dev/null || true
+    fi
+    if [[ "$sentiment_was_running" == "active" ]]; then
+        echo
+        echo "Restarting $SENT_SVC ..."
+        sudo systemctl start "$SENT_SVC"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+if [[ "$sentiment_was_running" == "active" ]]; then
+    echo "Pausing $SENT_SVC for isolated demo ..."
+    sudo systemctl stop "$SENT_SVC"
+fi
+
+echo
+echo "Streaming valve status (Ctrl+C to abort) ..."
+"$VALVE" watch &
+WATCH_PID=$!
+sleep 1
+
+step() {
+    local label="$1" target="$2"
+    echo
+    echo "==> $label  (target=$target)"
+    "$VALVE" target "$target" >/dev/null
+    sleep "$DWELL"
+}
+
+if [[ "${1:-}" != "no-home" ]]; then
+    # Drain any in-flight sentiment targets the broker may still be holding.
+    echo
+    echo "==> Stop (drain pending targets)"
+    "$VALVE" stop >/dev/null
+    sleep 2
+    echo
+    echo "==> Home"
+    "$VALVE" home >/dev/null
+    sleep "$HOME_WAIT"
+fi
+
+# Targets are deliberately conservative so the temp physical stops aren't
+# tested in every demo run. To exercise full travel, edit these or run
+# `bush-valve target 0.0` / `1.0` by hand after calibrating open_steps.
+step "Fully open"    1.0
+step "85% open"      0.85
+step "70% open"      0.70
+step "85% open"      0.85
+step "Fully open"    1.0
+
+echo
+echo "Demo complete."
