@@ -212,7 +212,10 @@ def encode_remaining(n):
 def wifi_connect():
     global pool
     print("Connecting to Wi-Fi:", secrets["SSID"])
-    wifi.radio.connect(secrets["SSID"], secrets["PASSWORD"])
+    # Explicit timeout caps a single attempt's blocking time. Without it, a
+    # hung join can hold the main loop for many minutes, starving the
+    # homing watchdog and other periodic checks.
+    wifi.radio.connect(secrets["SSID"], secrets["PASSWORD"], timeout=10)
     print("Wi-Fi OK, IP:", wifi.radio.ipv4_address)
     pool = socketpool.SocketPool(wifi.radio)
 

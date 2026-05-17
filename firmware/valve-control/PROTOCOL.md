@@ -48,21 +48,25 @@ The motor must be in CR_UART mode for serial motion commands to work.
 
 ## Commands Used
 
-### Read Motor Shaft Angle (0x36)
+### Read Encoder (0x30)
 
-Returns multi-turn accumulating position.
+Returns multi-turn accumulating encoder position. The firmware uses this for
+homing-stall detection — a constant raw value for `HOME_STALL_MS` (3 s) is
+treated as "motor reached its physical stop". It is also used by the
+boot-time motion-verification wiggle in `valve.init()`.
 
 ```
-TX: E0 36 16
-RX: E0 [int32 big-endian] CHK    (6 bytes total)
+TX: E0 30 10
+RX: E0 [int32 carry] [uint16 value] CHK    (8 bytes total)
 ```
 
-Value: 0-65535 per rotation. Accumulates across multiple turns (signed int32).
+The raw 48-bit position is `(carry << 16) | value`. `value` is the
+within-rotation reading (0–65535); `carry` is a signed turn count. The
+firmware does not interpret either field on its own — it only compares raw
+values across reads to detect movement.
 
-Conversion to steps (16x microstepping, 1.8 deg motor):
-```
-steps_from_zero = (raw_angle * 3200) / 65536
-```
+Note: V1.1.2 also responds to `0x36`, but the byte layout is undocumented
+and varies between firmware revisions. Stick to `0x30` on this hardware.
 
 ### Read Stall Status (0x3E)
 
@@ -93,7 +97,18 @@ Primary motion command. Moves a relative number of pulses at a given speed.
 
 ```
 TX: E0 FD [speed_dir] [pulse_B3] [pulse_B2] [pulse_B1] [pulse_B0] CHK
+RX: E0 01 E1    (status=1, "starting", sent immediately)
+RX: E0 02 E2    (status=2, "complete", sent when motion finishes)
+RX: E0 00 E0    (status=0, "stalled/rejected", on locked-rotor or error)
 ```
+
+The two-stage response is critical: a 0xFD command emits **two** 3-byte ACKs
+on success. Parsers that expect a single ACK will misalign on the second one.
+On stall, a single status=0 is emitted in place of the status=2.
+
+The motor returns status=2 even when it didn't physically move (e.g. when
+the work mode isn't CR_UART). The boot-time wiggle in `valve.init()`
+verifies actual rotation via the encoder before declaring the motor ready.
 
 **Speed/direction byte encoding:**
 - Bit 7: direction (0 = CW, 1 = CCW)
