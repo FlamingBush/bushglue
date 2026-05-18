@@ -811,7 +811,7 @@ def _exit_breath_to_idle():
 
 def service():
     global pending_target, last_target_ms, _home_last_poll_ms
-    global state, last_error
+    global state, last_error, target_pos_steps
 
     now = supervisor.ticks_ms()
 
