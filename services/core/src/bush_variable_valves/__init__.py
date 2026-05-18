@@ -6,6 +6,7 @@ Subscribes to:
   bush/pipeline/sentiment/result  — emotion classification from DistilBERT
   bush/pipeline/tts/speaking      — utterance start
   bush/pipeline/tts/done          — utterance end
+  bush/fire/valve/status          — Pico valve state (logged on transitions only)
 
 Publishes to:
   bush/fire/valve/target           — float 0.0 (closed) to 1.0 (open), 10 Hz
@@ -33,7 +34,14 @@ TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
 TOPIC_SPEAKING   = "bush/pipeline/tts/speaking"
 TOPIC_DONE       = "bush/pipeline/tts/done"
 TOPIC_VALVE_TARGET = "bush/fire/valve/target"
+TOPIC_VALVE_STATUS = "bush/fire/valve/status"
 MQTT_PORT = 1883
+
+# Pico state values that are part of normal operation. Transitions WITHIN this
+# set are skipped to avoid logging every idle↔moving cycle (~2 Hz). Transitions
+# into/out of any other state (error, stalled, homing, homing_finalize) get
+# logged. last_error changes are always logged.
+_ROUTINE_VALVE_STATES = {"idle", "moving"}
 
 # ── Sentiment → baseline mapping ───────────────────────────────────────────
 # Each emotion maps to a baseline valve position (0.0=closed, 1.0=open).
@@ -90,6 +98,9 @@ _last_sentiment_time = 0.0
 
 _confidence = 0.5  # top emotion confidence score
 
+_valve_last_state = None
+_valve_last_error = None
+
 
 def _on_sentiment(payload: bytes):
     global _baseline_target, _baseline_from, _baseline_start
@@ -126,6 +137,28 @@ def _on_speaking(payload: bytes):
         _speaking = True
         _speech_start_time = time.monotonic()
     log("speaking started")
+
+
+def _on_valve_status(payload: bytes):
+    global _valve_last_state, _valve_last_error
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return
+    state = data.get("state")
+    err = data.get("last_error")
+
+    if state != _valve_last_state:
+        if state not in _ROUTINE_VALVE_STATES or _valve_last_state not in _ROUTINE_VALVE_STATES:
+            log(f"valve state: {_valve_last_state} -> {state}")
+        _valve_last_state = state
+
+    if err != _valve_last_error:
+        if err is not None:
+            log(f"valve error: {err} (state={state}, pos={data.get('pos')}, target={data.get('target')})")
+        else:
+            log(f"valve error cleared (was {_valve_last_error})")
+        _valve_last_error = err
 
 
 def _on_done(payload: bytes):
@@ -216,7 +249,8 @@ def main():
         client.subscribe(TOPIC_SENTIMENT)
         client.subscribe(TOPIC_SPEAKING)
         client.subscribe(TOPIC_DONE)
-        log(f"Subscribed to sentiment, tts/speaking, tts/done")
+        client.subscribe(TOPIC_VALVE_STATUS)
+        log(f"Subscribed to sentiment, tts/speaking, tts/done, valve/status")
 
     def on_message(client, userdata, msg):
         if msg.topic == TOPIC_SENTIMENT:
@@ -225,6 +259,8 @@ def main():
             _on_speaking(msg.payload)
         elif msg.topic == TOPIC_DONE:
             _on_done(msg.payload)
+        elif msg.topic == TOPIC_VALVE_STATUS:
+            _on_valve_status(msg.payload)
 
     mqttc.on_connect = on_connect
     mqttc.on_message = on_message
