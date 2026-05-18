@@ -493,9 +493,9 @@ def _check_timeout():
     if _ticks_diff(supervisor.ticks_ms(), _cmd_sent_ms) < timeout:
         return
     print(f"Valve: UART timeout waiting for {_pending_cmd}")
-    # read_encoder polls are best-effort; abandon without escalating to error.
-    # This matters most during homing where we keep polling for stall detection.
-    if _pending_cmd == "read_encoder":
+    # read_encoder polls and breath updates are best-effort; abandon without
+    # escalating. The next tick of the homing/breathing loop will reissue.
+    if _pending_cmd in ("read_encoder", "breath"):
         _pending_cmd = None
         return
     last_error = f"timeout_{_pending_cmd}"
