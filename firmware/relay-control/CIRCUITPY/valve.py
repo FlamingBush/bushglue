@@ -505,12 +505,8 @@ def _parse_int(payload):
 
 # ── Init ───────────────────────────────────────────────────────────────────
 # Init is blocking on purpose: each setup command's ACK is verified before
-# moving on, and at the end a small wiggle confirms the MKS actually drives
-# the motor. Diagnosed root cause from a prior boot: SET_MODE's ACK arrived
-# bit-corrupted, the async parser stripped through the noise until SOMETHING
-# checksum-matched by coincidence, and the init chain "completed" even though
-# CR_UART was never set. The motor then ACK'd every move with status=2
-# without physically turning. Verifying by motion catches this.
+# moving on, so a corrupted SET_MODE ACK can't let the parser drift through
+# garbage and silently "succeed" with CR_UART never actually set.
 
 
 def _blocking_drain():
@@ -561,83 +557,10 @@ def _blocking_setup(cmd_bytes, timeout_ms=500):
     return _blocking_wait_ack(timeout_ms, (0, 1))
 
 
-def _blocking_move(delta, speed, timeout_ms=2000):
-    """Send a 0xFD move and wait through status=1 to status=2. Returns bool."""
-    direction = DIR_TOWARD_CLOSED if delta > 0 else DIR_TOWARD_OPEN
-    speed_dir = direction | (speed & 0x7F)
-    pulse_bytes = abs(delta).to_bytes(4, "big")
-    _blocking_drain()
-    pkt = bytes([MKS_ADDR, CMD_MOVE_POS, speed_dir]) + pulse_bytes
-    pkt = pkt + bytes([_checksum(pkt)])
-    uart.write(pkt)
-    if _blocking_wait_ack(timeout_ms, (0, 1)) != 1:
-        return False
-    return _blocking_wait_ack(timeout_ms, (0, 2)) == 2
-
-
-def _blocking_read_encoder(timeout_ms=300):
-    """Send 0x30 and parse the 8-byte [addr, int32 carry, uint16 value, crc]
-    response. Returns the raw 48-bit position as a signed int, or None."""
-    _blocking_drain()
-    pkt = bytes([MKS_ADDR, CMD_READ_ENCODER])
-    pkt = pkt + bytes([_checksum(pkt)])
-    uart.write(pkt)
-    deadline = (supervisor.ticks_ms() + timeout_ms) & 0x3FFFFFFF
-    buf = bytearray()
-    while True:
-        if _ticks_diff(supervisor.ticks_ms(), deadline) < 0x1FFFFFFF:
-            break
-        avail = uart.in_waiting
-        if avail:
-            data = uart.read(avail)
-            if data:
-                buf.extend(data)
-        if len(buf) >= 16:
-            break
-        time.sleep(0.005)
-    while len(buf) >= 8:
-        if buf[0] != MKS_ADDR:
-            buf = buf[1:]
-            continue
-        if _checksum(buf[0:7]) != buf[7]:
-            buf = buf[1:]
-            continue
-        carry = struct.unpack(">i", bytes(buf[1:5]))[0]
-        value = struct.unpack(">H", bytes(buf[5:7]))[0]
-        return (carry << 16) | value
-    return None
-
-
-def _verify_motor_motion():
-    """Wiggle the motor 80 pulses and check encoder changes. 80 pulses at 16x
-    microstepping is 1/40 revolution -- barely visible but ~16000 encoder
-    units of expected delta, well above noise floor."""
-    pos_before = _blocking_read_encoder()
-    if pos_before is None:
-        print("Valve: verify -- pre-encoder read failed")
-        return False
-    if not _blocking_move(80, 3):
-        print("Valve: verify -- wiggle move didn't complete")
-        return False
-    time.sleep(0.15)
-    pos_after = _blocking_read_encoder()
-    if pos_after is None:
-        print("Valve: verify -- post-encoder read failed")
-        return False
-    moved = abs(pos_after - pos_before)
-    print("Valve: verify wiggle delta =", moved, "encoder units (need >=500)")
-    # Move back to original position so we don't drift over repeated boots.
-    _blocking_move(-80, 3)
-    # Real motion of 80 pulses produces ~thousands of encoder units; encoder
-    # noise at standstill is typically <50. 500 keeps us safely above both.
-    return moved >= 500
-
-
 def init():
-    """Configure MKS, enable motor, verify motion. Blocking; runs once at boot.
-    Retries setup once if verify fails (most common cause: MKS wasn't in
-    CR_UART because a prior SET_MODE's ACK arrived corrupted and the parser
-    silently progressed past it)."""
+    """Configure MKS, enable motor. Blocking; runs once at boot. Motion
+    verification happens later via the homing encoder-stall path -- a fresh
+    boot can land against a hard stop, where any verify-by-motion is unsafe."""
     global state, last_error
     print("Valve: init UART GP4/GP5 @ 115200")
     time.sleep(0.2)
@@ -648,19 +571,15 @@ def init():
               and _blocking_setup(bytes([CMD_SET_CURRENT, CURRENT_GEAR])) == 1
               and _blocking_setup(bytes([CMD_SET_PROTECT, 0x01])) == 1
               and _blocking_setup(bytes([CMD_ENABLE, 0x01])) == 1)
-        if not ok:
-            print("Valve: init attempt", attempt, "-- setup ACK failed")
-            time.sleep(0.2)
-            continue
-        if _verify_motor_motion():
-            print("Valve: init OK -- motor verified, must home before moves")
+        if ok:
+            print("Valve: init OK -- must home before moves")
             state = "unknown"
             return
-        print("Valve: init attempt", attempt, "-- motor did not respond to motion")
+        print("Valve: init attempt", attempt, "-- setup ACK failed")
         time.sleep(0.2)
     print("Valve: init FAILED after retries -- giving up")
     state = "error"
-    last_error = "init_no_motion"
+    last_error = "init_setup_failed"
 
 
 # ── Service loop ───────────────────────────────────────────────────────────
