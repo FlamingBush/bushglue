@@ -17,6 +17,7 @@ import board
 import busio
 import supervisor
 import json
+import math
 import struct
 import time
 
@@ -36,6 +37,8 @@ CMD_SET_ZERO        = 0x91
 CMD_SET_ZERO_SPEED  = 0x92
 CMD_SET_ZERO_DIR    = 0x93
 CMD_RETURN_ZERO     = 0x94
+CMD_SET_ACC         = 0xA4   # accel ramp; lower = smoother speed transitions on 0xF6
+CMD_CONSTANT_SPEED  = 0xF6   # continuous motion; [speed_dir]; gear=0 stops
 CMD_ENABLE          = 0xF3
 CMD_STOP            = 0xF7
 CMD_MOVE_POS        = 0xFD   # two-stage response: status=1 starting -> status=2 complete (or 0 fail)
@@ -63,6 +66,7 @@ TOPIC_VALVE_TARGET    = b"bush/fire/valve/target"
 TOPIC_VALVE_HOME      = b"bush/fire/valve/home"
 TOPIC_VALVE_STOP      = b"bush/fire/valve/stop"
 TOPIC_VALVE_CALIBRATE = b"bush/fire/valve/calibrate"
+TOPIC_VALVE_BREATH    = b"bush/fire/valve/breath"
 TOPIC_VALVE_ACTUAL    = b"bush/fire/valve/actual"
 TOPIC_VALVE_STATUS    = b"bush/fire/valve/status"
 TOPIC_VALVE_ONLINE    = b"bush/fire/valve/online"
@@ -72,6 +76,7 @@ ALL_VALVE_TOPICS = [
     TOPIC_VALVE_HOME,
     TOPIC_VALVE_STOP,
     TOPIC_VALVE_CALIBRATE,
+    TOPIC_VALVE_BREATH,
 ]
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -119,6 +124,31 @@ STATUS_IDLE_MS  = 1000
 STATUS_MOVE_MS  = 200
 ACTUAL_MS       = 250
 
+# ── Breath oscillator ──────────────────────────────────────────────────────
+# Skewed-sine modulation around target_pos_steps as the center. Realized by
+# periodic 0xF6 (constant speed) updates tracking the sine derivative; the MKS
+# interpolates between speed levels via SET_ACC. Sentiment-driven baseline
+# changes blend in via a drift term in the velocity calc; large jumps
+# (> BREATH_BIG_JUMP fraction of full travel) interrupt with 0xF7 + 0xFD +
+# auto-resume on move_done.
+#
+# Configurable at runtime via JSON to bush/fire/valve/breath.
+_breath_enabled    = True
+_breath_amplitude  = 0.04         # peak deviation from baseline, fraction of full travel
+_breath_period_ms  = 5000
+_breath_skew       = 0.5          # rise fraction of period; 0.5 = symmetric sine
+
+_breath_phase_start_ms = 0
+_breath_last_update_ms = 0
+_breath_last_speed_dir = None     # last 0xF6 byte sent, or None if motor stopped
+_pending_jump_target   = 0        # step target queued during exiting_breath
+BREATH_UPDATE_MS       = 100      # 0xF6 cadence
+BREATH_BIG_JUMP        = 0.10     # baseline change > this fraction triggers 0xFD jump
+BREATH_ACC_VALUE       = 286      # 0xA4 SET_ACC; 286 = min documented = gentlest ramp
+BREATH_MAX_GEAR        = 30       # safety clamp on speed_gear
+BREATH_DRIFT_TAU_S     = 2.0      # baseline-shift drift time constant
+STEPS_PER_GEAR_PER_SEC = 500      # at 16x microstep: gear * 9.375 RPM = gear * 500 steps/s
+
 
 def _ticks_diff(later, earlier):
     return (later - earlier) & 0x3FFFFFFF
@@ -165,11 +195,13 @@ def cmd_stop():
     """Hard stop. If we were moving, mark not-homed since position is now unknown.
     Discards any queued target — the operator should re-issue after recovery."""
     global state, target_pos_steps, move_in_flight_delta, homed, pending_target
+    global _breath_last_speed_dir
     # Send STOP and let its ACK arrive via the normal parser.
     _send_and_expect(bytes([CMD_STOP]), "stop")
     move_in_flight_delta = 0
     target_pos_steps = motor_pos_steps
     pending_target = None
+    _breath_last_speed_dir = None
     if state in ("moving", "homing"):
         homed = False
         state = "unknown"
@@ -216,6 +248,13 @@ def cmd_home():
     and the encoder-stall fallback in service()."""
     global state, homed, _home_started_ms, pending_target
     global _home_last_raw, _home_last_move_ms, _home_last_poll_ms
+    global _breath_last_speed_dir
+
+    # If breathing was active, stop the 0xF6 motion first so homing's RETURN_ZERO
+    # isn't fighting a continuous-speed command.
+    if state == "breathing" or _breath_last_speed_dir is not None:
+        _send(bytes([CMD_STOP]))
+        _breath_last_speed_dir = None
 
     # If anything is in flight, send STOP and start fresh once it ACKs.
     # cmd_home itself starts the chain via "home_clear_protect" below;
@@ -294,7 +333,7 @@ def _service_finalize(now):
 def _parse_response():
     global _rx_buf, _pending_cmd, _cmd_sent_ms
     global state, homed, last_error, motor_pos_steps, move_in_flight_delta
-    global _home_last_raw, _home_last_move_ms
+    global _home_last_raw, _home_last_move_ms, _pending_jump_target
 
     if len(_rx_buf) < 3:
         return False
@@ -362,6 +401,10 @@ def _parse_response():
             move_in_flight_delta = 0
             state = "idle"
             print(f"Valve: move complete, pos={motor_pos_steps}")
+            # Auto-enter breathing if enabled and homed. This handles both
+            # initial target-from-rest and post-jump resume.
+            if _breath_enabled and homed:
+                _enter_breathing(supervisor.ticks_ms())
         elif status == 0:
             state = "stalled"
             last_error = "move_stalled"
@@ -372,6 +415,27 @@ def _parse_response():
             last_error = "move_bad_done"
             move_in_flight_delta = 0
             print(f"Valve: 0xFD complete unexpected status={status}")
+        return True
+
+    if cmd == "breath":
+        # 0xF6 ACK: status may be 0 or 1 -- we don't escalate on either since
+        # the next update cycle will issue a fresh 0xF6 anyway.
+        _pending_cmd = None
+        return True
+
+    if cmd == "breath_stop":
+        # STOP ACK during big-jump exit. Transition to idle and issue the queued 0xFD.
+        _pending_cmd = None
+        state = "idle"
+        target = _pending_jump_target
+        _pending_jump_target = 0
+        _issue_move(target)
+        return True
+
+    if cmd == "breath_stop_idle":
+        # User disabled breathing. STOP ACK -> idle.
+        _pending_cmd = None
+        state = "idle"
         return True
 
     # ── Homing chain (pre-RETURN_ZERO) ─────────────────────────────────
@@ -461,6 +525,47 @@ def handle_mqtt(topic, payload):
             return
         open_steps = steps
         print(f"Valve: open_steps = {open_steps}")
+    elif topic == TOPIC_VALVE_BREATH:
+        _handle_breath_payload(payload)
+
+
+def _handle_breath_payload(payload):
+    """Partial update of breath params. JSON keys: amplitude, period_ms, skew,
+    enabled. Omitted fields stay at current value."""
+    global _breath_enabled, _breath_amplitude, _breath_period_ms, _breath_skew
+    if isinstance(payload, (bytes, bytearray)):
+        try:
+            payload = payload.decode("utf-8")
+        except UnicodeError:
+            return
+    try:
+        data = json.loads(payload)
+    except (ValueError, TypeError):
+        print(f"Valve: bad breath payload: {payload}")
+        return
+    if not isinstance(data, dict):
+        return
+    if "amplitude" in data:
+        try:
+            _breath_amplitude = max(0.0, min(0.5, float(data["amplitude"])))
+        except (ValueError, TypeError):
+            pass
+    if "period_ms" in data:
+        try:
+            _breath_period_ms = max(100, min(60000, int(data["period_ms"])))
+        except (ValueError, TypeError):
+            pass
+    if "skew" in data:
+        try:
+            _breath_skew = max(0.05, min(0.95, float(data["skew"])))
+        except (ValueError, TypeError):
+            pass
+    if "enabled" in data:
+        was_enabled = _breath_enabled
+        _breath_enabled = bool(data["enabled"])
+        if was_enabled and not _breath_enabled and state == "breathing":
+            _exit_breath_to_idle()
+    print(f"Valve: breath A={_breath_amplitude:.3f} T={_breath_period_ms}ms skew={_breath_skew:.2f} en={_breath_enabled}")
 
 
 def _parse_float(payload):
@@ -565,11 +670,14 @@ def init():
     print("Valve: init UART GP4/GP5 @ 115200")
     time.sleep(0.2)
     _blocking_drain()
+    acc_hi = (BREATH_ACC_VALUE >> 8) & 0xFF
+    acc_lo = BREATH_ACC_VALUE & 0xFF
     for attempt in range(2):
         ok = (_blocking_setup(bytes([CMD_SET_MODE, 0x02])) == 1
               and _blocking_setup(bytes([CMD_SET_MICROSTEP, MICROSTEP])) == 1
               and _blocking_setup(bytes([CMD_SET_CURRENT, CURRENT_GEAR])) == 1
               and _blocking_setup(bytes([CMD_SET_PROTECT, 0x01])) == 1
+              and _blocking_setup(bytes([CMD_SET_ACC, acc_hi, acc_lo])) == 1
               and _blocking_setup(bytes([CMD_ENABLE, 0x01])) == 1)
         if ok:
             print("Valve: init OK -- must home before moves")
@@ -580,6 +688,123 @@ def init():
     print("Valve: init FAILED after retries -- giving up")
     state = "error"
     last_error = "init_setup_failed"
+
+
+# ── Breath oscillator ──────────────────────────────────────────────────────
+
+def _breath_phase_and_dphase(now):
+    """Return (phase_rad, dphase_per_sec) for the breath cycle at `now`.
+    phase rises from -pi/2 (valley) through +pi/2 (peak) during the 'rise'
+    portion of the cycle, then continues to +3pi/2 (back to valley) during
+    'fall'. Asymmetric: rise takes _breath_skew * period, fall takes the rest.
+    """
+    period_ms = max(100, _breath_period_ms)
+    s = max(0.05, min(0.95, _breath_skew))
+    t_in_cycle = _ticks_diff(now, _breath_phase_start_ms) % period_ms
+    rise_ms = int(s * period_ms)
+    if t_in_cycle < rise_ms:
+        phase = -math.pi / 2 + math.pi * t_in_cycle / rise_ms
+        dphase_per_sec = math.pi / (rise_ms / 1000.0)
+    else:
+        fall_ms = period_ms - rise_ms
+        phase = math.pi / 2 + math.pi * (t_in_cycle - rise_ms) / fall_ms
+        dphase_per_sec = math.pi / (fall_ms / 1000.0)
+    return phase, dphase_per_sec
+
+
+def _breath_speed_dir(now):
+    """Compute the 0xF6 speed_dir byte for current phase, or None if velocity
+    rounds to gear 0 (motor should stop). Includes a baseline-drift term so
+    that small target_pos_steps changes blend into the oscillation."""
+    phase, dphase_per_sec = _breath_phase_and_dphase(now)
+    # Oscillator velocity in MQTT-fraction units (positive = opening).
+    osc_frac_per_sec = _breath_amplitude * math.cos(phase) * dphase_per_sec
+    # Drift toward baseline. Step convention: motor_pos_steps low = open.
+    # Fraction error = (1 - motor_pos/open_steps) - (1 - target_pos/open_steps)
+    #                = (target_pos - motor_pos) / open_steps
+    # Negative because target_pos > motor_pos means motor is more open than
+    # baseline -> we need to close (decrease fraction).
+    if open_steps > 0 and BREATH_DRIFT_TAU_S > 0:
+        drift_frac_per_sec = -(target_pos_steps - motor_pos_steps) / open_steps / BREATH_DRIFT_TAU_S
+    else:
+        drift_frac_per_sec = 0.0
+    velocity_frac_per_sec = osc_frac_per_sec + drift_frac_per_sec
+    # Convert to step velocity (sign flip: opening means motor_pos_steps decreasing).
+    velocity_steps_per_sec = -velocity_frac_per_sec * open_steps
+    abs_sps = abs(velocity_steps_per_sec)
+    gear = int(round(abs_sps / STEPS_PER_GEAR_PER_SEC))
+    if gear == 0:
+        return None
+    if gear > BREATH_MAX_GEAR:
+        gear = BREATH_MAX_GEAR
+    direction = DIR_TOWARD_CLOSED if velocity_steps_per_sec > 0 else DIR_TOWARD_OPEN
+    return direction | (gear & 0x7F)
+
+
+def _integrate_breath_motion(now):
+    """Update motor_pos_steps based on the last 0xF6 gear+direction held for the
+    elapsed time. Called once per BREATH_UPDATE_MS tick before computing the
+    next gear. Bounded drift estimate; ground-truthed by encoder reads on
+    mode transitions."""
+    global motor_pos_steps
+    if _breath_last_speed_dir is None or _breath_last_update_ms == 0:
+        return
+    elapsed_ms = _ticks_diff(now, _breath_last_update_ms)
+    gear = _breath_last_speed_dir & 0x7F
+    # gear * 500 steps/sec * elapsed_ms / 1000  ==  gear * elapsed_ms / 2
+    steps_moved = (gear * elapsed_ms) // 2
+    if _breath_last_speed_dir & 0x80:
+        motor_pos_steps += steps_moved
+    else:
+        motor_pos_steps -= steps_moved
+    motor_pos_steps = max(0, min(open_steps, motor_pos_steps))
+
+
+def _enter_breathing(now):
+    """Transition idle -> breathing. Caller must ensure motor is at or near
+    target_pos_steps and homed."""
+    global state, _breath_phase_start_ms, _breath_last_update_ms, _breath_last_speed_dir
+    state = "breathing"
+    _breath_phase_start_ms = now
+    _breath_last_update_ms = 0      # force immediate update on first tick
+    _breath_last_speed_dir = None
+    print(f"Valve: breathing -- baseline={target_pos_steps} A={_breath_amplitude:.3f} T={_breath_period_ms}ms skew={_breath_skew:.2f}")
+
+
+def _service_breath(now):
+    """Advance the breath oscillator. Called from service() while state=breathing."""
+    global _breath_last_update_ms, _breath_last_speed_dir
+    if _pending_cmd is not None:
+        return                                          # prior 0xF6 ACK still pending
+    if _ticks_diff(now, _breath_last_update_ms) < BREATH_UPDATE_MS:
+        return
+    _integrate_breath_motion(now)
+    _breath_last_update_ms = now
+    new_speed_dir = _breath_speed_dir(now)
+    if new_speed_dir == _breath_last_speed_dir:
+        return
+    if new_speed_dir is None:
+        _send_and_expect(bytes([CMD_CONSTANT_SPEED, 0x00]), "breath")
+    else:
+        _send_and_expect(bytes([CMD_CONSTANT_SPEED, new_speed_dir]), "breath")
+    _breath_last_speed_dir = new_speed_dir
+
+
+def _exit_breath_for_jump(new_step_target):
+    """Big target shift while breathing: send 0xF7, transition through
+    'exiting_breath', which lands in 'idle' once the STOP ACK arrives.
+    _parse_response then issues the 0xFD to _pending_jump_target."""
+    global state, _pending_jump_target
+    _pending_jump_target = new_step_target
+    state = "exiting_breath"
+    _send_and_expect(bytes([CMD_STOP]), "breath_stop")
+
+
+def _exit_breath_to_idle():
+    """User-requested breath disable. Stop the motor; transition to idle on ACK."""
+    global state
+    state = "exiting_breath"
+    _send_and_expect(bytes([CMD_STOP]), "breath_stop_idle")
 
 
 # ── Service loop ───────────────────────────────────────────────────────────
@@ -614,6 +839,23 @@ def service():
     elif state == "homing_finalize":
         _service_finalize(now)
 
+    elif state == "breathing":
+        # Small target shifts blend via the velocity drift term in _breath_speed_dir.
+        # Big jumps interrupt with STOP + 0xFD + auto-resume on move_done.
+        if (pending_target is not None
+                and _ticks_diff(now, last_target_ms) >= TARGET_MIN_MS):
+            new_target = pending_target
+            pending_target = None
+            last_target_ms = now
+            new_step_target = int(round((1.0 - new_target) * open_steps))
+            delta_frac = abs(new_step_target - target_pos_steps) / open_steps if open_steps > 0 else 0
+            if delta_frac > BREATH_BIG_JUMP:
+                target_pos_steps = new_step_target
+                _exit_breath_for_jump(new_step_target)
+            else:
+                target_pos_steps = new_step_target
+        _service_breath(now)
+
     elif (state == "idle"
             and _pending_cmd is None
             and pending_target is not None
@@ -622,7 +864,11 @@ def service():
         pending_target = None
         last_target_ms = now
         step_target = int(round((1.0 - target) * open_steps))
-        _issue_move(step_target)
+        if motor_pos_steps == step_target and _breath_enabled and homed:
+            target_pos_steps = step_target
+            _enter_breathing(now)
+        else:
+            _issue_move(step_target)
 
 
 # ── MQTT outbound ──────────────────────────────────────────────────────────

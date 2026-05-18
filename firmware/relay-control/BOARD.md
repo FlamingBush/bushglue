@@ -27,6 +27,7 @@
 | `bush/fire/valve/home` | sub | (any) | Initiate homing sequence (drive to open stop) |
 | `bush/fire/valve/stop` | sub | (any) | Emergency stop |
 | `bush/fire/valve/calibrate` | sub | `16000` or `{"steps":16000}` | Set open_steps calibration (volatile — does not persist) |
+| `bush/fire/valve/breath` | sub | JSON: `{"amplitude":0.04, "period_ms":5000, "skew":0.5, "enabled":true}` | Tune the firmware-side breathing oscillator. Partial updates supported (omitted fields unchanged). `skew` < 0.5 = opens faster than closes |
 | `bush/fire/valve/actual` | pub | `0.42` | Current fractional position. **Every 250 ms** (`ACTUAL_MS`) |
 | `bush/fire/valve/status` | pub | JSON: `{state, pos, target, homed, stalled, last_error}` | **Every 1000 ms idle / 200 ms moving** (`STATUS_IDLE_MS` / `STATUS_MOVE_MS`) |
 | `bush/fire/valve/online` | pub | `online` / `offline` | Retained. Published `online` on MQTT connect; broker LWT delivers `offline` on disconnect |

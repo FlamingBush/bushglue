@@ -19,7 +19,6 @@ The valve target tracks the bush's emotional intent:
 """
 
 import json
-import math
 import signal
 import sys
 import threading
@@ -57,9 +56,8 @@ EMOTION_BASELINES = {
 DEFAULT_BASELINE = 0.35  # visible but modest — fallback / no sentiment
 
 # ── Modulation parameters ──────────────────────────────────────────────────
-# LFO breathing
-LFO_AMPLITUDE = 0.04     # ±4% around baseline
-LFO_FREQ_HZ   = 0.2      # 0.2 Hz = 5 second cycle
+# Breathing (sinusoidal LFO) lives in firmware (bush/fire/valve/breath); this
+# service emits only the sentiment baseline + speech modulation.
 
 # Speech modulation
 SPEECH_RISE    = 0.10     # +10% at utterance start
@@ -196,9 +194,7 @@ def _compute_target() -> float:
         speech_start = _speech_start_time
         speech_end = _speech_end_time
 
-    # LFO breathing
-    lfo = LFO_AMPLITUDE * math.sin(2 * math.pi * LFO_FREQ_HZ * now)
-    target = baseline + lfo
+    target = baseline
 
     # Speech modulation
     if speaking:
@@ -212,7 +208,7 @@ def _compute_target() -> float:
             # Decay back
             decay_frac = (since_start - SPEECH_RISE_S) / SPEECH_DECAY_S
             target += SPEECH_RISE * (1 - decay_frac)
-        # else: back at baseline (LFO still active)
+        # else: back at baseline
     else:
         # Not speaking — check silence duration
         if speech_end > 0:

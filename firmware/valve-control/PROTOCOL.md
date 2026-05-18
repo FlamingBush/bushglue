@@ -59,7 +59,8 @@ The Pico sends these on boot (see `valve.py:init()`):
 2. Set microstepping to 16: `E0 84 10 74`
 3. Set current to 200mA (gear 1): `E0 83 01 64`
 4. Enable stall protection: `E0 88 01 69`
-5. Enable motor: `E0 F3 01 D4`
+5. Set acceleration to gentlest (286): `E0 A4 01 1E 83`
+6. Enable motor: `E0 F3 01 D4`
 
 The motor must be in CR_UART mode for serial motion commands to work.
 
@@ -92,11 +93,12 @@ The motor must be in CR_UART mode for serial motion commands to work.
 | 0x92 | Write | Set zero speed | Yes (homing) |
 | 0x93 | Write | Set zero direction | Yes (homing) |
 | 0x94 | Write | Return to zero (home) | Yes |
-| 0xA1–A5 | Write | Position PID / accel / torque | No (defaults work) |
+| 0xA1–A3, A5 | Write | Position PID / max torque | No (defaults work) |
+| 0xA4 | Write | Set acceleration | Yes (init: gentlest ramp for breathing) |
 | 0xF3 | Write | Enable/disable motor (UART) | Yes (init: enable) |
-| 0xF6 | Write | Constant-speed move | No |
+| 0xF6 | Write | Constant-speed move | Yes — breathing oscillator |
 | 0xF7 | Write | Emergency stop | Yes |
-| 0xFD | Write | Relative move (position) | Yes — primary motion |
+| 0xFD | Write | Relative move (position) | Yes — sentiment-driven baseline jumps |
 | 0xFF | Write | Save / clear status (C8 = save, CA = clear) | No |
 
 ## Commands (detail)
@@ -222,7 +224,19 @@ TX: E0 FD 8A 00 00 0C 80 CHK
 TX: E0 F6 [speed_dir] CHK
 ```
 
-Continuous rotation at a fixed speed in a fixed direction. Same `speed_dir` byte encoding as 0xFD. Stops on a second 0xF6 with speed=0 or on 0xF7. Not used by our firmware.
+Continuous rotation at a fixed speed in a fixed direction. Same `speed_dir` byte encoding as 0xFD. Stops on a second 0xF6 with `speed_dir=0` or on 0xF7. The firmware drives the **breathing oscillator** by sending a fresh 0xF6 every `BREATH_UPDATE_MS` (~100 ms), tracking the derivative of a skewed sine. The MKS interpolates between speed levels via the acceleration set by 0xA4 in init — keep ACC at its minimum (286) for smoothest motion.
+
+Position is not reported during 0xF6 motion (no completion ACK). The firmware integrates a position estimate from the commanded gear × elapsed time, ground-truthed via 0x30 encoder reads at mode transitions.
+
+### Set Acceleration (0xA4)
+
+```
+TX: E0 A4 [acc_hi] [acc_lo] CHK
+```
+
+16-bit big-endian acceleration parameter. Documented range 286–1042; default 286 (`0x011E`). Smaller value = gentler ramp between speeds. The firmware sets this to 286 in init so the breathing oscillator's 0xF6 speed updates produce smooth transitions instead of stepped-square velocity.
+
+Wiki warns: too-large values can damage the board. Stay in the documented range.
 
 ### Return to Zero (0x94)
 
