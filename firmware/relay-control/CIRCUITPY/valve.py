@@ -429,8 +429,8 @@ def _parse_response():
         return True
 
     if cmd == "move_done":
-        _pending_cmd = None
         if status == 2:
+            _pending_cmd = None
             motor_pos_steps += move_in_flight_delta
             motor_pos_steps = max(0, min(open_steps, motor_pos_steps))
             move_in_flight_delta = 0
@@ -441,11 +441,19 @@ def _parse_response():
             if _breath_enabled and homed:
                 _enter_breathing(supervisor.ticks_ms())
         elif status == 0:
+            _pending_cmd = None
             state = "stalled"
             last_error = "move_stalled"
             move_in_flight_delta = 0
             print("Valve: 0xFD complete status=0 -- motor stalled")
+        elif status == 1:
+            # Spurious "started" status received while expecting "complete".
+            # Happens when a stale [E0 01 E1] (RETURN_ZERO/STOP/finalize ACK
+            # buffered internally by the MKS) leaks into the move's response
+            # stream. The real status=2 should still be coming -- keep waiting.
+            print("Valve: ignoring stray status=1 during move_done")
         else:
+            _pending_cmd = None
             state = "error"
             last_error = "move_bad_done"
             move_in_flight_delta = 0
