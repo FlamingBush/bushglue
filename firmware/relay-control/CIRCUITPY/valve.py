@@ -117,12 +117,30 @@ _finalize_step    = 0
 _finalize_next_ms = 0
 FINALIZE_STEP_MS  = 100
 
+# Post-finalize settle (state="post_home_settle"). Time for late ACKs from
+# the fire-and-forget finalize sequence to arrive and be consumed as strays
+# by _parse_response before we accept a move. Without this, ENABLE's late
+# [E0 01 E1] ACK is byte-identical to a 0xFD status=1 and gets eaten as the
+# first move's start ACK -- the real start ACK then becomes "move_done with
+# status=1" and the state machine errors out.
+_post_home_settle_until = 0
+POST_HOME_SETTLE_MS     = 500
+
 # Publication
 _last_status_ms = 0
 _last_actual_ms = 0
 STATUS_IDLE_MS  = 1000
 STATUS_MOVE_MS  = 200
 ACTUAL_MS       = 250
+
+# Checksum-fail logging: rate-limit so 0xF6 noise during breathing doesn't
+# flood the USB CDC console at 10+ lines/sec. Accumulate counts, log a
+# summary every CKSUM_LOG_MS with the last failed head bytes.
+_cksum_fail_count    = 0
+_cksum_fail_last_ms  = 0
+_cksum_fail_last_head = None
+_cksum_fail_last_cmd  = None
+CKSUM_LOG_MS         = 2000
 
 # ── Breath oscillator ──────────────────────────────────────────────────────
 # Skewed-sine modulation around target_pos_steps as the center. Realized by
@@ -152,6 +170,19 @@ STEPS_PER_GEAR_PER_SEC = 500      # at 16x microstep: gear * 9.375 RPM = gear * 
 
 def _ticks_diff(later, earlier):
     return (later - earlier) & 0x3FFFFFFF
+
+
+def _log_cksum_fail(head_bytes, cmd):
+    global _cksum_fail_count, _cksum_fail_last_ms
+    global _cksum_fail_last_head, _cksum_fail_last_cmd
+    _cksum_fail_count += 1
+    _cksum_fail_last_head = head_bytes
+    _cksum_fail_last_cmd = cmd
+    now = supervisor.ticks_ms()
+    if _ticks_diff(now, _cksum_fail_last_ms) >= CKSUM_LOG_MS:
+        print(f"Valve: cksum fail x{_cksum_fail_count} (last head={head_bytes}, cmd={cmd})")
+        _cksum_fail_count = 0
+        _cksum_fail_last_ms = now
 
 
 # ── Packet helpers ─────────────────────────────────────────────────────────
@@ -320,12 +351,16 @@ def _service_finalize(now):
         _finalize_next_ms = (now + 300) & 0x3FFFFFFF
     else:
         # ENABLE's success ACK [E0 01 E1] is byte-identical to a 0xFD
-        # status=1; without this drain it survives into the next service()
-        # iteration and gets eaten as our first real move's "start" ACK,
-        # which then puts the parser one ACK ahead -> "unexpected status=1".
+        # status=1; without aggressive draining it survives into the next
+        # service() iteration and gets eaten as our first real move's "start"
+        # ACK, which then puts the parser one ACK ahead -> "unexpected
+        # status=1". Drain now, then sit in post_home_settle for a few hundred
+        # ms while _parse_response keeps soaking up anything that trickles in.
+        global _post_home_settle_until
         _drain_uart_buffer()
-        print("Valve: homing finalize complete -- pos=0, ready for moves")
-        state = "idle"
+        state = "post_home_settle"
+        _post_home_settle_until = (now + POST_HOME_SETTLE_MS) & 0x3FFFFFFF
+        print(f"Valve: homing finalize complete -- post-home settle ({POST_HOME_SETTLE_MS} ms)")
 
 
 # ── Response parsing ───────────────────────────────────────────────────────
@@ -349,7 +384,7 @@ def _parse_response():
         if _checksum(_rx_buf[0:7]) != _rx_buf[7]:
             # Strip 1 byte and let the alignment loop find the next 0xE0,
             # rather than dropping a full 8 bytes of potentially-real data.
-            print("Valve: encoder checksum fail head=", list(_rx_buf[0:8]))
+            _log_cksum_fail(list(_rx_buf[0:8]), "read_encoder")
             _rx_buf = _rx_buf[1:]
             return True
         carry = struct.unpack(">i", bytes(_rx_buf[1:5]))[0]
@@ -368,7 +403,7 @@ def _parse_response():
     # All other responses: addr + status + crc = 3 bytes
     if _checksum(_rx_buf[0:2]) != _rx_buf[2]:
         # Strip 1 byte to allow re-alignment to the next 0xE0.
-        print("Valve: status checksum fail head=", list(_rx_buf[0:3]), "cmd=", cmd)
+        _log_cksum_fail(list(_rx_buf[0:3]), cmd)
         _rx_buf = _rx_buf[1:]
         return True
     status = _rx_buf[1]
@@ -838,6 +873,15 @@ def service():
 
     elif state == "homing_finalize":
         _service_finalize(now)
+
+    elif state == "post_home_settle":
+        # _parse_response at the top of service() is consuming any stragglers.
+        # Just wait for the settle window to expire, then a final drain.
+        if _ticks_diff(now, _post_home_settle_until) < 0x1FFFFFFF:
+            return
+        _drain_uart_buffer()
+        state = "idle"
+        print("Valve: ready for moves")
 
     elif state == "breathing":
         # Small target shifts blend via the velocity drift term in _breath_speed_dir.

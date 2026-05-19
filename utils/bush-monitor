@@ -56,9 +56,17 @@ TOPICS = [
     "bush/audio/stt/device",
     "bush/audio/tts/device",
     "bush/audio/tts/clarity",
+    "bush/fire/valve/actual",
+    "bush/fire/valve/status",
+    "bush/fire/valve/breath",
+    "bush/fire/valve/online",
     "bush/monitor/restart",
     "bush/monitor/heartbeat",
 ]
+
+# Position history depth for the breathing sparkline. /actual publishes at
+# 4 Hz, so 80 samples ≈ 20 seconds of history.
+VALVE_HISTORY_LEN = 80
 HEARTBEAT_TOPIC = "bush/monitor/heartbeat"
 HEARTBEAT_PERIOD_S = 5      # publish every N seconds
 HEARTBEAT_STALL_S = 20      # reconnect if no echo back in this window
@@ -194,6 +202,19 @@ class State:
         self.tts_ts: float | None = None
         self.tts_speaking = False
         self.tts_clarity: int = 0
+        # Needle valve / breath oscillator
+        self.valve_pos: float = 1.0
+        self.valve_pos_history: deque[float] = deque(maxlen=VALVE_HISTORY_LEN)
+        self.valve_target: float = 1.0
+        self.valve_state: str = "?"
+        self.valve_homed: bool = False
+        self.valve_last_error: str | None = None
+        self.valve_online: bool = False
+        self.valve_breath_amp: float = 0.04
+        self.valve_breath_period_ms: int = 5000
+        self.valve_breath_skew: float = 0.5
+        self.valve_breath_enabled: bool = True
+        self.valve_msg_ts: float | None = None
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
         # Last time on_message fired for ANY topic. Watchdog uses this to
         # detect silent paho-mqtt receive-thread stalls (TCP socket stays
@@ -355,6 +376,114 @@ def build_fire_panel(s: State) -> Panel:
                  box=box.ROUNDED, border_style="red")
 
 
+# Block characters for sparkline; index 0 (space) = below floor, 8 (█) = full.
+_SPARK = " ▁▂▃▄▅▆▇█"
+
+# Map valve state to a color for the title/state text.
+_VALVE_STATE_COLOR = {
+    "breathing":        "cyan",
+    "idle":             "green",
+    "moving":           "yellow",
+    "homing":           "yellow",
+    "homing_finalize":  "yellow",
+    "post_home_settle": "yellow",
+    "exiting_breath":   "yellow",
+    "stalled":          "red",
+    "error":            "red",
+    "unknown":          "dim",
+}
+
+
+def _spark_line(values, width: int, color: str) -> Text:
+    """One-row Unicode block sparkline. `values` is an iterable of floats in
+    [0, 1]; the latest `width` are rendered right-aligned."""
+    vals = list(values)[-width:]
+    t = Text()
+    if not vals:
+        t.append("·" * width, style="dim")
+        return t
+    # Left-pad with spaces so the trace ends at the right edge.
+    pad = width - len(vals)
+    if pad > 0:
+        t.append(" " * pad)
+    for v in vals:
+        v = max(0.0, min(1.0, v))
+        idx = int(round(v * 8))
+        t.append(_SPARK[idx], style=color)
+    return t
+
+
+def build_valve_panel(s: State) -> Panel:
+    state_color = _VALVE_STATE_COLOR.get(s.valve_state, "white")
+    border = state_color if state_color not in ("dim",) else "dim"
+
+    # Connection / availability
+    if not s.valve_online:
+        avail = Text("offline", style="bold red")
+    elif s.valve_msg_ts and (time.time() - s.valve_msg_ts) > 5:
+        avail = Text("stale", style="yellow")
+    else:
+        avail = Text("online", style=f"bold {state_color}")
+
+    header = Text()
+    header.append(f"{s.valve_state:<16}", style=f"bold {state_color}")
+    header.append("  ")
+    header.append(avail)
+    header.append("   homed=", style="dim")
+    header.append("yes" if s.valve_homed else "no",
+                  style="green" if s.valve_homed else "red")
+    header.append(f"   target={s.valve_target:.3f}", style="dim")
+    header.append(f"   pos={s.valve_pos:.3f}",
+                  style=f"bold {state_color}")
+    if s.valve_last_error:
+        header.append(f"   err={s.valve_last_error}", style="bold red")
+
+    breath = Text()
+    breath.append("breath  ", style="dim")
+    breath.append("A=", style="dim")
+    breath.append(f"{s.valve_breath_amp:.3f}")
+    breath.append("  T=", style="dim")
+    breath.append(f"{s.valve_breath_period_ms}ms")
+    breath.append("  skew=", style="dim")
+    breath.append(f"{s.valve_breath_skew:.2f}")
+    breath.append("  ")
+    breath.append("ON" if s.valve_breath_enabled else "OFF",
+                  style="bold cyan" if s.valve_breath_enabled else "dim")
+
+    # Sparkline width adapts to panel width; reserve some margin.
+    spark = _spark_line(s.valve_pos_history, VALVE_HISTORY_LEN, "cyan")
+    spark_label = Text("  ← 20 s position history", style="dim")
+
+    # Position bar with target marker.
+    bar_w = 40
+    pos_filled = int(bar_w * max(0.0, min(1.0, s.valve_pos)))
+    tgt_pos = int(bar_w * max(0.0, min(1.0, s.valve_target)))
+    bar = Text()
+    bar.append("[")
+    for i in range(bar_w):
+        if i == tgt_pos:
+            bar.append("│", style="bold yellow")
+        elif i < pos_filled:
+            bar.append("█", style=state_color)
+        else:
+            bar.append("░", style="dim")
+    bar.append("]")
+    bar.append(f"  closed→open", style="dim")
+
+    content = Text()
+    content.append_text(header)
+    content.append("\n")
+    content.append_text(breath)
+    content.append("\n")
+    content.append_text(spark)
+    content.append_text(spark_label)
+    content.append("\n")
+    content.append_text(bar)
+
+    return Panel(content, title="[bold]NEEDLE VALVE[/bold]  [dim]bush/fire/valve/*[/dim]",
+                 box=box.ROUNDED, border_style=border)
+
+
 def build_tts_panel(s: State) -> Panel:
     text = Text()
     if s.tts_text:
@@ -478,6 +607,7 @@ def render(s: State) -> Layout:
         Layout(name="header",    size=1),
         Layout(name="top",       size=5),
         Layout(name="sentiment", size=4),
+        Layout(name="valve",     size=6),
         Layout(name="bottom",    size=14),
         Layout(name="log"),
     )
@@ -493,6 +623,7 @@ def render(s: State) -> Layout:
         Layout(build_verse_panel(s), name="verse"),
     )
     layout["sentiment"].update(build_sentiment_panel(s))
+    layout["valve"].update(build_valve_panel(s))
     layout["bottom"].split_row(
         Layout(build_bush_panel(s), name="bush", ratio=2),
         Layout(build_tts_panel(s),  name="tts",  ratio=3),
@@ -760,6 +891,49 @@ def on_message(client, userdata, msg):
             elif topic == "bush/audio/tts/clarity":
                 data = json.loads(msg.payload)
                 state.tts_clarity = int(data.get("clarity", 0))
+
+            elif topic == "bush/fire/valve/actual":
+                try:
+                    state.valve_pos = float(msg.payload.decode())
+                    state.valve_pos_history.append(state.valve_pos)
+                    state.valve_msg_ts = now
+                except (ValueError, AttributeError):
+                    pass
+
+            elif topic == "bush/fire/valve/status":
+                try:
+                    data = json.loads(msg.payload)
+                    new_state = data.get("state", "?")
+                    if new_state != state.valve_state:
+                        state.log.append((now, "VALVE", f"{state.valve_state} -> {new_state}"))
+                    state.valve_state = new_state
+                    if "target" in data:
+                        state.valve_target = float(data["target"])
+                    state.valve_homed = bool(data.get("homed", False))
+                    new_err = data.get("last_error")
+                    if new_err and new_err != state.valve_last_error:
+                        state.log.append((now, "VALVE ERR", str(new_err)))
+                    state.valve_last_error = new_err
+                    state.valve_msg_ts = now
+                except (ValueError, KeyError):
+                    pass
+
+            elif topic == "bush/fire/valve/breath":
+                try:
+                    data = json.loads(msg.payload)
+                    if "amplitude" in data:
+                        state.valve_breath_amp = float(data["amplitude"])
+                    if "period_ms" in data:
+                        state.valve_breath_period_ms = int(data["period_ms"])
+                    if "skew" in data:
+                        state.valve_breath_skew = float(data["skew"])
+                    if "enabled" in data:
+                        state.valve_breath_enabled = bool(data["enabled"])
+                except (ValueError, KeyError):
+                    pass
+
+            elif topic == "bush/fire/valve/online":
+                state.valve_online = (msg.payload.decode(errors="ignore").strip() == "online")
 
             elif topic == "bush/monitor/restart":
                 state.log.append((now, "RESTART", "restarting monitor…"))
