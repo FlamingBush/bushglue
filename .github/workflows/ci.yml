@@ -29,3 +29,23 @@ jobs:
       - name: Run tests
         working-directory: services/${{ matrix.service }}
         run: uv run pytest tests/ -v
+
+  test-bushutil:
+    name: test (bushutil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Sync bushutil (with test extras)
+        working-directory: packages/bushutil
+        run: uv sync --extra test
+
+      - name: Run tests
+        working-directory: packages/bushutil
+        run: uv run pytest tests/ -v
