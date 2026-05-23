@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [audio, core, discord]
+        service: [audio, core, discord, sentiment]
     steps:
       - uses: actions/checkout@v4
 
