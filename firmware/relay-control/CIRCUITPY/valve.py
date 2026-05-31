@@ -110,21 +110,10 @@ HOME_STALL_MS      = 3000    # encoder unchanged this long -> declare stalled
 
 # Post-stall finalization (state="homing_finalize").
 # After encoder-stall detection, we run a small fire-and-forget sequence:
-# SET_ZERO -> SET_PROTECT(on) -> ENABLE. We don't track ACKs (they'd race with
-# late RETURN_ZERO/STOP ACKs from the abort), and we space them out so the
-# main loop stays responsive for relay-pulse timing.
+# SET_ZERO -> SET_PROTECT(on) -> ENABLE, then drain stragglers and go idle.
 _finalize_step    = 0
 _finalize_next_ms = 0
 FINALIZE_STEP_MS  = 100
-
-# Post-finalize settle (state="post_home_settle"). Time for late ACKs from
-# the fire-and-forget finalize sequence to arrive and be consumed as strays
-# by _parse_response before we accept a move. Without this, ENABLE's late
-# [E0 01 E1] ACK is byte-identical to a 0xFD status=1 and gets eaten as the
-# first move's start ACK -- the real start ACK then becomes "move_done with
-# status=1" and the state machine errors out.
-_post_home_settle_until = 0
-POST_HOME_SETTLE_MS     = 500
 
 # Publication
 _last_status_ms = 0
@@ -133,14 +122,20 @@ STATUS_IDLE_MS  = 1000
 STATUS_MOVE_MS  = 200
 ACTUAL_MS       = 250
 
-# Checksum-fail logging: rate-limit so 0xF6 noise during breathing doesn't
-# flood the USB CDC console at 10+ lines/sec. Accumulate counts, log a
-# summary every CKSUM_LOG_MS with the last failed head bytes.
+# Checksum-fail logging + CABLE CROSSTALK detector.
+# Rate-limit fail logs so a degrading cable doesn't flood the USB CDC console.
+# Track the last several outgoing opcode bytes; if a failed frame contains one
+# of them, it's almost certainly our own TX bleeding into RX (the wire-level
+# coupling we diagnosed at the bench on 2026-05-31 — see plans/uart-diagnostic).
 _cksum_fail_count    = 0
+_cksum_fail_xtalk    = 0
 _cksum_fail_last_ms  = 0
 _cksum_fail_last_head = None
 _cksum_fail_last_cmd  = None
 CKSUM_LOG_MS         = 2000
+
+_recent_tx_bytes = bytearray()   # ring of recent outgoing opcode bytes
+RECENT_TX_KEEP   = 16
 
 # ── Breath oscillator ──────────────────────────────────────────────────────
 # Skewed-sine modulation around target_pos_steps as the center. Realized by
@@ -173,15 +168,25 @@ def _ticks_diff(later, earlier):
 
 
 def _log_cksum_fail(head_bytes, cmd):
-    global _cksum_fail_count, _cksum_fail_last_ms
+    global _cksum_fail_count, _cksum_fail_xtalk, _cksum_fail_last_ms
     global _cksum_fail_last_head, _cksum_fail_last_cmd
     _cksum_fail_count += 1
     _cksum_fail_last_head = head_bytes
     _cksum_fail_last_cmd = cmd
+    # Crosstalk signature: middle byte of [E0 X Y] matches a recently sent
+    # opcode. Genuine MKS responses put a 0/1/2 status byte there.
+    if any(b in _recent_tx_bytes for b in head_bytes[1:]):
+        _cksum_fail_xtalk += 1
     now = supervisor.ticks_ms()
     if _ticks_diff(now, _cksum_fail_last_ms) >= CKSUM_LOG_MS:
-        print(f"Valve: cksum fail x{_cksum_fail_count} (last head={head_bytes}, cmd={cmd})")
+        if _cksum_fail_xtalk * 2 >= _cksum_fail_count:
+            print(f"Valve: CABLE CROSSTALK suspected -- cksum fail x{_cksum_fail_count} "
+                  f"({_cksum_fail_xtalk} match recent TX), last head={head_bytes}, cmd={cmd}. "
+                  f"Spread UART data wires apart in the cable bundle.")
+        else:
+            print(f"Valve: cksum fail x{_cksum_fail_count} (last head={head_bytes}, cmd={cmd})")
         _cksum_fail_count = 0
+        _cksum_fail_xtalk = 0
         _cksum_fail_last_ms = now
 
 
@@ -195,6 +200,11 @@ def _send(cmd_bytes):
     pkt = bytes([MKS_ADDR]) + cmd_bytes
     pkt = pkt + bytes([_checksum(pkt)])
     uart.write(pkt)
+    # Track the opcode byte for the crosstalk detector. Drop oldest if full.
+    if cmd_bytes:
+        if len(_recent_tx_bytes) >= RECENT_TX_KEEP:
+            del _recent_tx_bytes[0]
+        _recent_tx_bytes.append(cmd_bytes[0])
 
 
 def _send_and_expect(cmd_bytes, label):
@@ -206,11 +216,7 @@ def _send_and_expect(cmd_bytes, label):
 
 def _drain_uart_buffer():
     """Discard pending bytes from both hardware UART and software _rx_buf.
-    Used at transition points where stale ACKs from prior commands could be
-    mis-parsed as the next command's response -- MKS ACKs are all 3-byte
-    [addr, status, crc], and ENABLE/STOP/RETURN_ZERO success ACKs are
-    byte-identical to a 0xFD move's status=1, so a late one in the buffer
-    looks like our new move already started."""
+    Used at homing transitions to drop late ACKs from aborted commands."""
     global _rx_buf
     while True:
         avail = uart.in_waiting
@@ -262,9 +268,6 @@ def _issue_move(step_target):
     speed_dir = direction | (MOVE_SPEED & 0x7F)
     pulse_bytes = abs(delta).to_bytes(4, "big")
     print(f"Valve: move {motor_pos_steps} -> {step_target} (d={delta} pulses)")
-    # Drain stale bytes so a late ACK from a prior command can't be eaten as
-    # this move's status=1.
-    _drain_uart_buffer()
     _send_and_expect(bytes([CMD_MOVE_POS, speed_dir]) + pulse_bytes, "move_start")
     return True
 
@@ -295,8 +298,6 @@ def cmd_home():
     pending_target = None
     homed = False
     state = "homing"
-    # Drain any late ACKs from a prior interrupted move (e.g. a delayed
-    # status=2 after a stall) so the homing chain's first ACK isn't eaten.
     _drain_uart_buffer()
     _home_started_ms = supervisor.ticks_ms()
     _home_last_raw = 0
@@ -308,10 +309,8 @@ def cmd_home():
 
 
 def _complete_homing_by_stall():
-    """Encoder hasn't moved for HOME_STALL_MS. Enter the finalize state, which
-    runs SET_ZERO -> SET_PROTECT(on) -> ENABLE as fire-and-forget sub-steps in
-    service(). We don't track ACKs here because the late RETURN_ZERO/STOP ACKs
-    race with our commands during this transition."""
+    """Encoder hasn't moved for HOME_STALL_MS. Fire SET_ZERO -> SET_PROTECT(on)
+    -> ENABLE as fire-and-forget sub-steps in service(), then drain and idle."""
     global state, homed, motor_pos_steps, target_pos_steps, move_in_flight_delta
     global _pending_cmd, _finalize_step, _finalize_next_ms
     print(f"Valve: encoder stalled at raw={_home_last_raw} -- entering finalize")
@@ -322,10 +321,8 @@ def _complete_homing_by_stall():
     state = "homing_finalize"
     _pending_cmd = None
     _finalize_step = 0
-    # Send STOP immediately. The 300 ms settle lets MKS abort RETURN_ZERO and
-    # emit whatever ACKs it owes us; the parser drops them as strays.
     _send(bytes([CMD_STOP]))
-    _finalize_next_ms = (supervisor.ticks_ms() + 300) & 0x3FFFFFFF
+    _finalize_next_ms = (supervisor.ticks_ms() + FINALIZE_STEP_MS) & 0x3FFFFFFF
 
 
 def _service_finalize(now):
@@ -345,22 +342,11 @@ def _service_finalize(now):
     elif step == 2:
         _send(bytes([CMD_ENABLE, 0x01]))
         _finalize_step = 3
-        # ENABLE's ACK can take longer than the other steps because FOC comes
-        # online here. Give it ~300 ms so the ACK is definitely in the RX
-        # buffer before we drain on the next tick.
-        _finalize_next_ms = (now + 300) & 0x3FFFFFFF
+        _finalize_next_ms = (now + FINALIZE_STEP_MS) & 0x3FFFFFFF
     else:
-        # ENABLE's success ACK [E0 01 E1] is byte-identical to a 0xFD
-        # status=1; without aggressive draining it survives into the next
-        # service() iteration and gets eaten as our first real move's "start"
-        # ACK, which then puts the parser one ACK ahead -> "unexpected
-        # status=1". Drain now, then sit in post_home_settle for a few hundred
-        # ms while _parse_response keeps soaking up anything that trickles in.
-        global _post_home_settle_until
         _drain_uart_buffer()
-        state = "post_home_settle"
-        _post_home_settle_until = (now + POST_HOME_SETTLE_MS) & 0x3FFFFFFF
-        print(f"Valve: homing finalize complete -- post-home settle ({POST_HOME_SETTLE_MS} ms)")
+        state = "idle"
+        print("Valve: ready for moves")
 
 
 # ── Response parsing ───────────────────────────────────────────────────────
@@ -446,12 +432,6 @@ def _parse_response():
             last_error = "move_stalled"
             move_in_flight_delta = 0
             print("Valve: 0xFD complete status=0 -- motor stalled")
-        elif status == 1:
-            # Spurious "started" status received while expecting "complete".
-            # Happens when a stale [E0 01 E1] (RETURN_ZERO/STOP/finalize ACK
-            # buffered internally by the MKS) leaks into the move's response
-            # stream. The real status=2 should still be coming -- keep waiting.
-            print("Valve: ignoring stray status=1 during move_done")
         else:
             _pending_cmd = None
             state = "error"
@@ -881,15 +861,6 @@ def service():
 
     elif state == "homing_finalize":
         _service_finalize(now)
-
-    elif state == "post_home_settle":
-        # _parse_response at the top of service() is consuming any stragglers.
-        # Just wait for the settle window to expire, then a final drain.
-        if _ticks_diff(now, _post_home_settle_until) < 0x1FFFFFFF:
-            return
-        _drain_uart_buffer()
-        state = "idle"
-        print("Valve: ready for moves")
 
     elif state == "breathing":
         # Small target shifts blend via the velocity drift term in _breath_speed_dir.
