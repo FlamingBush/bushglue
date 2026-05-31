@@ -134,7 +134,7 @@ _cksum_fail_last_head = None
 _cksum_fail_last_cmd  = None
 CKSUM_LOG_MS         = 2000
 
-_recent_tx_bytes = bytearray()   # ring of recent outgoing opcode bytes
+_recent_tx_bytes = []            # ring of recent outgoing opcode bytes (ints)
 RECENT_TX_KEEP   = 16
 
 # ── Breath oscillator ──────────────────────────────────────────────────────
@@ -432,6 +432,12 @@ def _parse_response():
             last_error = "move_stalled"
             move_in_flight_delta = 0
             print("Valve: 0xFD complete status=0 -- motor stalled")
+        elif status == 1:
+            # MKS internally buffers ACKs and occasionally emits a stale
+            # [E0 01 E1] (byte-identical to a 0xFD status=1) during the move.
+            # Cable crosstalk was fixed by separating wires; this is a
+            # different, MKS-firmware-level symptom. Real status=2 still comes.
+            print("Valve: ignoring stray status=1 during move_done")
         else:
             _pending_cmd = None
             state = "error"
