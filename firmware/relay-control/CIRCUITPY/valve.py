@@ -99,7 +99,8 @@ _rx_buf         = bytearray()
 _pending_cmd    = None
 _cmd_sent_ms    = 0
 CMD_TIMEOUT_MS  = 500
-MOVE_TIMEOUT_MS = 30000      # worst-case full-travel move at slow speeds
+MOVE_TIMEOUT_MS = 8000       # full-travel @ gear 8 is ~5 s; 8 s catches stalls
+                              # quickly so the de-energize safety net fires fast
 
 # Homing
 _home_started_ms   = 0
@@ -433,7 +434,10 @@ def _parse_response():
             state = "stalled"
             last_error = "move_stalled"
             move_in_flight_delta = 0
-            print("Valve: 0xFD complete status=0 -- motor stalled")
+            # Stall-protect halted motion but left windings energized at
+            # full SET_CURRENT. De-energize so we don't sit at high current.
+            _send(bytes([CMD_ENABLE, 0x00]))
+            print("Valve: 0xFD complete status=0 -- motor stalled, motor disabled")
         elif status == 1:
             # MKS internally buffers ACKs and occasionally emits a stale
             # [E0 01 E1] (byte-identical to a 0xFD status=1) during the move.
@@ -529,6 +533,11 @@ def _check_timeout():
     if _pending_cmd in ("read_encoder", "breath"):
         _pending_cmd = None
         return
+    # A move_done timeout means the MKS never ACKed completion -- motor may
+    # be stalled and holding current. De-energize so we don't cook.
+    if _pending_cmd == "move_done":
+        _send(bytes([CMD_ENABLE, 0x00]))
+        print("Valve: motor disabled after move timeout")
     last_error = f"timeout_{_pending_cmd}"
     _pending_cmd = None
     if state != "stalled":
