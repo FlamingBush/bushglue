@@ -46,7 +46,7 @@ CMD_MOVE_POS        = 0xFD   # two-stage response: status=1 starting -> status=2
 # ── Valve config ───────────────────────────────────────────────────────────
 OPEN_STEPS      = 16000      # default; ~5 turns @ 16x microstep (3200 steps/rev)
 MOVE_SPEED      = 20         # 0xFD speed gear; Vrpm ≈ 9.375 × gear ≈ 187 rpm at 16x
-CURRENT_GEAR    = 0x01       # 200 mA floor (CR_UART auto-adjusts under load)
+CURRENT_GEAR    = 0x08       # ~1500 mA -- needed to overcome valve seating load
 MICROSTEP       = 16
 
 # 0xFD direction bit (OR'd with speed). Spec: bit7=0 CW, bit7=1 CCW.
