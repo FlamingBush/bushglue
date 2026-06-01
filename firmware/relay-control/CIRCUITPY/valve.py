@@ -44,8 +44,10 @@ CMD_STOP            = 0xF7
 CMD_MOVE_POS        = 0xFD   # two-stage response: status=1 starting -> status=2 complete (or 0 fail)
 
 # ── Valve config ───────────────────────────────────────────────────────────
-OPEN_STEPS      = 16000      # default; ~5 turns @ 16x microstep (3200 steps/rev)
-MOVE_SPEED      = 20         # 0xFD speed gear; Vrpm ≈ 9.375 × gear ≈ 187 rpm at 16x
+OPEN_STEPS      = 20000      # calibrated 2026-05-31: 102708 enc counts open->closed
+MOVE_SPEED      = 8          # 0xFD speed gear; Vrpm ≈ 9.375 × gear ≈ 75 rpm at 16x
+                              # gear 20 was too fast for the valve load -- motor
+                              # couldn't keep up and status=2 never arrived
 CURRENT_GEAR    = 0x08       # ~1500 mA -- needed to overcome valve seating load
 MICROSTEP       = 16
 
@@ -336,7 +338,7 @@ def _service_finalize(now):
         _finalize_step = 1
         _finalize_next_ms = (now + FINALIZE_STEP_MS) & 0x3FFFFFFF
     elif step == 1:
-        _send(bytes([CMD_SET_PROTECT, 0x01]))
+        _send(bytes([CMD_SET_PROTECT, 0x00]))
         _finalize_step = 2
         _finalize_next_ms = (now + FINALIZE_STEP_MS) & 0x3FFFFFFF
     elif step == 2:
@@ -705,7 +707,7 @@ def init():
         ok = (_blocking_setup(bytes([CMD_SET_MODE, 0x02])) == 1
               and _blocking_setup(bytes([CMD_SET_MICROSTEP, MICROSTEP])) == 1
               and _blocking_setup(bytes([CMD_SET_CURRENT, CURRENT_GEAR])) == 1
-              and _blocking_setup(bytes([CMD_SET_PROTECT, 0x01])) == 1
+              and _blocking_setup(bytes([CMD_SET_PROTECT, 0x00])) == 1
               and _blocking_setup(bytes([CMD_SET_ACC, acc_hi, acc_lo])) == 1
               and _blocking_setup(bytes([CMD_ENABLE, 0x01])) == 1)
         if ok:
