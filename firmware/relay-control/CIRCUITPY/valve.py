@@ -44,11 +44,11 @@ CMD_STOP            = 0xF7
 CMD_MOVE_POS        = 0xFD   # two-stage response: status=1 starting -> status=2 complete (or 0 fail)
 
 # ── Valve config ───────────────────────────────────────────────────────────
-OPEN_STEPS      = 20000      # calibrated 2026-05-31: 102708 enc counts open->closed
-MOVE_SPEED      = 8          # 0xFD speed gear; Vrpm ≈ 9.375 × gear ≈ 75 rpm at 16x
-                              # gear 20 was too fast for the valve load -- motor
-                              # couldn't keep up and status=2 never arrived
-CURRENT_GEAR    = 0x08       # ~1500 mA -- needed to overcome valve seating load
+OPEN_STEPS      = 2000       # ~1 rev of useful travel -- well short of the
+                              # closed endstop so 0xFD never overshoots
+MOVE_SPEED      = 4          # 0xFD speed gear; lower gear = closed-loop doesn't
+                              # need to demand peak current during motion
+CURRENT_GEAR    = 0x01       # 200 mA -- runtime SET_CURRENT doesn't apply, must bake in at boot
 MICROSTEP       = 16
 
 # 0xFD direction bit (OR'd with speed). Spec: bit7=0 CW, bit7=1 CCW.
@@ -109,7 +109,8 @@ _home_last_raw     = 0
 _home_last_move_ms = 0
 HOME_TIMEOUT_MS    = 30000
 HOME_POLL_MS       = 500
-HOME_STALL_MS      = 3000    # encoder unchanged this long -> declare stalled
+HOME_STALL_MS      = 500     # encoder unchanged this long -> declare stalled;
+                              # short so we don't hold against the seat long
 
 # Post-stall finalization (state="homing_finalize").
 # After encoder-stall detection, we run a small fire-and-forget sequence:
@@ -159,6 +160,8 @@ _breath_last_update_ms = 0
 _breath_last_speed_dir = None     # last 0xF6 byte sent, or None if motor stopped
 _pending_jump_target   = 0        # step target queued during exiting_breath
 BREATH_UPDATE_MS       = 100      # 0xF6 cadence
+MKS_SILENCE_LIMIT_MS   = 2000     # if no MKS response for >this during motion, kill motor
+_last_rx_ok_ms         = 0        # ticks_ms of last successful frame parse
 BREATH_BIG_JUMP        = 0.10     # baseline change > this fraction triggers 0xFD jump
 BREATH_ACC_VALUE       = 286      # 0xA4 SET_ACC; 286 = min documented = gentlest ramp
 BREATH_MAX_GEAR        = 30       # safety clamp on speed_gear
@@ -325,6 +328,9 @@ def _complete_homing_by_stall():
     _pending_cmd = None
     _finalize_step = 0
     _send(bytes([CMD_STOP]))
+    # Drop windings immediately so we don't sit at SET_CURRENT against the
+    # seat. Finalize step 2 re-enables before returning to idle.
+    _send(bytes([CMD_ENABLE, 0x00]))
     _finalize_next_ms = (supervisor.ticks_ms() + FINALIZE_STEP_MS) & 0x3FFFFFFF
 
 
@@ -358,6 +364,7 @@ def _parse_response():
     global _rx_buf, _pending_cmd, _cmd_sent_ms
     global state, homed, last_error, motor_pos_steps, move_in_flight_delta
     global _home_last_raw, _home_last_move_ms, _pending_jump_target
+    global _breath_enabled, _breath_last_speed_dir
 
     if len(_rx_buf) < 3:
         return False
@@ -434,6 +441,8 @@ def _parse_response():
             state = "stalled"
             last_error = "move_stalled"
             move_in_flight_delta = 0
+            _breath_enabled = False
+            _breath_last_speed_dir = None
             # Stall-protect halted motion but left windings energized at
             # full SET_CURRENT. De-energize so we don't sit at high current.
             _send(bytes([CMD_ENABLE, 0x00]))
@@ -514,14 +523,46 @@ def _parse_response():
 
 
 def _drain_uart_into_buf():
-    global _rx_buf
+    global _rx_buf, _last_rx_ok_ms
     data = uart.read(64)
     if data:
         _rx_buf.extend(data)
+        _last_rx_ok_ms = supervisor.ticks_ms()
+
+
+def _check_mks_silence(now):
+    """If MKS hasn't responded in MKS_SILENCE_LIMIT_MS while motor is in motion,
+    cut motion + de-energize. This catches MKS-hang scenarios where commands
+    ACK or get sent but the controller has stopped responding and the motor
+    sits at high current (1.5-1.9A) until something resets it.
+    Real cause for the 1.9A-stuck-in-prod failure mode we kept hitting at bench."""
+    global state, last_error, _breath_enabled, _breath_last_speed_dir
+    # Watchdog is breath-only: 0xF6 commands fire every 100ms with quick ACKs,
+    # so >2s of silence is unambiguous MKS hang. Moves have their own 8s
+    # MOVE_TIMEOUT_MS that de-energizes; homing has HOME_STALL_MS for stall.
+    if state != "breathing":
+        return
+    # Skip when breath isn't actively driving the motor (valley phase, gear=0).
+    # No F6 commands then -> no MKS chatter expected -> silence is normal.
+    if _breath_last_speed_dir is None:
+        return
+    if (_breath_last_speed_dir & 0x7F) == 0:
+        return
+    if _last_rx_ok_ms == 0:
+        return
+    if _ticks_diff(now, _last_rx_ok_ms) < MKS_SILENCE_LIMIT_MS:
+        return
+    _send(bytes([CMD_CONSTANT_SPEED, 0x00]))
+    _send(bytes([CMD_ENABLE, 0x00]))
+    _breath_enabled = False
+    _breath_last_speed_dir = None
+    state = "stalled"
+    last_error = "mks_silent"
+    print("Valve: MKS silent >2s during motion -- motor disabled")
 
 
 def _check_timeout():
-    global _pending_cmd, state, last_error
+    global _pending_cmd, state, last_error, _breath_enabled, _breath_last_speed_dir
     if _pending_cmd is None:
         return
     timeout = MOVE_TIMEOUT_MS if _pending_cmd == "move_done" else CMD_TIMEOUT_MS
@@ -533,11 +574,13 @@ def _check_timeout():
     if _pending_cmd in ("read_encoder", "breath"):
         _pending_cmd = None
         return
-    # A move_done timeout means the MKS never ACKed completion -- motor may
-    # be stalled and holding current. De-energize so we don't cook.
-    if _pending_cmd == "move_done":
-        _send(bytes([CMD_ENABLE, 0x00]))
-        print("Valve: motor disabled after move timeout")
+    # Any other timeout where motor could be energized: cut motion + de-energize
+    # so we don't cook at SET_CURRENT (1.5-1.9A in stall).
+    _send(bytes([CMD_CONSTANT_SPEED, 0x00]))
+    _send(bytes([CMD_ENABLE, 0x00]))
+    _breath_enabled = False
+    _breath_last_speed_dir = None
+    print(f"Valve: motor disabled after {_pending_cmd} timeout")
     last_error = f"timeout_{_pending_cmd}"
     _pending_cmd = None
     if state != "stalled":
@@ -778,6 +821,13 @@ def _breath_speed_dir(now):
     if gear > BREATH_MAX_GEAR:
         gear = BREATH_MAX_GEAR
     direction = DIR_TOWARD_CLOSED if velocity_steps_per_sec > 0 else DIR_TOWARD_OPEN
+    # Don't command motion into a hard stop. Without this the integrator
+    # clamps motor_pos_steps but MKS keeps driving on the bare 0xF6 command,
+    # grinding into the endstop at full SET_CURRENT.
+    if direction == DIR_TOWARD_OPEN and motor_pos_steps <= 0:
+        return None
+    if direction == DIR_TOWARD_CLOSED and motor_pos_steps >= open_steps:
+        return None
     return direction | (gear & 0x7F)
 
 
@@ -815,7 +865,7 @@ def _service_breath(now):
     """Advance the breath oscillator. Called from service() while state=breathing."""
     global _breath_last_update_ms, _breath_last_speed_dir
     if _pending_cmd is not None:
-        return                                          # prior 0xF6 ACK still pending
+        return                                          # prior ACK still pending
     if _ticks_diff(now, _breath_last_update_ms) < BREATH_UPDATE_MS:
         return
     _integrate_breath_motion(now)
@@ -860,6 +910,7 @@ def service():
         if not _parse_response():
             break
     _check_timeout()
+    _check_mks_silence(now)
 
     if state == "homing":
         elapsed = _ticks_diff(now, _home_started_ms)
