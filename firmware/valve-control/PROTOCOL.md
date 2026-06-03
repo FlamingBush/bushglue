@@ -68,7 +68,7 @@ The motor must be in CR_UART mode for serial motion commands to work.
 
 | Opcode | Direction | Name | Used by firmware |
 |---|---|---|---|
-| 0x30 | Read | Encoder value (multi-turn on MT) | Yes — homing stall detection |
+| 0x30 | Read | Encoder value (multi-turn on MT) | Yes — absolute position (read continuously) |
 | 0x33 | Read | Pulse count (commanded steps) | No |
 | 0x36 | Read | Motor angle | No (layout varies between FW revs) |
 | 0x39 | Read | Angle error (desired − actual) | No — useful diagnostic |
@@ -110,9 +110,9 @@ TX: E0 30 10
 RX: E0 [int32 carry] [uint16 value] CHK    (8 bytes total)
 ```
 
-The base SERVO42C wiki says this returns a 16-bit value (0–FFFF). **The MT variant we use extends it to 48 bits**: 4-byte signed `carry` (turn count) + 2-byte unsigned `value` (within-rotation position). Combined raw position: `(carry << 16) | value`. The firmware does not interpret either field on its own — it only compares raw values across reads to detect movement.
+The base SERVO42C wiki says this returns a 16-bit value (0–FFFF). **The MT variant we use extends it to 48 bits**: 4-byte signed `carry` (turn count) + 2-byte unsigned `value` (within-rotation position). Combined raw position: `(carry << 16) | value`.
 
-Used for homing-stall detection: a constant raw value for `HOME_STALL_MS` (3 s) is treated as "motor reached its physical stop".
+This is the firmware's absolute-position source. Homing captures the raw value at the zeroed margin (`_enc_zero_raw`) and the OPEN/CLOSED sign, then `_encoder_pos_steps()` maps any raw read to absolute steps (~20.48 encoder counts per microstep at 16×). The firmware reads 0x30 after every move/nudge, and once per breath cycle at the valley, to ground the position absolutely. **This MKS does not answer 0x30 reliably while the motor is in continuous motion**, so every read is taken when the motor is stopped (between moves, or at the breath's bottom rest). During the inchworm home it also compares consecutive raws to detect the onset of seat contact.
 
 V1.1.2 firmware also responds to `0x36`, but the byte layout is undocumented and varies between firmware revisions. Stick to `0x30` on this hardware.
 
@@ -224,9 +224,9 @@ TX: E0 FD 8A 00 00 0C 80 CHK
 TX: E0 F6 [speed_dir] CHK
 ```
 
-Continuous rotation at a fixed speed in a fixed direction. Same `speed_dir` byte encoding as 0xFD. Stops on a second 0xF6 with `speed_dir=0` or on 0xF7. The firmware drives the **breathing oscillator** by sending a fresh 0xF6 every `BREATH_UPDATE_MS` (~100 ms), tracking the derivative of a skewed sine. The MKS interpolates between speed levels via the acceleration set by 0xA4 in init — keep ACC at its minimum (286) for smoothest motion.
+Continuous rotation at a fixed speed in a fixed direction. Same `speed_dir` byte encoding as 0xFD. Stops on a second 0xF6 with `speed_dir=0` or on 0xF7. The firmware drives the **breathing oscillator** with a continuous 0xF6 whose velocity is the skewed-sine derivative plus a drift term toward the baseline. The MKS interpolates between speed levels via the acceleration set by 0xA4 in init — keep ACC at its minimum (286) for smoothest motion. The 0xF6 is sent bare (its ACK is unreliable mid-motion and unneeded).
 
-Position is not reported during 0xF6 motion (no completion ACK). The firmware integrates a position estimate from the commanded gear × elapsed time, ground-truthed via 0x30 encoder reads at mode transitions.
+0xF6 reports no position (no completion ACK). Position is dead-reckoned from gear × time between reads and re-grounded on the 0x30 encoder once per cycle at the valley — the bottom of the breath, where velocity rounds to zero and the motor briefly stops (the only point a read is reliable, since the MKS goes quiet during motion). That valley re-grounding bounds drift to a single cycle.
 
 ### Set Acceleration (0xA4)
 
@@ -363,8 +363,8 @@ Example: `E0 36` -> `(0xE0 + 0x36) & 0xFF = 0x16` -> full packet: `E0 36 16`
 ## Position Convention
 
 ```
-Step 0           = fully closed (CW limit, needle seated)
-Step open_steps  = fully open (CCW limit, homing stop)
+Step 0           = closed seat margin (homing backs off the seat and zeros here)
+Step open_steps  = fully open
 
 MQTT target 0.0  = closed
 MQTT target 1.0  = open
@@ -372,7 +372,9 @@ MQTT target 1.0  = open
 step_position = mqtt_target * open_steps
 ```
 
-The motor homes by driving CCW (toward open) until it stalls against the bonnet thread stop. This is safe because the open stop is a non-sealing mechanical limit. Never home toward the needle seat.
+The motor homes by inching gently INTO the closed needle seat until the encoder shows the onset of contact resistance, then backs off a fixed margin toward open and sets that backed-off point as zero — so motor_pos 0 never rests on the force-sensitive seat. (An earlier revision homed toward an open mechanical stop; that is no longer the case.)
+
+Position is tracked from the MT absolute encoder (0x30), not dead-reckoned: every move, nudge, and breath tick re-reads the encoder, so commanded and actual positions can't drift apart.
 
 ## Speed Reference
 

@@ -6,12 +6,13 @@
 #   motor_pos_steps = open_steps  -> fully open
 # MQTT 0.0 = closed, 1.0 = open. motor_pos_steps = target * open_steps.
 #
-# Architecture: the SERVO42C is a closed-loop FOC servo. We trust it to reach
-# commanded positions and tell us when via the status=2 "run complete" ACK
-# emitted by 0xFD (the 0xFD command emits TWO responses: status=1 starting,
-# status=2 complete; see manual §5.5.5 / §6.4). Encoder (0x30) is only read
-# during homing for stall detection; in normal operation the actual position
-# we publish is the commanded motor_pos_steps.
+# Architecture: the SERVO42C is a closed-loop FOC servo with an absolute
+# multi-turn encoder (0x30) on the MT variant. motor_pos_steps is DERIVED from
+# that encoder, never dead-reckoned: homing captures the zero + sign, then every
+# move, nudge, and breath tick re-reads 0x30 so estimation error can't accumulate
+# (that accumulation was the breathe drift). 0xFD still reports completion via its
+# status=2 ACK (two responses: status=1 starting, status=2 complete; see manual
+# §5.5.5 / §6.4); we read the encoder right after to ground the new position.
 
 import board
 import busio
@@ -42,12 +43,18 @@ CMD_STOP            = 0xF7
 CMD_MOVE_POS        = 0xFD   # two-stage response: status=1 starting -> status=2 complete (or 0 fail)
 
 # ── Valve config ───────────────────────────────────────────────────────────
-OPEN_STEPS      = 2000       # open extent in steps from the closed seat (motor_pos 0);
-                              # ~1 rev of useful travel. motor_pos open_steps = fully open
-MOVE_SPEED      = 4          # 0xFD speed gear; lower gear = closed-loop doesn't
-                              # need to demand peak current during motion
+MICROSTEP       = 16         # 0x84 microstepping. (Reverted 64x->16x: the 64x homing trouble was
+                              # a loose coupler, not microstep -- to be re-attempted after repair.)
+                              # KEY: gear 1 (0xF6/0xFD) is ALWAYS 500 microsteps/s regardless of
+                              # microstep, so more microsteps make that floor gear a SLOWER physical
+                              # speed -> a slow breath without rounding to gear 0. Step-count consts
+                              # below scale off _USTEP; recalibrate OPEN_STEPS after changing this.
+_USTEP          = MICROSTEP // 16   # scale vs the original 16x baseline for microstep-count consts
+OPEN_STEPS      = 2000 * _USTEP   # open extent in microsteps from the closed seat (motor_pos 0).
+                                   # Placeholder ~useful range -- recalibrate via valve/calibrate.
+MOVE_SPEED      = 4 * _USTEP  # 0xFD/0xF6 move gear; ~0.6 rev/s at any microstep. Lower physical
+                              # speed = closed-loop doesn't demand peak current during motion.
 CURRENT_GEAR    = 0x01       # 200 mA -- runtime SET_CURRENT doesn't apply, must bake in at boot
-MICROSTEP       = 16
 MAX_TORQUE      = 0x4B0      # 0xA5 ceiling, 0..0x4B0; only torque cap that works in CR_UART.
                               # Lower to cap contact force for gentle homing into the seat.
 
@@ -92,12 +99,20 @@ ALL_VALVE_TOPICS = [
 # states: "unknown", "homing", "idle", "moving", "stalled", "error"
 state                = "unknown"
 homed                = False
-motor_pos_steps      = 0     # 0 = closed (seat margin), open_steps = open (post-homing ref)
+motor_pos_steps      = 0     # 0 = closed (seat margin), open_steps = open (post-homing ref).
+                              # DERIVED from the 0x30 encoder, not dead-reckoned.
 target_pos_steps     = 0
-move_in_flight_delta = 0     # signed: +ve = toward open
-_nudge_delta         = 0     # signed pulses of the in-flight debug nudge
+move_in_flight_delta = 0     # signed: +ve = toward open (direction/telemetry; fallback only)
+_nudge_delta         = 0     # signed pulses of the in-flight debug nudge (fallback only)
 open_steps           = OPEN_STEPS
 last_error           = None
+
+# Absolute position from the MT multi-turn encoder (0x30). Homing captures the
+# zero raw and the sign; _encoder_pos_steps() maps a raw read to absolute steps.
+ENC_PER_STEP         = 65536.0 / (200 * MICROSTEP)  # 20.48 counts/microstep at 16x (float)
+_enc_zero_raw        = 0     # 0x30 raw at the homed backed-off margin (= motor_pos 0)
+_enc_sign            = 1     # +1 if raw rises toward OPEN, -1 otherwise; set at homing
+_pending_sync_target = 0     # step target awaiting the pre-move sync_read
 
 pending_target  = None
 last_target_ms  = 0
@@ -121,17 +136,19 @@ MOVE_SETTLE_MS  = 120        # post-ENABLE settle before the 0xFD (homing back-o
 # step that advances far less than the self-calibrated free-motion (cruise)
 # delta. Gentle by construction (small slow steps); no torque cap works in CR_UART.
 _home_started_ms   = 0
+_home_seed_raw     = 0       # encoder raw before the first inch step; with contact_raw
+                              # gives the OPEN/CLOSED encoder sign (_enc_sign)
 _home_last_raw     = 0       # last encoder raw read (doubles as the per-step prev ref)
 _home_last_delta   = 0       # last per-step |encoder delta| (telemetry)
 _home_cruise       = 0       # free-motion baseline (mean of the first few free steps)
 _home_inch_count   = 0
 _home_contact_raw  = 0       # encoder raw at stop contact; home zero is set back here
-HOME_TIMEOUT_MS    = 90000   # generous: a first home from far is a long fine-step climb.
-                              # Tighten once homes start near the stop.
-HOME_INCH_STEPS    = 12      # microsteps per inch step (~1.35 deg at 16x / 3200-per-rev).
-                              # No torque cap works in CR_UART, so contact force is bounded
-                              # only by how far the FOC tries to push past the stop = step
-                              # size. Keep tiny so a contact never damages the closed seat.
+HOME_TIMEOUT_MS    = 1800000 # 30 min. Measured full-open->seat home ~= 1119 inch steps
+                              # (~4.2 rev) at ~1.1 s/step ~= 20 min; this covers it + margin.
+HOME_INCH_STEPS    = 12 * _USTEP  # microsteps per inch step (~1.35 deg, fixed physical at any
+                              # microstep). No torque cap works in CR_UART, so contact force is
+                              # bounded only by how far the FOC tries to push past the stop =
+                              # step size. Keep tiny so a contact never damages the closed seat.
 HOME_INCH_SPEED    = 1       # 0xFD speed gear for the approach (slowest -> least current)
 HOME_CONTACT_FRAC  = 0.6     # trip when a step advances < this fraction of the cruise
                               # baseline -- the ONSET of resistance, not a full encoder
@@ -141,10 +158,11 @@ HOME_CONTACT_FRAC  = 0.6     # trip when a step advances < this fraction of the 
 HOME_SETTLE_STEPS  = 2       # first steps after a (re)start ramp up slow -- skip them so
                               # they don't drag the cruise baseline down
 HOME_CRUISE_STEPS  = 5       # free steps after settling, averaged into the cruise baseline
-HOME_INCH_MAX      = 400     # safety bound on inch steps (covers a far first home)
-HOME_BACKOFF_STEPS = 200     # after contact, back off this far toward OPEN (away from the
-                              # seat) to VERIFY the motor moved freely (not jammed), then
-                              # zero at that backed-off margin -- motor_pos 0 = a safe margin
+HOME_INCH_MAX      = 1500    # ~4.7 rev. Measured full-open->seat contact ~= 1119 inch steps
+                              # (~4.2 rev); +34% margin. Raise if a home starts past full open.
+HOME_BACKOFF_STEPS = 200 * _USTEP  # after contact, back off this far toward OPEN (fixed physical
+                              # at any microstep) to VERIFY the motor moved freely (not jammed),
+                              # then zero at that backed-off margin -- motor_pos 0 = a safe margin
                               # off the closed seat, never resting on / ramming it.
 HOME_BACKOFF_MIN_FRAC = 0.5  # the back-off must move >= this fraction of its commanded
                               # distance (vs calibrated counts/step) or the motor is stuck
@@ -179,12 +197,13 @@ _recent_tx_bytes = []            # ring of recent outgoing opcode bytes (ints)
 RECENT_TX_KEEP   = 16
 
 # ── Breath oscillator ──────────────────────────────────────────────────────
-# Skewed-sine modulation around target_pos_steps as the center. Realized by
-# periodic 0xF6 (constant speed) updates tracking the sine derivative; the MKS
-# interpolates between speed levels via SET_ACC. Sentiment-driven baseline
-# changes blend in via a drift term in the velocity calc; large jumps
-# (> BREATH_BIG_JUMP fraction of full travel) interrupt with 0xF7 + 0xFD +
-# auto-resume on move_done.
+# Skewed-sine modulation around target_pos_steps, driven by a smooth continuous 0xF6
+# whose velocity is the sine derivative + a drift term restoring toward the baseline.
+# Position is dead-reckoned between reads; the encoder (0x30) is read ONLY at the valley
+# -- the bottom of the breath, where velocity rounds to a gear-0 rest and the motor is
+# naturally stopped, so the read is reliable (this MKS won't answer 0x30 mid-motion).
+# That re-grounds position once per cycle and bounds drift. Large baseline jumps
+# (> BREATH_BIG_JUMP) interrupt with 0xF7 + 0xFD + auto-resume on move_done.
 #
 # Configurable at runtime via JSON to bush/fire/valve/breath.
 _breath_enabled    = True
@@ -195,20 +214,30 @@ _breath_skew       = 0.5          # rise fraction of period; 0.5 = symmetric sin
 _breath_phase_start_ms = 0
 _breath_last_update_ms = 0
 _breath_last_speed_dir = None     # last 0xF6 byte sent, or None if motor stopped
+_breath_prev_t         = 0        # last tick's t_in_cycle (to detect the cycle-wrap = valley)
+_breath_at_valley      = False    # halted at the bottom, waiting to take the stopped read
 _pending_jump_target   = 0        # step target queued during exiting_breath
-BREATH_UPDATE_MS       = 100      # 0xF6 cadence
-MKS_SILENCE_LIMIT_MS   = 2000     # if no MKS response for >this during breath driving,
-                                  # the motor is ramming a stop (drift) -- cut + de-energize
-_last_rx_ok_ms         = 0        # ticks_ms of last successful frame parse
+BREATH_UPDATE_MS       = 100      # encoder-read + 0xF6 cadence
+MKS_SILENCE_LIMIT_MS   = 2000     # if no fresh encoder read for >this while breath is
+                                  # driving, we've lost feedback -- cut + de-energize
+_breath_last_good_read_ms = 0     # ticks_ms of last successful breath encoder read
 BREATH_BIG_JUMP        = 0.10     # baseline change > this fraction triggers 0xFD jump
+BREATH_ENTER_DEADBAND  = 5        # steps; within this of target, breathe without a move first
 BREATH_ACC_VALUE       = 286      # 0xA4 SET_ACC; 286 = min documented = gentlest ramp
-BREATH_MAX_GEAR        = 30       # safety clamp on speed_gear
-BREATH_DRIFT_TAU_S     = 2.0      # baseline-shift drift time constant
+BREATH_MAX_GEAR        = min(127, 30 * _USTEP)  # safety clamp on speed_gear (same physical cap
+                                  # at any microstep; 0x7F max)
+BREATH_DRIFT_TAU_S     = 2.0      # breath drift-restore time constant (toward baseline)
 STEPS_PER_GEAR_PER_SEC = 500      # at 16x microstep: gear * 9.375 RPM = gear * 500 steps/s
 
 
 def _ticks_diff(later, earlier):
     return (later - earlier) & 0x3FFFFFFF
+
+
+def _encoder_pos_steps(raw):
+    """Absolute valve position in steps from a 0x30 raw reading. 0 = homed margin.
+    Float scale (~20.48 cts/step); per-read rounding error < 1 step."""
+    return int(round((raw - _enc_zero_raw) * _enc_sign / ENC_PER_STEP))
 
 
 def _log_cksum_fail(head_bytes, cmd):
@@ -324,6 +353,63 @@ def _issue_move(step_target):
     return True
 
 
+# ── Encoder-grounded move/nudge finalization ───────────────────────────────
+# motor_pos_steps is set from a 0x30 read after every move/nudge, not by += delta.
+
+def _dispatch_pending_target():
+    """Issue the move (or enter breathing if already at target) for the step target
+    stashed by the idle branch. Called once a sync_read has grounded motor_pos_steps."""
+    global target_pos_steps
+    step_target = _pending_sync_target
+    if _breath_enabled and homed and abs(step_target - motor_pos_steps) <= BREATH_ENTER_DEADBAND:
+        target_pos_steps = step_target
+        _enter_breathing(supervisor.ticks_ms())
+    else:
+        _issue_move(step_target)
+
+
+def _on_sync_read(raw):
+    """Pre-move sync_read landed: ground motor_pos_steps, then dispatch the move."""
+    global motor_pos_steps
+    motor_pos_steps = max(0, min(open_steps, _encoder_pos_steps(raw)))
+    _dispatch_pending_target()
+
+
+def _finalize_move_to(pos):
+    """Land a completed move at absolute step `pos`: auto-enter breathing (keeps the
+    motor energized) if enabled, else de-energize and idle."""
+    global motor_pos_steps, move_in_flight_delta, state
+    motor_pos_steps = max(0, min(open_steps, pos))
+    move_in_flight_delta = 0
+    print(f"Valve: move complete, pos={motor_pos_steps}")
+    if _breath_enabled and homed:
+        _enter_breathing(supervisor.ticks_ms())
+    else:
+        _send(bytes([CMD_STOP]))           # clear the move hold so ENABLE 0 releases
+        _send(bytes([CMD_ENABLE, 0x00]))   # needle valve holds its own position
+        state = "idle"
+
+
+def _on_move_sync(raw):
+    _finalize_move_to(_encoder_pos_steps(raw))
+
+
+def _finalize_nudge_to(pos):
+    """Land a completed nudge at `pos` (NO soft-limit clamp -- nudge is the unclamped
+    characterization path), then de-energize and idle."""
+    global motor_pos_steps, _nudge_delta, state
+    motor_pos_steps = pos
+    _nudge_delta = 0
+    _send(bytes([CMD_STOP]))           # clear the move hold so ENABLE 0 releases
+    _send(bytes([CMD_ENABLE, 0x00]))   # de-energize: needle valve holds position
+    state = "idle"
+    print(f"Valve: nudge done pos~={motor_pos_steps} -- de-energized")
+
+
+def _on_nudge_sync(raw):
+    _finalize_nudge_to(_encoder_pos_steps(raw))
+
+
 # ── Homing chain ──────────────────────────────────────────────────────────
 # Every command in the homing sequence is sent one at a time via
 # _send_and_expect; each ACK in _parse_response chains to the next step.
@@ -369,8 +455,12 @@ def _complete_homing_by_stall():
     contact point, and sets zero there -- 0 = the actual hard stop."""
     global state, homed, motor_pos_steps, target_pos_steps, move_in_flight_delta
     global _pending_cmd, _finalize_step, _finalize_next_ms, _home_contact_raw
+    global _enc_sign
     _home_contact_raw = _home_last_raw       # remember the stop so we can return to it
-    print(f"Valve: home contact at raw={_home_last_raw} -- finalize (back off, verify, zero)")
+    # Inching ran toward the CLOSED seat: raw moved seed->contact while closing, so raw
+    # rises toward OPEN iff contact < seed. Captured here so every homing path sets it.
+    _enc_sign = 1 if (_home_seed_raw - _home_last_raw) > 0 else -1
+    print(f"Valve: home contact at raw={_home_last_raw} (enc_sign={_enc_sign}) -- finalize")
     homed = True
     motor_pos_steps = 0
     target_pos_steps = 0
@@ -435,8 +525,8 @@ def _home_verify_backoff(raw):
 def _finish_homing():
     """Back-off (away from the seat) verified. Set THIS backed-off position as zero --
     a safe margin off the closed seat, so motor_pos 0 never rests on the force-sensitive
-    seat. Then de-energize and idle."""
-    global state, motor_pos_steps, target_pos_steps, move_in_flight_delta
+    seat. De-energize, then re-read the encoder to seed the absolute zero."""
+    global motor_pos_steps, target_pos_steps, move_in_flight_delta
     _send(bytes([CMD_STOP]))             # clear the backoff move's hold first, else ENABLE 0
                                           # won't release the servo (it keeps holding)
     _send(bytes([CMD_SET_ZERO, 0x00]))   # 0x91: set this backed-off position as zero
@@ -445,8 +535,18 @@ def _finish_homing():
     move_in_flight_delta = 0
     _send(bytes([CMD_ENABLE, 0x00]))     # de-energize at idle: needle valve holds position
     _drain_uart_buffer()
+    # Seed _enc_zero_raw from a fresh read AFTER SET_ZERO -- correct whether or not 0x91
+    # resets the 0x30 readout. _on_home_zero_seed lands us in "idle".
+    _send_and_expect(bytes([CMD_READ_ENCODER]), "home_zero_seed")
+    print("Valve: homed (zero = margin off closed seat, de-energized) -- seeding enc zero")
+
+
+def _on_home_zero_seed(raw):
+    """home_zero_seed read landed: the post-SET_ZERO raw IS motor_pos 0."""
+    global _enc_zero_raw, state
+    _enc_zero_raw = raw
     state = "idle"
-    print("Valve: homed (zero = margin off closed seat, de-energized) -- ready for moves")
+    print(f"Valve: enc zero seeded raw={raw} sign={_enc_sign} -- ready for moves")
 
 
 # ── Inchworm homing step ───────────────────────────────────────────────────
@@ -504,7 +604,7 @@ def _home_inch_step(raw):
 def _parse_response():
     global _rx_buf, _pending_cmd, _cmd_sent_ms
     global state, homed, last_error, motor_pos_steps, move_in_flight_delta
-    global _home_last_raw, _home_last_delta
+    global _home_last_raw, _home_last_delta, _home_seed_raw
     global _pending_jump_target, _nudge_delta
     global _breath_enabled, _breath_last_speed_dir
 
@@ -516,7 +616,8 @@ def _parse_response():
 
     cmd = _pending_cmd
 
-    if cmd in ("home_inch_seed", "home_inch_read", "home_verify"):
+    if cmd in ("home_inch_seed", "home_inch_read", "home_verify", "home_zero_seed",
+               "sync_read", "move_sync", "nudge_sync", "breath_read"):
         if len(_rx_buf) < 8:
             return False
         if _checksum(_rx_buf[0:7]) != _rx_buf[7]:
@@ -529,15 +630,26 @@ def _parse_response():
         value = struct.unpack(">H", bytes(_rx_buf[5:7]))[0]
         raw = (carry << 16) | value
         _rx_buf = _rx_buf[8:]
-        _pending_cmd = None
+        _pending_cmd = None            # cleared first; the handlers re-arm if they chain a send
         if cmd == "home_inch_seed":
+            _home_seed_raw = raw       # absolute baseline for the enc-sign capture
             _home_last_raw = raw       # baseline before the first step
             _home_last_delta = 0
             _home_issue_inch()
         elif cmd == "home_inch_read":
             _home_inch_step(raw)
-        else:                          # home_verify
+        elif cmd == "home_verify":
             _home_verify_backoff(raw)
+        elif cmd == "home_zero_seed":
+            _on_home_zero_seed(raw)
+        elif cmd == "sync_read":
+            _on_sync_read(raw)
+        elif cmd == "move_sync":
+            _on_move_sync(raw)
+        elif cmd == "nudge_sync":
+            _on_nudge_sync(raw)
+        else:                          # breath_read
+            _on_breath_read(raw)
         return True
 
     # All other responses: addr + status + crc = 3 bytes
@@ -570,19 +682,10 @@ def _parse_response():
 
     if cmd == "move_done":
         if status == 2:
-            _pending_cmd = None
-            motor_pos_steps += move_in_flight_delta
-            motor_pos_steps = max(0, min(open_steps, motor_pos_steps))
-            move_in_flight_delta = 0
-            state = "idle"
-            print(f"Valve: move complete, pos={motor_pos_steps}")
-            # Auto-enter breathing if enabled and homed (breath keeps the motor
-            # energized); otherwise de-energize -- the needle valve holds itself.
-            if _breath_enabled and homed:
-                _enter_breathing(supervisor.ticks_ms())
-            else:
-                _send(bytes([CMD_STOP]))           # clear the move hold so ENABLE 0 releases
-                _send(bytes([CMD_ENABLE, 0x00]))
+            # Ground the new position on the absolute encoder (motor is stopped at
+            # target now) instead of dead-reckoning; _on_move_sync finalizes. Keep
+            # move_in_flight_delta for the timeout fallback in _check_timeout.
+            _send_and_expect(bytes([CMD_READ_ENCODER]), "move_sync")
         elif status == 0:
             _pending_cmd = None
             state = "stalled"
@@ -659,17 +762,13 @@ def _parse_response():
             state = "idle"
             print("Valve: nudge stalled (status=0) -- hit a stop, de-energized")
         else:
-            _pending_cmd = None
-            motor_pos_steps += _nudge_delta
-            _send(bytes([CMD_STOP]))           # clear the move hold so ENABLE 0 releases
-            _send(bytes([CMD_ENABLE, 0x00]))   # de-energize: needle valve holds position
-            state = "idle"
-            print(f"Valve: nudge done pos~={motor_pos_steps} -- de-energized")
+            # Ground on the encoder; _on_nudge_sync de-energizes and idles.
+            _send_and_expect(bytes([CMD_READ_ENCODER]), "nudge_sync")
         return True
 
     if cmd == "breath":
-        # 0xF6 ACK: status may be 0 or 1 -- we don't escalate on either since
-        # the next update cycle will issue a fresh 0xF6 anyway.
+        # 0xF6 ACK during breathing: status may be 0 or 1 -- we don't escalate, the next
+        # tick reissues a fresh 0xF6 anyway.
         _pending_cmd = None
         return True
 
@@ -734,32 +833,30 @@ def _parse_response():
 
 
 def _drain_uart_into_buf():
-    global _rx_buf, _last_rx_ok_ms
+    global _rx_buf
     data = uart.read(64)
     if data:
         _rx_buf.extend(data)
-        _last_rx_ok_ms = supervisor.ticks_ms()
 
 
 def _check_mks_silence(now):
-    """If the MKS stops emitting for >MKS_SILENCE_LIMIT_MS while breath is
-    actively driving, the open-loop breath has drifted the valve into a hard
-    stop and is ramming it at ~1.5A (the MKS goes silent when stalled). Cut
-    motion + de-energize. This is a backstop, NOT the fix -- the real fix is to
-    stop the integrator drifting (encoder-grounded breath); until then this
-    bounds the ram. (The controller itself isn't hung: a home works without a
-    reload right after.)"""
+    """Backstop: the breath re-grounds on the encoder once per cycle at the valley, so if no
+    valley read has landed for a few breath periods while breathing, we've lost the MKS
+    (dead/unresponsive UART) -- de-energize rather than drive blind. (The controller itself
+    isn't hung: a home works after.)"""
     global state, last_error, _breath_enabled, _breath_last_speed_dir
     if state != "breathing":
         return
-    # Resting (gear 0) -> not driving -> silence expected and harmless.
-    if _breath_last_speed_dir is None:
+    if _breath_last_good_read_ms == 0:
         return
-    if (_breath_last_speed_dir & 0x7F) == 0:
-        return
-    if _last_rx_ok_ms == 0:
-        return
-    if _ticks_diff(now, _last_rx_ok_ms) < MKS_SILENCE_LIMIT_MS:
+    # Sample fresh: _breath_last_good_read_ms can be set during this loop's parse phase
+    # (e.g. _enter_breathing), i.e. AFTER the caller's `now` -- using the stale `now` makes
+    # _ticks_diff wrap to a huge value and false-trips the cut.
+    now = supervisor.ticks_ms()
+    limit = MKS_SILENCE_LIMIT_MS
+    if 3 * _breath_period_ms > limit:        # valley reads land ~once per breath period
+        limit = 3 * _breath_period_ms
+    if _ticks_diff(now, _breath_last_good_read_ms) < limit:
         return
     _send(bytes([CMD_CONSTANT_SPEED, 0x00]))
     _send(bytes([CMD_STOP]))
@@ -768,7 +865,7 @@ def _check_mks_silence(now):
     _breath_last_speed_dir = None
     state = "stalled"
     last_error = "mks_silent"
-    print("Valve: MKS silent >2s during breath -- rammed a stop, motor disabled")
+    print("Valve: no valley encoder read in 3 breaths -- lost MKS, motor disabled")
 
 
 def _check_timeout():
@@ -779,10 +876,31 @@ def _check_timeout():
     if _ticks_diff(supervisor.ticks_ms(), _cmd_sent_ms) < timeout:
         return
     print(f"Valve: UART timeout waiting for {_pending_cmd}")
-    # breath updates are best-effort; abandon without escalating. The next
-    # breathing tick will reissue.
-    if _pending_cmd == "breath":
+    # Breath read/move are best-effort: on a dropped frame, abandon without escalating;
+    # the next breath tick re-reads the encoder and reissues. (Bounded by the silence
+    # backstop if reads genuinely stop.)
+    if _pending_cmd in ("breath", "breath_read"):
         _pending_cmd = None
+        return
+    if _pending_cmd == "sync_read":
+        _pending_cmd = None
+        _dispatch_pending_target()              # dispatch against the still-fresh motor_pos_steps
+        return
+    if _pending_cmd == "move_sync":
+        _pending_cmd = None
+        _finalize_move_to(motor_pos_steps + move_in_flight_delta)   # one-time dead-reckon fallback
+        return
+    if _pending_cmd == "nudge_sync":
+        _pending_cmd = None
+        _finalize_nudge_to(motor_pos_steps + _nudge_delta)
+        return
+    if _pending_cmd == "home_zero_seed":
+        # We MUST land a post-SET_ZERO read to have a valid absolute reference -- idling on
+        # a stale zero could drive a wrong absolute target into the force-sensitive seat.
+        # The motor is de-energized and stationary at the margin, so just re-issue (like
+        # the inch-read retry). Stays in homing_finalize -> no moves accepted meanwhile.
+        print("Valve: re-reading encoder after home_zero_seed timeout")
+        _send_and_expect(bytes([CMD_READ_ENCODER]), "home_zero_seed")
         return
     # A dropped encoder frame during homing shouldn't kill the home -- the motor is
     # stopped between inch steps, so just re-issue the read. HOME_TIMEOUT_MS is the
@@ -1007,7 +1125,7 @@ def _cmd_nudge(deg):
         print(f"Valve: refusing nudge -- state={state} pending={_pending_cmd}")
         return
     deg = max(-360, min(360, deg))
-    steps = abs(deg) * 3200 // 360
+    steps = abs(deg) * (200 * MICROSTEP) // 360   # microsteps per rev = 200 full-steps * microstep
     if steps == 0:
         return
     direction = DIR_TOWARD_CLOSED if deg > 0 else DIR_TOWARD_OPEN
@@ -1079,32 +1197,23 @@ def _breath_phase_and_dphase(now):
 
 
 def _breath_speed_dir(now):
-    """Compute the 0xF6 speed_dir byte for current phase, or None if velocity
-    rounds to gear 0 (motor should stop). Includes a baseline-drift term so
-    that small target_pos_steps changes blend into the oscillation."""
+    """0xF6 speed_dir byte for the breath at `now`: feed-forward (sine derivative) plus a
+    drift term restoring toward the baseline target_pos_steps. None when velocity rounds to
+    gear 0 -- the natural rest at the valley/peak. The hard-stop guard uses motor_pos_steps,
+    which is re-grounded on the encoder at each valley."""
     phase, dphase_per_sec = _breath_phase_and_dphase(now)
-    # Oscillator velocity in MQTT-fraction units (positive = opening).
     osc_frac_per_sec = _breath_amplitude * math.cos(phase) * dphase_per_sec
-    # Drift toward baseline. Step convention: motor_pos_steps high = open, so
-    # fraction f = motor_pos/open_steps. Error toward baseline = (target_pos -
-    # motor_pos)/open_steps; positive means baseline is more open -> open up.
     if open_steps > 0 and BREATH_DRIFT_TAU_S > 0:
         drift_frac_per_sec = (target_pos_steps - motor_pos_steps) / open_steps / BREATH_DRIFT_TAU_S
     else:
         drift_frac_per_sec = 0.0
-    velocity_frac_per_sec = osc_frac_per_sec + drift_frac_per_sec
-    # Convert to step velocity: opening = motor_pos_steps increasing (no sign flip).
-    velocity_steps_per_sec = velocity_frac_per_sec * open_steps
-    abs_sps = abs(velocity_steps_per_sec)
-    gear = int(round(abs_sps / STEPS_PER_GEAR_PER_SEC))
+    velocity_sps = (osc_frac_per_sec + drift_frac_per_sec) * open_steps
+    gear = int(round(abs(velocity_sps) / STEPS_PER_GEAR_PER_SEC))
     if gear == 0:
         return None
     if gear > BREATH_MAX_GEAR:
         gear = BREATH_MAX_GEAR
-    direction = DIR_TOWARD_OPEN if velocity_steps_per_sec > 0 else DIR_TOWARD_CLOSED
-    # Don't command motion into a hard stop. Without this the integrator
-    # clamps motor_pos_steps but MKS keeps driving on the bare 0xF6 command,
-    # grinding into the endstop at full SET_CURRENT.
+    direction = DIR_TOWARD_OPEN if velocity_sps > 0 else DIR_TOWARD_CLOSED
     if direction == DIR_TOWARD_OPEN and motor_pos_steps >= open_steps:
         return None
     if direction == DIR_TOWARD_CLOSED and motor_pos_steps <= 0:
@@ -1113,17 +1222,15 @@ def _breath_speed_dir(now):
 
 
 def _integrate_breath_motion(now):
-    """Update motor_pos_steps based on the last 0xF6 gear+direction held for the
-    elapsed time. Called once per BREATH_UPDATE_MS tick before computing the
-    next gear. Bounded drift estimate; ground-truthed by encoder reads on
-    mode transitions."""
+    """Dead-reckon motor_pos_steps from the last 0xF6 gear held over the elapsed tick.
+    Between valleys this is the only position estimate; it's re-grounded on the encoder at
+    each valley, so the accumulated error stays bounded to one cycle (no unbounded drift)."""
     global motor_pos_steps
     if _breath_last_speed_dir is None or _breath_last_update_ms == 0:
         return
     elapsed_ms = _ticks_diff(now, _breath_last_update_ms)
     gear = _breath_last_speed_dir & 0x7F
-    # gear * 500 steps/sec * elapsed_ms / 1000  ==  gear * elapsed_ms / 2
-    steps_moved = (gear * elapsed_ms) // 2
+    steps_moved = (gear * elapsed_ms) // 2     # gear * 500 steps/s * ms / 1000
     if _breath_last_speed_dir & 0x80:
         motor_pos_steps += steps_moved
     else:
@@ -1135,31 +1242,58 @@ def _enter_breathing(now):
     """Transition idle -> breathing. Caller must ensure motor is at or near
     target_pos_steps and homed."""
     global state, _breath_phase_start_ms, _breath_last_update_ms, _breath_last_speed_dir
-    _send(bytes([CMD_ENABLE, 0x01]))   # ensure energized for continuous breath motion
+    global _breath_last_good_read_ms, _breath_prev_t, _breath_at_valley
+    _send(bytes([CMD_ENABLE, 0x01]))   # energize for continuous breath motion
     state = "breathing"
     _breath_phase_start_ms = now
-    _breath_last_update_ms = 0      # force immediate update on first tick
+    _breath_last_update_ms = 0       # fire the first tick immediately
     _breath_last_speed_dir = None
+    _breath_prev_t = 0
+    _breath_at_valley = False
+    _breath_last_good_read_ms = now  # fresh feedback baseline for the silence backstop
     print(f"Valve: breathing -- baseline={target_pos_steps} A={_breath_amplitude:.3f} T={_breath_period_ms}ms skew={_breath_skew:.2f}")
 
 
 def _service_breath(now):
-    """Advance the breath oscillator. Called from service() while state=breathing."""
-    global _breath_last_update_ms, _breath_last_speed_dir
+    """Valley-grounded smooth 0xF6. Drive a continuous 0xF6 (BARE send -- the MKS won't
+    reliably ACK it mid-motion and we don't need the ACK), dead-reckoning position between
+    reads. Once per cycle at the valley -- detected by the cycle wrap (bottom of the
+    waveform), not by a chance rest -- halt the motor and, the next tick, take a stopped
+    0x30 read to re-ground motor_pos_steps. That bounds drift and gives the bottom dwell."""
+    global _breath_last_update_ms, _breath_last_speed_dir, _breath_prev_t, _breath_at_valley
     if _pending_cmd is not None:
-        return                                          # prior ACK still pending
+        return                                          # valley read in flight
     if _ticks_diff(now, _breath_last_update_ms) < BREATH_UPDATE_MS:
         return
-    _integrate_breath_motion(now)
+    _integrate_breath_motion(now)                       # estimate from the last 0xF6 gear
     _breath_last_update_ms = now
-    new_speed_dir = _breath_speed_dir(now)
-    if new_speed_dir == _breath_last_speed_dir:
+    if _breath_at_valley:                               # halted last tick -> settled -> read
+        _breath_at_valley = False
+        _send_and_expect(bytes([CMD_READ_ENCODER]), "breath_read")
         return
-    if new_speed_dir is None:
-        _send_and_expect(bytes([CMD_CONSTANT_SPEED, 0x00]), "breath")
-    else:
-        _send_and_expect(bytes([CMD_CONSTANT_SPEED, new_speed_dir]), "breath")
-    _breath_last_speed_dir = new_speed_dir
+    period_ms = max(100, _breath_period_ms)
+    t = _ticks_diff(now, _breath_phase_start_ms) % period_ms
+    crossed_valley = t < _breath_prev_t                 # cycle wrapped -> reached the bottom
+    _breath_prev_t = t
+    if crossed_valley:
+        _breath_at_valley = True
+        _send(bytes([CMD_CONSTANT_SPEED, 0x00]))        # halt at the bottom for a clean read
+        _breath_last_speed_dir = None
+        return
+    sd = _breath_speed_dir(now)
+    if sd != _breath_last_speed_dir:                    # velocity changed -> fresh 0xF6 (bare)
+        _send(bytes([CMD_CONSTANT_SPEED, sd if sd is not None else 0x00]))
+        _breath_last_speed_dir = sd
+
+
+def _on_breath_read(raw):
+    """Valley read landed (motor stopped at the bottom -> reliable): re-ground
+    motor_pos_steps on the absolute encoder. This is the only breath encoder read.
+    (A phase re-anchor here -- to remove the ~0.05 dwell-induced center offset -- was tried
+    but only tested under a loose coupler, so it's unvalidated; re-attempt after the repair.)"""
+    global motor_pos_steps, _breath_last_good_read_ms
+    motor_pos_steps = max(0, min(open_steps, _encoder_pos_steps(raw)))
+    _breath_last_good_read_ms = supervisor.ticks_ms()
 
 
 def _exit_breath_for_jump(new_step_target):
@@ -1183,7 +1317,7 @@ def _exit_breath_to_idle():
 
 def service():
     global pending_target, last_target_ms
-    global state, last_error, target_pos_steps, _pending_move
+    global state, last_error, target_pos_steps, _pending_move, _pending_sync_target
 
     now = supervisor.ticks_ms()
 
@@ -1216,8 +1350,8 @@ def service():
         _service_finalize(now)
 
     elif state == "breathing":
-        # Small target shifts blend via the velocity drift term in _breath_speed_dir.
-        # Big jumps interrupt with STOP + 0xFD + auto-resume on move_done.
+        # Small baseline shifts just move target_pos_steps; the per-tick 0xFD in
+        # _on_breath_read tracks it. Big jumps interrupt with STOP + 0xFD + auto-resume.
         if (pending_target is not None
                 and _ticks_diff(now, last_target_ms) >= TARGET_MIN_MS):
             new_target = pending_target
@@ -1239,12 +1373,13 @@ def service():
         target = pending_target
         pending_target = None
         last_target_ms = now
-        step_target = int(round(target * open_steps))
-        if motor_pos_steps == step_target and _breath_enabled and homed:
-            target_pos_steps = step_target
-            _enter_breathing(now)
+        _pending_sync_target = int(round(target * open_steps))
+        if homed:
+            # Ground motor_pos_steps on a fresh encoder read before computing the move
+            # delta; _on_sync_read dispatches the move (or breathes if already at target).
+            _send_and_expect(bytes([CMD_READ_ENCODER]), "sync_read")
         else:
-            _issue_move(step_target)
+            _dispatch_pending_target()   # _issue_move will refuse (not homed)
 
 
 # ── MQTT outbound ──────────────────────────────────────────────────────────
