@@ -60,6 +60,7 @@ TOPICS = [
     "bush/fire/valve/status",
     "bush/fire/valve/breath",
     "bush/fire/valve/online",
+    "bush/fire/valve/auto",
     "bush/monitor/restart",
     "bush/monitor/heartbeat",
 ]
@@ -215,6 +216,21 @@ class State:
         self.valve_breath_skew: float = 0.5
         self.valve_breath_enabled: bool = True
         self.valve_msg_ts: float | None = None
+        # Whether the bush-variable-valves sentiment auto-driver is publishing
+        # target (live, mirrored from retained bush/fire/valve/auto).
+        self.valve_auto_enabled: bool = True
+        # Valve-control editor: a draft buffer seeded once on screen entry and
+        # edited locally — NOT re-synced from inbound MQTT, so the cursor never
+        # fights the broker echo. calib has no live source (never echoed).
+        self.valve_edit_field: int = 0
+        self.valve_draft_target: float = 1.0
+        self.valve_draft_amp: float = 0.04
+        self.valve_draft_period_ms: int = 5000
+        self.valve_draft_skew: float = 0.5
+        self.valve_draft_enabled: bool = True
+        self.valve_draft_calib: int = 2000        # OPEN_STEPS default
+        self.valve_draft_calib_sent: int = 2000   # last value sent; differs -> dirty
+        self.valve_fine: bool = False
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
         # Last time on_message fired for ANY topic. Watchdog uses this to
         # detect silent paho-mqtt receive-thread stalls (TCP socket stays
@@ -225,7 +241,7 @@ class State:
         self.playback_devices: list[dict] = []
         self.current_input: dict | None = None
         self.current_output: dict | None = None
-        self.ui_mode = "normal"        # "normal" | "select_input" | "select_output" | "input_text"
+        self.ui_mode = "normal"        # "normal" | "select_input" | "select_output" | "input_text" | "valve_ctrl"
         self.selected_index = 0
         self.input_text = ""
         self.quit = False
@@ -393,6 +409,54 @@ _VALVE_STATE_COLOR = {
     "unknown":          "dim",
 }
 
+# Valve-control editor fields. Each: (state attr, label, lo, hi, coarse step,
+# fine step, kind). kind: "frac" 0..1, "int", "bool". Navigated with j/k, adjusted
+# with ←/→ (fine step when `f` is toggled). Calibrate publishes on Enter only;
+# everything else publishes live. See build_valve_ctrl_panel / _handle_key.
+VALVE_FIELDS = [
+    ("valve_draft_target",    "Position",   0.0,  1.0,    0.05,  0.01,  "frac"),
+    ("valve_draft_enabled",   "Breath",     0,    1,      1,     1,     "bool"),
+    ("valve_draft_amp",       "Amplitude",  0.0,  0.5,    0.02,  0.005, "frac"),
+    ("valve_draft_period_ms", "Period",     100,  60000,  500,   100,   "int"),
+    ("valve_draft_skew",      "Skew",       0.05, 0.95,   0.05,  0.01,  "frac"),
+    ("valve_draft_calib",     "Calibrate",  100,  100000, 500,   100,   "int"),
+]
+
+
+def _valve_field_publish(attr, value):
+    """(topic, payload, retain) to publish for a live-edited valve field, or None
+    for calibrate (which commits on Enter). Payload formats match bush-valve."""
+    if attr == "valve_draft_target":
+        return ("bush/fire/valve/target", f"{value:.3f}", False)
+    if attr == "valve_draft_enabled":
+        return ("bush/fire/valve/breath", json.dumps({"enabled": bool(value)}), False)
+    if attr == "valve_draft_amp":
+        return ("bush/fire/valve/breath", json.dumps({"amplitude": value}), False)
+    if attr == "valve_draft_period_ms":
+        return ("bush/fire/valve/breath", json.dumps({"period_ms": int(value)}), False)
+    if attr == "valve_draft_skew":
+        return ("bush/fire/valve/breath", json.dumps({"skew": value}), False)
+    return None
+
+
+def _parse_auto_payload(payload) -> "bool | None":
+    """Tolerant on/off parser mirroring the bush-variable-valves service."""
+    try:
+        s = payload.decode(errors="ignore").strip().lower()
+    except AttributeError:
+        s = str(payload).strip().lower()
+    if s in ("on", "true", "1", "yes"):
+        return True
+    if s in ("off", "false", "0", "no"):
+        return False
+    try:
+        data = json.loads(s)
+        if isinstance(data, dict) and "enabled" in data:
+            return bool(data["enabled"])
+    except (ValueError, TypeError):
+        pass
+    return None
+
 
 def _spark_line(values, width: int, color: str) -> Text:
     """One-row Unicode block sparkline. `values` is an iterable of floats in
@@ -484,6 +548,60 @@ def build_valve_panel(s: State) -> Panel:
                  box=box.ROUNDED, border_style=border)
 
 
+def build_valve_ctrl_panel(s: State) -> Panel:
+    """Interactive valve drive + breath-tuning editor. The always-visible NEEDLE
+    VALVE row above shows live state/pos/sparkline, so this shows only the editor."""
+    state_color = _VALVE_STATE_COLOR.get(s.valve_state, "white")
+    border = state_color if state_color != "dim" else "yellow"
+
+    text = Text()
+    for i, (attr, label, lo, hi, coarse, fine, kind) in enumerate(VALVE_FIELDS):
+        sel = (i == s.valve_edit_field)
+        text.append("► " if sel else "  ", style="bold yellow" if sel else "dim")
+        text.append(f"{label:<11}", style="bold" if sel else "")
+        val = getattr(s, attr)
+        if kind == "bool":
+            text.append("ON" if val else "OFF", style="bold cyan" if val else "dim")
+        elif kind == "frac":
+            text.append(f"{val:>6.3f}  ", style="bold" if sel else "")
+            text.append_text(_bar(int(round(val * 100)), 100, 18,
+                                  state_color if sel else "cyan"))
+        else:  # int
+            unit = "ms" if attr == "valve_draft_period_ms" else "steps"
+            text.append(f"{int(val):>6d} {unit}", style="bold" if sel else "")
+            if attr == "valve_draft_calib":
+                if s.valve_draft_calib != s.valve_draft_calib_sent:
+                    text.append("  * unsent — Enter to send", style="bold yellow")
+                else:
+                    text.append("  (volatile)", style="dim")
+        text.append("\n")
+
+    # Override caveat. Kept short so it never wraps at 80 cols, and placed
+    # before the status line so the less-critical line clips first on a short
+    # terminal. The always-visible NEEDLE VALVE panel still shows live state.
+    if s.valve_auto_enabled:
+        text.append("⚠ auto overwrites Position ~2×/s — [a] to pause for manual hold",
+                    style="bold red")
+    else:
+        text.append("● manual control active (auto paused) — [a] to resume",
+                    style="green")
+    text.append("\n")
+    text.append("Auto ", style="dim")
+    text.append("ON" if s.valve_auto_enabled else "OFF",
+                style="bold green" if s.valve_auto_enabled else "bold red")
+    text.append("    Fine ", style="dim")
+    text.append("on" if s.valve_fine else "off", style="cyan" if s.valve_fine else "dim")
+    text.append("    homed ", style="dim")
+    text.append("yes" if s.valve_homed else "no",
+                style="green" if s.valve_homed else "red")
+
+    # Key legend lives in the title (as the other modal panels do) so it never
+    # clips when the editor body is squeezed on a short terminal.
+    title = ("[bold]VALVE CONTROL[/bold]  [dim]←/→ adjust  jk move  "
+             "\\[a]uto \\[h]ome \\[s]top \\[f]ine  Esc[/dim]")
+    return Panel(text, title=title, box=box.ROUNDED, border_style=border)
+
+
 def build_tts_panel(s: State) -> Panel:
     text = Text()
     if s.tts_text:
@@ -515,7 +633,7 @@ def build_log_panel(s: State) -> Panel:
              f"  [bold yellow]\\[t][/bold yellow][dim]ranscript[/dim]"
              f"  [bold red]\\[f][/bold red][dim]inalize[/dim]"
              f"  [bold cyan]\\[]/][/bold cyan][dim]clarity[/dim]"
-             f"  [bold yellow]\\[v][/bold yellow][dim]olume[/dim]"
+             f"  [bold yellow]\\[v][/bold yellow][dim]alve[/dim]"
              f"  [bold white]\\[q][/bold white][dim]uit[/dim]")
     try:
         term_h = os.get_terminal_size().lines
@@ -615,6 +733,8 @@ def render(s: State) -> Layout:
         layout["log"].update(build_audio_panel(s))
     elif s.ui_mode == "input_text":
         layout["log"].update(build_input_panel(s))
+    elif s.ui_mode == "valve_ctrl":
+        layout["log"].update(build_valve_ctrl_panel(s))
     else:
         layout["log"].update(build_log_panel(s))
 
@@ -702,6 +822,16 @@ def _handle_key(key: str):
             if changed and _mqttc:
                 _mqttc.publish("bush/audio/tts/set-clarity",
                                json.dumps({"clarity": new_clarity}))
+        elif key == "v":
+            with state.lock:
+                state.ui_mode = "valve_ctrl"
+                state.valve_edit_field = 0
+                # Seed the draft from current live values (calib has no live source).
+                state.valve_draft_target = state.valve_target
+                state.valve_draft_amp = state.valve_breath_amp
+                state.valve_draft_period_ms = state.valve_breath_period_ms
+                state.valve_draft_skew = state.valve_breath_skew
+                state.valve_draft_enabled = state.valve_breath_enabled
         elif key in ("q", "Q", "\x03"):   # q or Ctrl-C
             with state.lock:
                 state.quit = True
@@ -767,6 +897,56 @@ def _handle_key(key: str):
         elif key == "ESC":
             with state.lock:
                 state.ui_mode = "normal"
+
+    elif mode == "valve_ctrl":
+        pub = None   # (topic, payload, retain) to publish after releasing the lock
+        n = len(VALVE_FIELDS)
+        if key == "ESC":
+            with state.lock:
+                state.ui_mode = "normal"
+        elif key in ("j", "DOWN"):
+            with state.lock:
+                state.valve_edit_field = (state.valve_edit_field + 1) % n
+        elif key in ("k", "UP"):
+            with state.lock:
+                state.valve_edit_field = (state.valve_edit_field - 1) % n
+        elif key == "f":
+            with state.lock:
+                state.valve_fine = not state.valve_fine
+        elif key == "a":
+            with state.lock:
+                new_auto = not state.valve_auto_enabled
+                state.valve_auto_enabled = new_auto   # optimistic; the echo confirms
+            pub = ("bush/fire/valve/auto", "on" if new_auto else "off", True)
+        elif key == "h":
+            pub = ("bush/fire/valve/home", "", False)
+        elif key == "s":
+            pub = ("bush/fire/valve/stop", "", False)
+        elif key in ("LEFT", "RIGHT", " ", "\r", "\n"):
+            with state.lock:
+                attr, _label, lo, hi, coarse, fine, kind = VALVE_FIELDS[state.valve_edit_field]
+                if key in ("\r", "\n"):
+                    # Enter commits calibrate; no-op on other fields.
+                    if attr == "valve_draft_calib":
+                        state.valve_draft_calib_sent = state.valve_draft_calib
+                        pub = ("bush/fire/valve/calibrate",
+                               str(int(state.valve_draft_calib)), False)
+                elif kind == "bool":
+                    # LEFT/RIGHT/Space all toggle a boolean field.
+                    new = not bool(getattr(state, attr))
+                    setattr(state, attr, new)
+                    pub = _valve_field_publish(attr, new)
+                elif key in ("LEFT", "RIGHT"):
+                    step = fine if state.valve_fine else coarse
+                    direction = 1 if key == "RIGHT" else -1
+                    new = max(lo, min(hi, getattr(state, attr) + direction * step))
+                    new = int(round(new)) if kind == "int" else round(new, 4)
+                    setattr(state, attr, new)
+                    if attr != "valve_draft_calib":   # calib commits on Enter only
+                        pub = _valve_field_publish(attr, new)
+                # Space on a numeric field: no-op.
+        if pub and _mqttc:
+            _mqttc.publish(pub[0], pub[1], retain=pub[2])
 
 
 def _keyboard_thread():
@@ -934,6 +1114,13 @@ def on_message(client, userdata, msg):
 
             elif topic == "bush/fire/valve/online":
                 state.valve_online = (msg.payload.decode(errors="ignore").strip() == "online")
+
+            elif topic == "bush/fire/valve/auto":
+                val = _parse_auto_payload(msg.payload)
+                if val is not None:
+                    if val != state.valve_auto_enabled:
+                        state.log.append((now, "VALVE", f"auto {'on' if val else 'off'}"))
+                    state.valve_auto_enabled = val
 
             elif topic == "bush/monitor/restart":
                 state.log.append((now, "RESTART", "restarting monitor…"))

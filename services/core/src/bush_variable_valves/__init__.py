@@ -7,6 +7,8 @@ Subscribes to:
   bush/pipeline/tts/speaking      — utterance start
   bush/pipeline/tts/done          — utterance end
   bush/fire/valve/status          — Pico valve state (logged on transitions only)
+  bush/fire/valve/auto            — on/off; when off, suspend target output so a
+                                    manual position (e.g. from bush-monitor) holds
 
 Publishes to:
   bush/fire/valve/target           — float 0.0 (closed) to 1.0 (open), 10 Hz
@@ -34,6 +36,7 @@ TOPIC_SPEAKING   = "bush/pipeline/tts/speaking"
 TOPIC_DONE       = "bush/pipeline/tts/done"
 TOPIC_VALVE_TARGET = "bush/fire/valve/target"
 TOPIC_VALVE_STATUS = "bush/fire/valve/status"
+TOPIC_VALVE_AUTO   = "bush/fire/valve/auto"
 MQTT_PORT = 1883
 
 # Pico state values that are part of normal operation. Transitions WITHIN this
@@ -98,6 +101,43 @@ _confidence = 0.5  # top emotion confidence score
 
 _valve_last_state = None
 _valve_last_error = None
+
+# When False, suspend target publishing so a manual position holds. Toggled via
+# bush/fire/valve/auto (retained, so it survives restarts and late subscribers).
+_auto_enabled = True
+
+
+def _parse_auto(payload) -> "bool | None":
+    """Tolerant on/off parser. Accepts on/off/true/false/1/0/yes/no and
+    JSON {"enabled": bool}. Returns None on garbage."""
+    if isinstance(payload, (bytes, bytearray)):
+        payload = payload.decode(errors="ignore")
+    s = str(payload).strip().lower()
+    if s in ("on", "true", "1", "yes"):
+        return True
+    if s in ("off", "false", "0", "no"):
+        return False
+    try:
+        data = json.loads(payload)
+        if isinstance(data, dict) and "enabled" in data:
+            return bool(data["enabled"])
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _on_auto(payload: bytes):
+    global _auto_enabled
+    val = _parse_auto(payload)
+    if val is None:
+        log(f"auto: bad payload: {payload!r}")
+        return
+    with _lock:
+        changed = (val != _auto_enabled)
+        _auto_enabled = val
+    if changed:
+        log("auto on — resuming target output" if val
+            else "auto off — suspending target output (manual control)")
 
 
 def _on_sentiment(payload: bytes):
@@ -223,13 +263,18 @@ def _compute_target() -> float:
 
 
 def _publish_loop(mqttc: mqtt.Client, stop: threading.Event):
-    """Publish valve target at PUBLISH_HZ until stopped."""
+    """Publish valve target at PUBLISH_HZ until stopped. While auto is disabled
+    (bush/fire/valve/auto = off) keep computing — so the baseline ramp stays
+    coherent and resumes smoothly — but suppress output so a manual target holds."""
     while not stop.is_set():
         target = _compute_target()
-        try:
-            mqttc.publish(TOPIC_VALVE_TARGET, f"{target:.3f}")
-        except Exception as e:
-            log(f"publish error: {e}")
+        with _lock:
+            enabled = _auto_enabled
+        if enabled:
+            try:
+                mqttc.publish(TOPIC_VALVE_TARGET, f"{target:.3f}")
+            except Exception as e:
+                log(f"publish error: {e}")
         stop.wait(PUBLISH_INTERVAL_S)
 
 
@@ -246,7 +291,8 @@ def main():
         client.subscribe(TOPIC_SPEAKING)
         client.subscribe(TOPIC_DONE)
         client.subscribe(TOPIC_VALVE_STATUS)
-        log(f"Subscribed to sentiment, tts/speaking, tts/done, valve/status")
+        client.subscribe(TOPIC_VALVE_AUTO)
+        log(f"Subscribed to sentiment, tts/speaking, tts/done, valve/status, valve/auto")
 
     def on_message(client, userdata, msg):
         if msg.topic == TOPIC_SENTIMENT:
@@ -257,6 +303,8 @@ def main():
             _on_done(msg.payload)
         elif msg.topic == TOPIC_VALVE_STATUS:
             _on_valve_status(msg.payload)
+        elif msg.topic == TOPIC_VALVE_AUTO:
+            _on_auto(msg.payload)
 
     mqttc.on_connect = on_connect
     mqttc.on_message = on_message

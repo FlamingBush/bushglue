@@ -8,6 +8,7 @@ Usage:
     bush-valve stop             Emergency stop
     bush-valve status           Print current valve status (waits for one message)
     bush-valve calibrate 16000  Set open_steps calibration
+    bush-valve auto off         Pause sentiment auto-driver for manual control ('on' resumes)
     bush-valve watch            Stream valve position updates
 
 Requires mosquitto or paho-mqtt. Uses the same broker auto-detection as other bush services.
@@ -29,6 +30,7 @@ TOPIC_TARGET    = "bush/fire/valve/target"
 TOPIC_HOME      = "bush/fire/valve/home"
 TOPIC_STOP      = "bush/fire/valve/stop"
 TOPIC_CALIBRATE = "bush/fire/valve/calibrate"
+TOPIC_AUTO      = "bush/fire/valve/auto"
 TOPIC_STATUS    = "bush/fire/valve/status"
 TOPIC_ACTUAL    = "bush/fire/valve/actual"
 
@@ -41,10 +43,16 @@ def get_broker():
         return "localhost"
 
 
-def publish_and_exit(broker, topic, payload=""):
+def publish_and_exit(broker, topic, payload="", retain=False):
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     c.connect(broker, MQTT_PORT, 10)
-    c.publish(topic, payload)
+    c.loop_start()
+    info = c.publish(topic, payload, retain=retain)
+    try:
+        info.wait_for_publish(timeout=5)
+    except (ValueError, RuntimeError):
+        pass
+    c.loop_stop()
     c.disconnect()
 
 
@@ -122,6 +130,14 @@ def main():
         steps = int(sys.argv[2])
         publish_and_exit(broker, TOPIC_CALIBRATE, str(steps))
         print(f"open_steps -> {steps}")
+
+    elif cmd == "auto":
+        if len(sys.argv) < 3 or sys.argv[2] not in ("on", "off"):
+            print("Usage: bush-valve auto <on|off>")
+            sys.exit(1)
+        mode = sys.argv[2]
+        publish_and_exit(broker, TOPIC_AUTO, mode, retain=True)
+        print(f"auto -> {mode}")
 
     elif cmd == "status":
         payload = subscribe_one(broker, TOPIC_STATUS, timeout=3.0)
