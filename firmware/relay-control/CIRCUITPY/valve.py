@@ -43,12 +43,14 @@ CMD_STOP            = 0xF7
 CMD_MOVE_POS        = 0xFD   # two-stage response: status=1 starting -> status=2 complete (or 0 fail)
 
 # ── Valve config ───────────────────────────────────────────────────────────
-MICROSTEP       = 16         # 0x84 microstepping. (Reverted 64x->16x: the 64x homing trouble was
-                              # a loose coupler, not microstep -- to be re-attempted after repair.)
-                              # KEY: gear 1 (0xF6/0xFD) is ALWAYS 500 microsteps/s regardless of
-                              # microstep, so more microsteps make that floor gear a SLOWER physical
-                              # speed -> a slow breath without rounding to gear 0. Step-count consts
-                              # below scale off _USTEP; recalibrate OPEN_STEPS after changing this.
+MICROSTEP       = 64         # 0x84 microstepping. EXPERIMENTAL/UNVALIDATED (tested only under a
+                              # loose coupler -- re-verify after the repair). KEY: gear 1 (0xF6/0xFD)
+                              # is ALWAYS 500 microsteps/s regardless of microstep, so more microsteps
+                              # make that floor gear a SLOWER physical speed -> a slow breath without
+                              # rounding to gear 0 (64x floor ~0.04 rev/s vs 16x ~0.16). TODO: home at
+                              # 16x (gentle contact-detect) then switch up; mood-driven slow/fast
+                              # switching. Step-count consts below scale off _USTEP; recalibrate
+                              # OPEN_STEPS after changing this.
 _USTEP          = MICROSTEP // 16   # scale vs the original 16x baseline for microstep-count consts
 OPEN_STEPS      = 2000 * _USTEP   # open extent in microsteps from the closed seat (motor_pos 0).
                                    # Placeholder ~useful range -- recalibrate via valve/calibrate.
@@ -1287,13 +1289,17 @@ def _service_breath(now):
 
 
 def _on_breath_read(raw):
-    """Valley read landed (motor stopped at the bottom -> reliable): re-ground
-    motor_pos_steps on the absolute encoder. This is the only breath encoder read.
-    (A phase re-anchor here -- to remove the ~0.05 dwell-induced center offset -- was tried
-    but only tested under a loose coupler, so it's unvalidated; re-attempt after the repair.)"""
-    global motor_pos_steps, _breath_last_good_read_ms
+    """Valley read landed (motor stopped at the bottom -> reliable): re-ground motor_pos_steps
+    on the absolute encoder AND re-anchor the breath phase to the valley. EXPERIMENTAL: the
+    re-anchor removes the ~0.05 dwell-induced center offset (the read dwell otherwise lets the
+    phase run ahead and steal rise time) by restarting each cycle at the bottom (phase=-pi/2).
+    UNVALIDATED -- only tested under a loose coupler; re-verify after the repair."""
+    global motor_pos_steps, _breath_last_good_read_ms, _breath_phase_start_ms, _breath_prev_t
     motor_pos_steps = max(0, min(open_steps, _encoder_pos_steps(raw)))
-    _breath_last_good_read_ms = supervisor.ticks_ms()
+    now = supervisor.ticks_ms()
+    _breath_last_good_read_ms = now
+    _breath_phase_start_ms = now      # restart the cycle at the valley -- kills the dwell offset
+    _breath_prev_t = 0
 
 
 def _exit_breath_for_jump(new_step_target):
