@@ -2,9 +2,9 @@
 # UART binary protocol on GP4 (TX) / GP5 (RX) at 115200 baud.
 #
 # Position convention (motor steps):
-#   motor_pos_steps = 0           -> fully open  (homing stop, MKS zero is set here)
-#   motor_pos_steps = open_steps  -> fully closed
-# MQTT 0.0 = closed, 1.0 = open. motor_pos_steps = (1.0 - target) * open_steps.
+#   motor_pos_steps = 0           -> fully closed (homing seat margin, MKS zero set here)
+#   motor_pos_steps = open_steps  -> fully open
+# MQTT 0.0 = closed, 1.0 = open. motor_pos_steps = target * open_steps.
 #
 # Architecture: the SERVO42C is a closed-loop FOC servo. We trust it to reach
 # commanded positions and tell us when via the status=2 "run complete" ACK
@@ -42,8 +42,8 @@ CMD_STOP            = 0xF7
 CMD_MOVE_POS        = 0xFD   # two-stage response: status=1 starting -> status=2 complete (or 0 fail)
 
 # ── Valve config ───────────────────────────────────────────────────────────
-OPEN_STEPS      = 2000       # ~1 rev of useful travel -- well short of the
-                              # closed endstop so 0xFD never overshoots
+OPEN_STEPS      = 2000       # open extent in steps from the closed seat (motor_pos 0);
+                              # ~1 rev of useful travel. motor_pos open_steps = fully open
 MOVE_SPEED      = 4          # 0xFD speed gear; lower gear = closed-loop doesn't
                               # need to demand peak current during motion
 CURRENT_GEAR    = 0x01       # 200 mA -- runtime SET_CURRENT doesn't apply, must bake in at boot
@@ -92,9 +92,9 @@ ALL_VALVE_TOPICS = [
 # states: "unknown", "homing", "idle", "moving", "stalled", "error"
 state                = "unknown"
 homed                = False
-motor_pos_steps      = 0     # 0 = open, open_steps = closed (post-homing reference)
+motor_pos_steps      = 0     # 0 = closed (seat margin), open_steps = open (post-homing ref)
 target_pos_steps     = 0
-move_in_flight_delta = 0     # signed: +ve = toward closed
+move_in_flight_delta = 0     # signed: +ve = toward open
 _nudge_delta         = 0     # signed pulses of the in-flight debug nudge
 open_steps           = OPEN_STEPS
 last_error           = None
@@ -136,10 +136,10 @@ HOME_SETTLE_STEPS  = 2       # first steps after a (re)start ramp up slow -- ski
                               # they don't drag the cruise baseline down
 HOME_CRUISE_STEPS  = 5       # free steps after settling, averaged into the cruise baseline
 HOME_INCH_MAX      = 400     # safety bound on inch steps (covers a far first home)
-HOME_BACKOFF_STEPS = 200     # after contact, back off this far (toward closed) to VERIFY
-                              # the motor moved freely (not jammed at the stop), then return
-                              # to the contact point and zero THERE -- 0 = the actual hard
-                              # stop. The back-off + return round-trip is the not-stuck check.
+HOME_BACKOFF_STEPS = 200     # after contact, back off this far toward OPEN (away from the
+                              # seat) to VERIFY the motor moved freely (not jammed), then
+                              # zero at that backed-off margin -- motor_pos 0 = a safe margin
+                              # off the closed seat, never resting on / ramming it.
 HOME_BACKOFF_MIN_FRAC = 0.5  # the back-off must move >= this fraction of its commanded
                               # distance (vs calibrated counts/step) or the motor is stuck
 
@@ -304,7 +304,7 @@ def _issue_move(step_target):
 
     target_pos_steps = step_target
     move_in_flight_delta = delta
-    direction = DIR_TOWARD_CLOSED if delta > 0 else DIR_TOWARD_OPEN
+    direction = DIR_TOWARD_OPEN if delta > 0 else DIR_TOWARD_CLOSED   # +delta = higher pos = more open
     speed_dir = direction | (MOVE_SPEED & 0x7F)
     pulse_bytes = abs(delta).to_bytes(4, "big")
     print(f"Valve: move {motor_pos_steps} -> {step_target} (d={delta} pulses)")
@@ -781,6 +781,19 @@ def _check_timeout():
         print(f"Valve: re-reading encoder after {label} timeout")
         _send_and_expect(bytes([CMD_READ_ENCODER]), label)
         return
+    if _pending_cmd == "home_inch_brake":
+        # STOP ACK dropped (or STOP-when-stopped didn't ACK) -- the STOP already went
+        # out, so just advance to the encoder read instead of aborting the home.
+        print("Valve: home_inch_brake ACK missed -- advancing to encoder read")
+        _send_and_expect(bytes([CMD_READ_ENCODER]), "home_inch_read")
+        return
+    if _pending_cmd == "home_inch_move":
+        # No move ACK in 8s -> the 0xFD was almost certainly not received (lost TX),
+        # so re-issue it. (Bounded by HOME_TIMEOUT_MS.) The inchworm thus survives any
+        # single dropped frame on this flaky UART instead of aborting the whole home.
+        print("Valve: re-issuing inch move after home_inch_move timeout")
+        _home_issue_inch()
+        return
     # Any other timeout where motor could be energized: cut motion + de-energize
     # so we don't cook at SET_CURRENT (1.5-1.9A in stall). STOP clears a 0xFD hold
     # too (ENABLE 0 alone won't release an active servo hold).
@@ -1061,31 +1074,29 @@ def _breath_speed_dir(now):
     phase, dphase_per_sec = _breath_phase_and_dphase(now)
     # Oscillator velocity in MQTT-fraction units (positive = opening).
     osc_frac_per_sec = _breath_amplitude * math.cos(phase) * dphase_per_sec
-    # Drift toward baseline. Step convention: motor_pos_steps low = open.
-    # Fraction error = (1 - motor_pos/open_steps) - (1 - target_pos/open_steps)
-    #                = (target_pos - motor_pos) / open_steps
-    # Negative because target_pos > motor_pos means motor is more open than
-    # baseline -> we need to close (decrease fraction).
+    # Drift toward baseline. Step convention: motor_pos_steps high = open, so
+    # fraction f = motor_pos/open_steps. Error toward baseline = (target_pos -
+    # motor_pos)/open_steps; positive means baseline is more open -> open up.
     if open_steps > 0 and BREATH_DRIFT_TAU_S > 0:
-        drift_frac_per_sec = -(target_pos_steps - motor_pos_steps) / open_steps / BREATH_DRIFT_TAU_S
+        drift_frac_per_sec = (target_pos_steps - motor_pos_steps) / open_steps / BREATH_DRIFT_TAU_S
     else:
         drift_frac_per_sec = 0.0
     velocity_frac_per_sec = osc_frac_per_sec + drift_frac_per_sec
-    # Convert to step velocity (sign flip: opening means motor_pos_steps decreasing).
-    velocity_steps_per_sec = -velocity_frac_per_sec * open_steps
+    # Convert to step velocity: opening = motor_pos_steps increasing (no sign flip).
+    velocity_steps_per_sec = velocity_frac_per_sec * open_steps
     abs_sps = abs(velocity_steps_per_sec)
     gear = int(round(abs_sps / STEPS_PER_GEAR_PER_SEC))
     if gear == 0:
         return None
     if gear > BREATH_MAX_GEAR:
         gear = BREATH_MAX_GEAR
-    direction = DIR_TOWARD_CLOSED if velocity_steps_per_sec > 0 else DIR_TOWARD_OPEN
+    direction = DIR_TOWARD_OPEN if velocity_steps_per_sec > 0 else DIR_TOWARD_CLOSED
     # Don't command motion into a hard stop. Without this the integrator
     # clamps motor_pos_steps but MKS keeps driving on the bare 0xF6 command,
     # grinding into the endstop at full SET_CURRENT.
-    if direction == DIR_TOWARD_OPEN and motor_pos_steps <= 0:
+    if direction == DIR_TOWARD_OPEN and motor_pos_steps >= open_steps:
         return None
-    if direction == DIR_TOWARD_CLOSED and motor_pos_steps >= open_steps:
+    if direction == DIR_TOWARD_CLOSED and motor_pos_steps <= 0:
         return None
     return direction | (gear & 0x7F)
 
@@ -1194,7 +1205,7 @@ def service():
             new_target = pending_target
             pending_target = None
             last_target_ms = now
-            new_step_target = int(round((1.0 - new_target) * open_steps))
+            new_step_target = int(round(new_target * open_steps))
             delta_frac = abs(new_step_target - target_pos_steps) / open_steps if open_steps > 0 else 0
             if delta_frac > BREATH_BIG_JUMP:
                 target_pos_steps = new_step_target
@@ -1210,7 +1221,7 @@ def service():
         target = pending_target
         pending_target = None
         last_target_ms = now
-        step_target = int(round((1.0 - target) * open_steps))
+        step_target = int(round(target * open_steps))
         if motor_pos_steps == step_target and _breath_enabled and homed:
             target_pos_steps = step_target
             _enter_breathing(now)
@@ -1223,13 +1234,13 @@ def service():
 def _pos_fraction():
     if open_steps <= 0:
         return 0.0
-    return 1.0 - (motor_pos_steps / open_steps)
+    return motor_pos_steps / open_steps
 
 
 def _target_fraction():
     if open_steps <= 0:
         return 0.0
-    return 1.0 - (target_pos_steps / open_steps)
+    return target_pos_steps / open_steps
 
 
 def _status_json():
