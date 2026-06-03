@@ -110,6 +110,12 @@ CMD_TIMEOUT_MS  = 500
 MOVE_TIMEOUT_MS = 8000       # full-travel @ gear 8 is ~5 s; 8 s catches stalls
                               # quickly so the de-energize safety net fires fast
 
+# A 0xFD issued immediately after ENABLE doesn't execute on this MKS, so _issue_move
+# energizes, stages the move here, and service() fires it after MOVE_SETTLE_MS.
+_pending_move   = None       # staged 0xFD frame bytes, or None
+_move_settle_at = 0
+MOVE_SETTLE_MS  = 120        # post-ENABLE settle before the 0xFD (homing back-off uses ~100)
+
 # Homing -- inchworm: discrete 0xFD steps toward HOME_DIR with an encoder read
 # between each (reads are only reliable when the motor is stopped). Contact = a
 # step that advances far less than the self-calibrated free-motion (cruise)
@@ -270,11 +276,12 @@ def cmd_stop():
     """Hard stop. If we were moving, mark not-homed since position is now unknown.
     Discards any queued target — the operator should re-issue after recovery."""
     global state, target_pos_steps, move_in_flight_delta, homed, pending_target
-    global _breath_last_speed_dir
+    global _breath_last_speed_dir, _pending_move
     # Send STOP and let its ACK arrive via the normal parser, then de-energize
     # (needle valve holds its own position; no reason to keep windings powered).
     _send_and_expect(bytes([CMD_STOP]), "stop")
     _send(bytes([CMD_ENABLE, 0x00]))
+    _pending_move = None         # drop any move staged but not yet fired
     move_in_flight_delta = 0
     target_pos_steps = motor_pos_steps
     pending_target = None
@@ -288,8 +295,9 @@ def cmd_stop():
 
 
 def _issue_move(step_target):
-    """Issue a relative 0xFD move toward absolute step_target. Returns True if sent."""
-    global target_pos_steps, move_in_flight_delta
+    """Stage a relative 0xFD move toward absolute step_target: energize now, fire the
+    0xFD after MOVE_SETTLE_MS (service()). Returns True if staged."""
+    global target_pos_steps, move_in_flight_delta, state, _pending_move, _move_settle_at
     if not homed:
         print("Valve: refusing move -- not homed")
         return False
@@ -306,11 +314,13 @@ def _issue_move(step_target):
     move_in_flight_delta = delta
     direction = DIR_TOWARD_OPEN if delta > 0 else DIR_TOWARD_CLOSED   # +delta = higher pos = more open
     speed_dir = direction | (MOVE_SPEED & 0x7F)
-    pulse_bytes = abs(delta).to_bytes(4, "big")
     print(f"Valve: move {motor_pos_steps} -> {step_target} (d={delta} pulses)")
-    _send(bytes([CMD_ENABLE, 0x01]))   # energize for the move (idle is de-energized); the
-                                        # ENABLE status=1 ACK is harmlessly absorbed by move_*
-    _send_and_expect(bytes([CMD_MOVE_POS, speed_dir]) + pulse_bytes, "move_start")
+    # Energize now; stage the 0xFD and let service() fire it after MOVE_SETTLE_MS -- a
+    # 0xFD right after ENABLE doesn't execute on this MKS (the move never completes).
+    _pending_move = bytes([CMD_MOVE_POS, speed_dir]) + abs(delta).to_bytes(4, "big")
+    _send(bytes([CMD_ENABLE, 0x01]))
+    _move_settle_at = (supervisor.ticks_ms() + MOVE_SETTLE_MS) & 0x3FFFFFFF
+    state = "moving"        # guard other branches while the staged move settles
     return True
 
 
@@ -324,7 +334,7 @@ def cmd_home():
     and the encoder-stall fallback in service()."""
     global state, homed, _home_started_ms, pending_target
     global _home_last_raw, _home_last_delta, _home_cruise, _home_inch_count, _home_contact_raw
-    global _breath_last_speed_dir
+    global _breath_last_speed_dir, _pending_move
 
     # If breathing was active, stop the 0xF6 motion first so the inchworm steps
     # aren't fighting a continuous-speed command.
@@ -347,6 +357,7 @@ def cmd_home():
     _home_cruise = 0
     _home_inch_count = 0
     _home_contact_raw = 0
+    _pending_move = None
 
     print("Valve: homing -- chain start (clear latched protect)")
     _send_and_expect(bytes([CMD_CLEAR_PROTECT]), "home_clear_protect")
@@ -1172,7 +1183,7 @@ def _exit_breath_to_idle():
 
 def service():
     global pending_target, last_target_ms
-    global state, last_error, target_pos_steps
+    global state, last_error, target_pos_steps, _pending_move
 
     now = supervisor.ticks_ms()
 
@@ -1182,6 +1193,13 @@ def service():
             break
     _check_timeout()
     _check_mks_silence(now)
+
+    # Fire a move staged by _issue_move once its post-ENABLE settle has elapsed.
+    if (_pending_move is not None and _pending_cmd is None
+            and _ticks_diff(now, _move_settle_at) < 0x1FFFFFFF):
+        mv = _pending_move
+        _pending_move = None
+        _send_and_expect(mv, "move_start")
 
     if state == "homing":
         # The inchworm is ACK-driven via the home_* chain. Only the timeout
