@@ -96,6 +96,8 @@ TOPIC_VALVE_NUDGE     = b"bush/fire/valve/nudge"
 TOPIC_VALVE_ACTUAL    = b"bush/fire/valve/actual"
 TOPIC_VALVE_STATUS    = b"bush/fire/valve/status"
 TOPIC_VALVE_ONLINE    = b"bush/fire/valve/online"
+TOPIC_VALVE_PONG      = b"bush/fire/valve/pong"        # stream clock-sync reply
+TOPIC_VALVE_STREAMPOS = b"bush/fire/valve/streampos"   # executed position (open-loop sync check)
 
 ALL_VALVE_TOPICS = [
     TOPIC_VALVE_TARGET,
@@ -197,6 +199,35 @@ BREATH_ENTER_DEADBAND  = 5 * _USTEP
 BREATH_MAX_RPM         = 120 * _USTEP   # VERIFY
 BREATH_DRIFT_TAU_S     = 2.0
 
+# ── Streamed waveform playback ───────────────────────────────────────────────
+# A host streams a dense position waveform ahead of an audio playhead; the firmware
+# buffers it and plays each sample on ITS OWN clock (open-loop -- the host waveform is
+# the position authority, no encoder grounding), so BLE delivery jitter doesn't move
+# motion timing. Same 0xF6 velocity-follow as breath, just an arbitrary trajectory.
+# Binary frame: SENTINEL TYPE LEN(2 BE) PAYLOAD CRC(sum&0xFF). See bush_cue/wire.py.
+STREAM_SENTINEL = 0xF5
+SF_START   = 0x01   # rate_hz(u16) base_play_ms(u32)
+SF_SAMPLES = 0x02   # start_index(u32) count(u16) positions(u8*count; 0..255 = 0..open)
+SF_STOP    = 0x03
+SF_PING    = 0x05   # token(u16) -> pong telemetry
+STREAM_CAP      = 256              # ring capacity (~8.5 s @ 30 Hz)
+STREAM_MAX_RPM  = 600 * _USTEP     # VERIFY. cap on stream slew (42D allows up to 3000)
+STREAM_TELEM_MS = 200              # executed-position telemetry cadence
+
+_stream_buf      = bytearray(STREAM_CAP)
+_stream_max_idx  = -1
+_stream_played   = -1
+_stream_rate     = 30
+_stream_base_ms  = 0
+_stream_epoch    = 0
+_stream_last_telem_ms = 0
+_stream_out      = []              # queued outbound telemetry (pong/streampos)
+
+# ── RGB status LED (XIAO onboard, active-low) -- shows actuation level ────────
+_led          = None
+_led_last_ms  = 0
+LED_UPDATE_MS = 60
+
 
 def _ticks_diff(later, earlier):
     return (later - earlier) & 0x3FFFFFFF
@@ -269,8 +300,11 @@ def _drain_uart_buffer():
 def cmd_stop():
     global state, target_pos_steps, move_in_flight_delta, homed, pending_target
     global _breath_last_rpm, _pending_move, _motion_ctx
+    global _stream_max_idx, _stream_played
     _send_and_expect(bytes([CMD_STOP]), "stop")
     _send(bytes([CMD_ENABLE, 0x00]))
+    _stream_max_idx = -1
+    _stream_played = -1
     _pending_move = None
     _motion_ctx = None
     move_in_flight_delta = 0
@@ -917,6 +951,7 @@ def init():
     """Configure the 42D for serial closed-loop control. Blocking; runs once at boot."""
     global state, last_error
     print("Valve(42D): init UART D6/D7 @ 38400")
+    _led_init()
     time.sleep(0.2)
     _blocking_drain()
     # Ensure responses on + active (two-stage motion replies status=1->2). 42D default,
@@ -1073,6 +1108,141 @@ def _on_breath_stop_jump():
     _issue_move(target)
 
 
+# ── Streamed waveform playback (open-loop; the host clock is the authority) ────
+
+def handle_stream(ftype, payload):
+    if ftype == SF_START:
+        _stream_begin(payload)
+    elif ftype == SF_SAMPLES:
+        _stream_add(payload)
+    elif ftype == SF_STOP:
+        _stream_end()
+    elif ftype == SF_PING:
+        _stream_pong(payload)
+
+
+def _stream_begin(payload):
+    global state, _stream_rate, _stream_base_ms, _stream_epoch
+    global _stream_max_idx, _stream_played, _breath_last_rpm, pending_target
+    if len(payload) < 6:
+        return
+    _stream_rate = max(1, (payload[0] << 8) | payload[1])
+    _stream_base_ms = int.from_bytes(payload[2:6], "big")
+    _stream_epoch = supervisor.ticks_ms()
+    _stream_max_idx = -1
+    _stream_played = -1
+    pending_target = None
+    _breath_last_rpm = None
+    _send(bytes([CMD_ENABLE, 0x01]))   # energize for continuous motion
+    state = "streaming"
+    print("Valve: streaming @ %dHz base=%dms%s"
+          % (_stream_rate, _stream_base_ms, "" if homed else " (open-loop, NOT homed)"))
+
+
+def _stream_add(payload):
+    global _stream_max_idx
+    if len(payload) < 6:
+        return
+    start = int.from_bytes(payload[0:4], "big")
+    count = (payload[4] << 8) | payload[5]
+    pos = payload[6:6 + count]
+    for k in range(len(pos)):
+        idx = start + k
+        _stream_buf[idx % STREAM_CAP] = pos[k]
+        if idx > _stream_max_idx:
+            _stream_max_idx = idx
+
+
+def _stream_end():
+    global state, _stream_max_idx, _stream_played, _breath_last_rpm
+    _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, BREATH_ACC]))   # hold position
+    _breath_last_rpm = None
+    _stream_max_idx = -1
+    _stream_played = -1
+    if state == "streaming":
+        state = "idle"
+    print("Valve: stream stop")
+
+
+def _stream_pong(payload):
+    token = ((payload[0] << 8) | payload[1]) if len(payload) >= 2 else 0
+    _stream_out.append((TOPIC_VALVE_PONG, "%d %d" % (token, supervisor.ticks_ms())))
+
+
+def _service_stream(now):
+    """Drive the valve toward the sample due at the current playback time, on our
+    own clock. Velocity-follow via bare 0xF6 (acc=0 -> snap), open-loop dead-reckon."""
+    global _stream_played, _breath_last_rpm, motor_pos_steps, _stream_last_telem_ms
+    if _pending_cmd is not None:
+        return
+    cur_play = _stream_base_ms + _ticks_diff(now, _stream_epoch)
+    if cur_play < 0:
+        return
+    idx = (cur_play * _stream_rate) // 1000
+    if idx <= _stream_played:
+        return
+    if idx > _stream_max_idx:                       # underrun / end -> hold
+        if _breath_last_rpm not in (None, 0):
+            _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, BREATH_ACC]))
+            _breath_last_rpm = None
+        return
+    oldest = _stream_max_idx - STREAM_CAP + 1        # don't reach past the ring
+    if idx < oldest:
+        idx = oldest
+    target_step = _stream_buf[idx % STREAM_CAP] * open_steps // 255
+    if target_step < 0:
+        target_step = 0
+    elif target_step > open_steps:
+        target_step = open_steps
+    dt_s = (idx - _stream_played) / _stream_rate if _stream_played >= 0 else 1.0 / _stream_rate
+    delta = target_step - motor_pos_steps
+    rpm = int(round(_steps_to_rpm(delta / dt_s))) if dt_s > 0 else 0
+    if rpm > STREAM_MAX_RPM:
+        rpm = STREAM_MAX_RPM
+    if rpm == 0:
+        if _breath_last_rpm not in (None, 0):
+            _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, BREATH_ACC]))
+            _breath_last_rpm = None
+    else:
+        direction = DIR_TOWARD_OPEN if delta > 0 else DIR_TOWARD_CLOSED
+        _send(_speed_body(CMD_CONSTANT_SPEED, direction, rpm, 0))   # acc=0: snap
+        _breath_last_rpm = rpm if delta > 0 else -rpm
+    motor_pos_steps = target_step                   # open-loop: commanded IS position
+    _stream_played = idx
+    if _ticks_diff(now, _stream_last_telem_ms) >= STREAM_TELEM_MS:
+        _stream_last_telem_ms = now
+        _stream_out.append((TOPIC_VALVE_STREAMPOS, "%d %.3f" % (cur_play, _pos_fraction())))
+
+
+# ── RGB status LED ────────────────────────────────────────────────────────────
+
+def _led_init():
+    global _led
+    try:
+        import pwmio
+        _led = (pwmio.PWMOut(board.LED_RED, frequency=1000, duty_cycle=65535),
+                pwmio.PWMOut(board.LED_GREEN, frequency=1000, duty_cycle=65535),
+                pwmio.PWMOut(board.LED_BLUE, frequency=1000, duty_cycle=65535))
+    except Exception as e:
+        print("Valve: RGB LED unavailable:", e)
+        _led = None
+
+
+def _update_led(now):
+    """Map actuation level to the onboard RGB LED: faint blue pilot when closed ->
+    bright red/orange as the valve opens. Pins are active-low (duty 0 = full on)."""
+    global _led_last_ms
+    if _led is None or _ticks_diff(now, _led_last_ms) < LED_UPDATE_MS:
+        return
+    _led_last_ms = now
+    f = _pos_fraction()
+    f = 0.0 if f < 0.0 else 1.0 if f > 1.0 else f
+    r, g, b = f, f * f * 0.5, (1.0 - f) * 0.2
+    _led[0].duty_cycle = 65535 - int(r * 65535)
+    _led[1].duty_cycle = 65535 - int(g * 65535)
+    _led[2].duty_cycle = 65535 - int(b * 65535)
+
+
 # ── Service loop ─────────────────────────────────────────────────────────────
 
 def service():
@@ -1115,6 +1285,8 @@ def service():
             if delta_frac > BREATH_BIG_JUMP:
                 _exit_breath_for_jump(new_step_target)
         _service_breath(now)
+    elif state == "streaming":
+        _service_stream(now)
     elif (state == "idle" and _pending_cmd is None and pending_target is not None
             and _ticks_diff(now, last_target_ms) >= TARGET_MIN_MS):
         target = pending_target
@@ -1125,6 +1297,8 @@ def service():
             _send_and_expect(bytes([CMD_READ_ENCODER]), "sync_read")
         else:
             _dispatch_pending_target()
+
+    _update_led(now)
 
 
 # ── MQTT outbound ─────────────────────────────────────────────────────────────
@@ -1157,6 +1331,9 @@ def get_publish_messages():
     global _last_status_ms, _last_actual_ms
     now = supervisor.ticks_ms()
     msgs = []
+    if _stream_out:
+        msgs.extend(_stream_out)
+        _stream_out[:] = []
     interval = STATUS_MOVE_MS if state in ("moving", "homing", "homing_finalize") else STATUS_IDLE_MS
     if _ticks_diff(now, _last_status_ms) >= interval:
         _last_status_ms = now

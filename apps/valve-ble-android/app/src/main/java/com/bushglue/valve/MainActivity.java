@@ -20,6 +20,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.media.MediaPlayer;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -40,6 +42,8 @@ import android.widget.ToggleButton;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -97,6 +101,20 @@ public class MainActivity extends Activity {
     SeekBar ampBar, periodBar, skewBar; TextView ampLbl, periodLbl, skewLbl;
     EditText calibEdit, maxtEdit, nudgeEdit;
     long lastTargetSend = 0;
+
+    // Music → valve
+    static final int REQ_PICK = 2;
+    static final String[] PRESETS = {"swell", "pulse", "drama"};
+    Uri pickedAudio;
+    String pickedName = "(none)";
+    CueSheet currentSheet;
+    MediaPlayer player;
+    CuePlayer cuePlayer;
+    volatile boolean playbackDone = false;
+    int presetIdx = 1;
+    EditText hostEdit, userEdit, passEdit;
+    TextView musicStatus;
+    Button presetBtn;
 
     // ── Lifecycle / UI ──────────────────────────────────────────────────────
 
@@ -218,6 +236,8 @@ public class MainActivity extends Activity {
         addWeighted(nrow, nClose); addWeighted(nrow, nOpen);
         root.addView(nudgeEdit);
         root.addView(nrow);
+
+        buildMusicSection(root);
 
         scroll.addView(root);
         return scroll;
@@ -385,6 +405,7 @@ public class MainActivity extends Activity {
                     }
                 }
             } catch (SecurityException ignored) {}
+            try { g.requestMtu(185); } catch (SecurityException ignored) {}  // bigger writes for streaming
             ready = true;
             ui.post(() -> { setStatus("connected to " + DEVICE_NAME); connectBtn.setText("Disconnect"); });
         }
@@ -403,6 +424,11 @@ public class MainActivity extends Activity {
         @Override
         public void onCharacteristicWrite(BluetoothGatt g, BluetoothGattCharacteristic c, int status) {
             synchronized (writeQ) { writing = false; drainLocked(); }
+        }
+
+        @Override
+        public void onMtuChanged(BluetoothGatt g, int mtu, int status) {
+            // A larger MTU just means fewer 20-byte chunks; the writer is correct either way.
         }
     };
 
@@ -469,6 +495,169 @@ public class MainActivity extends Activity {
         if (req == REQ_PERMS && !hasScanPerms()) toast("Bluetooth permission needed to scan");
     }
 
+    // ── Music → valve ───────────────────────────────────────────────────────
+
+    void buildMusicSection(LinearLayout root) {
+        root.addView(header("Music → valve"));
+        musicStatus = new TextView(this);
+        musicStatus.setTextSize(13f);
+        musicStatus.setText("track: (none)");
+        root.addView(musicStatus);
+
+        Button pick = new Button(this);
+        pick.setText("Pick track");
+        pick.setOnClickListener(v -> pickTrack());
+        root.addView(pick);
+
+        presetBtn = new Button(this);
+        presetBtn.setText("Preset: " + PRESETS[presetIdx]);
+        presetBtn.setOnClickListener(v -> {
+            presetIdx = (presetIdx + 1) % PRESETS.length;
+            presetBtn.setText("Preset: " + PRESETS[presetIdx]);
+        });
+        root.addView(presetBtn);
+
+        root.addView(musicLabel("odroid host (ssh)"));
+        hostEdit = new EditText(this);
+        hostEdit.setText("odroid-local");
+        root.addView(hostEdit);
+        root.addView(musicLabel("ssh user"));
+        userEdit = new EditText(this);
+        userEdit.setText("odroid");
+        root.addView(userEdit);
+        root.addView(musicLabel("ssh password"));
+        passEdit = new EditText(this);
+        passEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        root.addView(passEdit);
+
+        Button convert = new Button(this);
+        convert.setText("Convert on odroid");
+        convert.setOnClickListener(v -> doConvert());
+        root.addView(convert);
+
+        LinearLayout pr = row();
+        Button play = new Button(this);
+        play.setText("Play");
+        play.setOnClickListener(v -> doPlay());
+        Button stopM = new Button(this);
+        stopM.setText("Stop");
+        stopM.setOnClickListener(v -> doStop());
+        addWeighted(pr, play);
+        addWeighted(pr, stopM);
+        root.addView(pr);
+    }
+
+    TextView musicLabel(String t) {
+        TextView tv = new TextView(this);
+        tv.setText(t);
+        tv.setPadding(0, dp(6), 0, 0);
+        return tv;
+    }
+
+    /** Binary write path for stream frames: chunk to 20 B (no newline), reuse the queue. */
+    void sendBytes(byte[] data) {
+        if (!ready || gatt == null || rxChar == null) return;
+        synchronized (writeQ) {
+            for (int i = 0; i < data.length; i += 20) {
+                writeQ.add(Arrays.copyOfRange(data, i, Math.min(i + 20, data.length)));
+            }
+            drainLocked();
+        }
+    }
+
+    void pickTrack() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("audio/*");
+        try {
+            startActivityForResult(i, REQ_PICK);
+        } catch (Exception e) {
+            toast("no file picker available");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == REQ_PICK && res == RESULT_OK && data != null && data.getData() != null) {
+            pickedAudio = data.getData();
+            pickedName = pickedAudio.getLastPathSegment();
+            currentSheet = null;
+            ui.post(() -> musicStatus.setText("track: " + pickedName + " (not converted)"));
+        }
+    }
+
+    void doConvert() {
+        if (pickedAudio == null) { toast("pick a track first"); return; }
+        final String host = hostEdit.getText().toString().trim();
+        final String user = userEdit.getText().toString().trim();
+        final String pass = passEdit.getText().toString();
+        final String preset = PRESETS[presetIdx];
+        ui.post(() -> musicStatus.setText("converting on " + host + " (fallback odroid)…"));
+        new Thread(() -> {
+            try {
+                byte[] audio = readAll(pickedAudio);
+                String cmd = "~/bushglue/.venv/bin/bush-cue analyze - --preset " + preset + " -o -";
+                String json = SshConvert.convert(host, "odroid", user, pass, cmd, audio);
+                final CueSheet sheet = CueSheet.parse(json);
+                currentSheet = sheet;
+                ui.post(() -> musicStatus.setText(String.format(Locale.US,
+                        "ready: %s · %s · %.0fs · %d samples @ %dHz",
+                        pickedName, sheet.preset, sheet.durationS, sheet.posU8.length, sheet.rateHz)));
+            } catch (Exception e) {
+                ui.post(() -> musicStatus.setText("convert failed: " + e.getMessage()));
+            }
+        }, "ssh-convert").start();
+    }
+
+    byte[] readAll(Uri uri) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new Exception("cannot open track");
+            byte[] buf = new byte[16384];
+            int r;
+            while ((r = in.read(buf)) > 0) out.write(buf, 0, r);
+        }
+        return out.toByteArray();
+    }
+
+    void doPlay() {
+        if (currentSheet == null) { toast("convert a track first"); return; }
+        if (!ready) { toast("connect to the valve first"); return; }
+        doStop();
+        try {
+            player = new MediaPlayer();
+            player.setDataSource(this, pickedAudio);
+            player.setOnCompletionListener(mp -> playbackDone = true);
+            player.prepare();
+            playbackDone = false;
+            player.start();
+        } catch (Exception e) {
+            toast("audio error: " + e.getMessage());
+            return;
+        }
+        CuePlayer.Clock clock = new CuePlayer.Clock() {
+            public long playheadMs() {
+                try { return player != null ? player.getCurrentPosition() : 0; }
+                catch (Exception e) { return 0; }
+            }
+            public boolean finished() { return playbackDone; }
+        };
+        cuePlayer = new CuePlayer(currentSheet, this::sendBytes, clock, 60);
+        cuePlayer.start();
+        ui.post(() -> musicStatus.setText("playing: " + pickedName));
+    }
+
+    void doStop() {
+        if (cuePlayer != null) { cuePlayer.stop(); cuePlayer = null; }
+        if (player != null) {
+            try { player.stop(); } catch (Exception ignored) {}
+            try { player.release(); } catch (Exception ignored) {}
+            player = null;
+        }
+        sendBytes(Wire.stop());
+    }
+
     // ── Small UI helpers ────────────────────────────────────────────────────
 
     void setStatus(String s) { statusView.setText("● " + s); }
@@ -533,6 +722,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        doStop();
         disconnect();
     }
 }

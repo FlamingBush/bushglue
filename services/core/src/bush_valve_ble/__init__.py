@@ -37,6 +37,10 @@ NUS_TX_CHAR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # notify: valve -> host
 
 TOPIC_ONLINE = "bush/fire/valve/online"
 
+# Raw binary stream frames (bush-cue waveform playback). The payload IS the frame
+# bytes; we pass them through to NUS RX unchanged (the firmware length-frames them).
+TOPIC_STREAM = "bush/fire/valve/stream"
+
 # Command topics forwarded host -> valve (mirror valve.ALL_VALVE_TOPICS).
 COMMAND_TOPICS = [
     "bush/fire/valve/target",
@@ -46,6 +50,7 @@ COMMAND_TOPICS = [
     "bush/fire/valve/breath",
     "bush/fire/valve/maxtorque",
     "bush/fire/valve/nudge",
+    TOPIC_STREAM,
 ]
 
 SCAN_TIMEOUT_S = 5.0
@@ -126,13 +131,19 @@ async def _serve(mqttc, device, cmd_queue, stop):
         mqttc.publish(TOPIC_ONLINE, "online", qos=1, retain=True)
         while not stop.is_set() and not disconnected.is_set():
             try:
-                line = await asyncio.wait_for(cmd_queue.get(), timeout=0.5)
+                item = await asyncio.wait_for(cmd_queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
             try:
-                await client.write_gatt_char(
-                    NUS_RX_CHAR, (line + "\n").encode("utf-8"), response=False
-                )
+                if isinstance(item, (bytes, bytearray)):
+                    # Binary stream frame: chunk to 20 B (universal -- the firmware
+                    # reassembles by length); write-with-response so none are dropped.
+                    for i in range(0, len(item), 20):
+                        await client.write_gatt_char(NUS_RX_CHAR, item[i:i + 20], response=True)
+                else:
+                    await client.write_gatt_char(
+                        NUS_RX_CHAR, (item + "\n").encode("utf-8"), response=False
+                    )
             except Exception as e:
                 log(f"ble write error: {e}")
                 break
@@ -151,7 +162,10 @@ async def _run(mqttc, broker):
     cmd_queue: "asyncio.Queue" = asyncio.Queue(maxsize=256)
 
     def on_message(client, userdata, msg):
-        # paho network thread -> hand the line to the asyncio loop
+        # paho network thread -> hand the command to the asyncio loop
+        if msg.topic == TOPIC_STREAM:
+            loop.call_soon_threadsafe(_enqueue, cmd_queue, bytes(msg.payload))  # raw frame
+            return
         payload = msg.payload.decode("utf-8", "ignore").strip()
         line = msg.topic if not payload else f"{msg.topic} {payload}"
         loop.call_soon_threadsafe(_enqueue, cmd_queue, line)

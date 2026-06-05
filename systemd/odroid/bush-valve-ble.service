@@ -1,0 +1,17 @@
+[Unit]
+Description=Valve BLE bridge — MQTT <-> XIAO nRF52840 Nordic UART
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=odroid
+ExecStart=/home/odroid/bushglue/.venv/bin/bush-valve-ble
+WorkingDirectory=/home/odroid/bushglue
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

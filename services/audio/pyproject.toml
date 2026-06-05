@@ -26,12 +26,13 @@ test = [
 [project.scripts]
 bush-sound = "bush_sound:main"
 bush-stt = "bush_stt:main"
+bush-cue = "bush_cue:main"
 
 [tool.uv.sources]
 bushutil = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bush_sound", "src/bush_stt"]
+packages = ["src/bush_sound", "src/bush_stt", "src/bush_cue"]
 
 [build-system]
 requires = ["hatchling"]

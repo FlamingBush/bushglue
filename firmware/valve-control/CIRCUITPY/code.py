@@ -41,13 +41,30 @@ def _read_commands():
         data = _uart.read(n)
         if data:
             _rx.extend(data)
-    while True:
-        nl = _rx.find(b"\n")
-        if nl < 0:
-            break
-        line = _rx[:nl]
-        del _rx[:nl + 1]
-        _dispatch(line)
+    # Two interleaved framings on one byte stream: binary stream frames start with
+    # valve.STREAM_SENTINEL (0xF5, never the start of a text topic line); everything
+    # else is a newline-framed "<topic> <payload>" line.
+    while _rx:
+        if _rx[0] == valve.STREAM_SENTINEL:
+            if len(_rx) < 4:
+                break
+            ln = (_rx[2] << 8) | _rx[3]
+            total = 4 + ln + 1
+            if len(_rx) < total:
+                break
+            frame = _rx[:total]
+            if (sum(frame[:-1]) & 0xFF) == frame[-1]:
+                valve.handle_stream(frame[1], bytes(frame[4:4 + ln]))
+                del _rx[:total]
+            else:
+                del _rx[0]   # bad checksum -- drop one byte and resync
+        else:
+            nl = _rx.find(b"\n")
+            if nl < 0:
+                break
+            line = _rx[:nl]
+            del _rx[:nl + 1]
+            _dispatch(line)
 
 
 def _write_telemetry():

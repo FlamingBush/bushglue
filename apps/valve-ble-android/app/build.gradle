@@ -26,3 +26,9 @@ android {
         }
     }
 }
+
+dependencies {
+    // Pure-Java SSH (maintained jcraft fork; modern kex/host-key algos for current OpenSSH).
+    // Used to run the odroid-hosted `bush-cue analyze` converter and fetch the cue sheet.
+    implementation 'com.github.mwiede:jsch:0.2.18'
+}

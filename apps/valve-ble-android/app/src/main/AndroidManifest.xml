@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
 
+    <!-- SSH to the odroid converter. File picking uses the Storage Access Framework,
+         which needs no storage permission. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
         android:label="Bush Valve"
         android:allowBackup="true"

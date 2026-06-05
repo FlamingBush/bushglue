@@ -1,5 +1,12 @@
 # Needle Valve Calibration
 
+> ⚠️ **STALE (42C-era).** The hardware is now a **MKS SERVO42D** on a **XIAO nRF52840
+> (BLE)** at **38400 baud** — not the 42C/Pico/115200 below. The 42D needs no
+> on-board menu changes (SR_vFOC/microstep/current are set over serial at boot) and
+> homes via native stallguard. See `PROTOCOL.md` (the 42D authority) and
+> `plans/servo42d-bringup.md`. The calibration *goal* below (find real `open_steps`
+> via `bush/fire/valve/calibrate`) still applies; the setup steps do not.
+
 ## Prerequisites
 
 - MKS SERVO42C-MT V1.1 with UART enabled at 115200 baud
