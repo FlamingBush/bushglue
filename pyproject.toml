@@ -6,7 +6,12 @@ requires-python = ">=3.11"
 dependencies = [
     "chromadb",
     "rich>=13.0",
+    "paho-mqtt>=2.0",
+    "bushutil",
 ]
+
+[tool.uv.sources]
+bushutil = { workspace = true }
 
 [tool.uv.workspace]
 members = [
