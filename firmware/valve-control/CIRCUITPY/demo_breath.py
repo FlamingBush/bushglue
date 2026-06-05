@@ -5,42 +5,18 @@
 # to be mid-travel, and run valve.py's real breathing routine -- the bare MKS
 # motor gently oscillates. Everything below valve.py is unchanged; this only
 # stands in for the normal home->idle->breathe entry that BLE/MQTT would drive.
+#
+# Targets the MKS SERVO42D (see valve.py).
 
-import struct
 import supervisor
-import time
 
 import valve
 
 # No physical endstops without a valve, so pick a travel range that breathes
-# visibly (the firmware default 2000 rounds the breath velocity to gear 0) and
+# visibly (the firmware default 2000 rounds the breath velocity to ~0 RPM) and
 # sit at its middle so the oscillation never clamps at an edge.
 DEMO_OPEN_STEPS = 16000
 MID = DEMO_OPEN_STEPS // 2
-
-
-def _read_encoder_raw(timeout_ms=600):
-    """Blocking 0x30 read (motor idle/stopped -> reliable). Raw multi-turn counts, or None."""
-    valve._blocking_drain()
-    valve._send(bytes([valve.CMD_READ_ENCODER]))
-    deadline = (supervisor.ticks_ms() + timeout_ms) & 0x3FFFFFFF
-    buf = bytearray()
-    while valve._ticks_diff(supervisor.ticks_ms(), deadline) < 0x1FFFFFFF:
-        n = valve.uart.in_waiting
-        if n:
-            buf.extend(valve.uart.read(n))
-        while len(buf) >= 8:
-            if buf[0] != valve.MKS_ADDR:
-                del buf[0]
-                continue
-            if valve._checksum(buf[0:7]) != buf[7]:
-                del buf[0]
-                continue
-            carry = struct.unpack(">i", bytes(buf[1:5]))[0]
-            value = struct.unpack(">H", bytes(buf[5:7]))[0]
-            return (carry << 16) | value
-        time.sleep(0.005)
-    return None
 
 
 def _fake_home(raw):
@@ -59,11 +35,11 @@ def main():
     print("DEMO: breathing, no BLE, homing DISABLED (no valve attached)")
     valve.init()
     if valve.state == "error":
-        print("DEMO: valve.init failed -- check MKS power + UART (D6/D7). Halting.")
+        print("DEMO: valve.init failed -- check 42D power, SR_vFOC, baud 38400, UART (D6/D7). Halting.")
         return
-    raw = _read_encoder_raw()
+    raw = valve._blocking_read_encoder()
     if raw is None:
-        print("DEMO: no encoder response -- check MKS power + UART wiring. Halting.")
+        print("DEMO: no encoder (0x31) response -- check 42D power + UART wiring. Halting.")
         return
     _fake_home(raw)
     print(f"DEMO: faux-home seeded raw={raw} pos={MID}/{DEMO_OPEN_STEPS} -- breathing now")
@@ -73,7 +49,7 @@ def main():
         while True:
             valve.service()
     finally:
-        valve._send(bytes([valve.CMD_CONSTANT_SPEED, 0x00]))
+        valve._send(bytes([valve.CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))
         valve._send(bytes([valve.CMD_STOP]))
         valve._send(bytes([valve.CMD_ENABLE, 0x00]))
         print("DEMO: stopped, motor de-energized")

@@ -1,9 +1,17 @@
 # Valve Control Board
 
-Standalone needle-valve node. Runs the MKS SERVO42C driver (`valve.py`, identical
-to the relay-control build except the UART pins) on its own board, off the Pico.
-The nRF52840 has BLE but **no Wi-Fi**, so commands arrive over BLE (Nordic UART)
-and a host bridges them to MQTT — see `services/core/src/bush_valve_ble/`.
+Standalone needle-valve node. Runs the **MKS SERVO42D** driver (`valve.py`) on its
+own board, off the Pico. The nRF52840 has BLE but **no Wi-Fi**, so commands arrive
+over BLE (Nordic UART) and a host bridges them to MQTT — see
+`services/core/src/bush_valve_ble/`.
+
+> The original 42C was destroyed by reverse power (2026-06-04) and replaced with a
+> 42D. The 42D serial protocol differs substantially (FA/FB framing, SR_vFOC work
+> mode, current in raw mA, 12-bit-RPM + accel-byte motion commands, 0x31 int48
+> encoder) and homing now uses the 42D's native locked-rotor (stallguard) sensing.
+> See `PROTOCOL.md`. **Nothing here has run on a 42D yet** — values tagged `VERIFY`
+> in `valve.py` (direction sense, current, RPM, accel, stall behaviour) must be
+> confirmed on the bench.
 
 ## Hardware
 
@@ -13,18 +21,20 @@ and a host bridges them to MQTT — see `services/core/src/bush_valve_ble/`.
 | Board ID | `Seeed XIAO nRF52840 Sense` |
 | CircuitPython | 10.x |
 | Radio | BLE only (no Wi-Fi) |
+| Servo | MKS SERVO42D (UART, 38400 baud default) |
 
 ## Pin Assignments
 
 | Pin | Function |
 |---|---|
-| D6 (`board.TX`) | UART TX → MKS SERVO42C RX (needle valve) |
-| D7 (`board.RX`) | UART RX ← MKS SERVO42C TX (needle valve) |
+| D6 (`board.TX`) | UART TX → MKS SERVO42D RX (needle valve) |
+| D7 (`board.RX`) | UART RX ← MKS SERVO42D TX (needle valve) |
 | GND | Common ground with the MKS controller |
 
-3.3 V UART, same as the Pico build. The XIAO does **not** power the motor — the
-MKS runs off its own supply with current headroom (~2 A; under-current browns out
-the controller and false-homes). Share grounds between the XIAO and the MKS.
+3.3 V UART at **38400 baud** (the 42D default — no on-board menu change needed,
+unlike the 42C which needed UartBaud=115200). The XIAO does **not** power the motor
+— the 42D runs off its own supply with current headroom. Share grounds between the
+XIAO and the MKS. **Watch supply polarity** — reverse power killed the 42C.
 
 ## BLE transport + line protocol
 
@@ -38,8 +48,10 @@ lines — `<topic>` is the literal MQTT topic, split on the first space:
 | valve → host | `bush/fire/valve/actual <frac>` (250 ms), `bush/fire/valve/status <json>` (1 s idle / 200 ms moving) |
 
 `bush/fire/valve/online` is **not** emitted by the firmware — the bridge owns it,
-publishing retained `online`/`offline` from the BLE link state. Payload semantics
-are unchanged from the Pico build; see `../relay-control/BOARD.md` and `PROTOCOL.md`.
+publishing retained `online`/`offline` from the BLE link state. The line-protocol
+topics/payloads are unchanged, with one 42D semantic shift: **`maxtorque` now sets
+the run current in mA** (0–3000), since the 42D has no 42C-style torque cap and
+bounds force via current. See `PROTOCOL.md`.
 
 ## Required CircuitPython Libraries
 
@@ -56,7 +68,7 @@ Easiest with [`circup`](https://github.com/adafruit/circup): `circup install ada
 | File | Purpose |
 |---|---|
 | `code.py` | **Active firmware** — BLE Nordic-UART ↔ valve glue + main loop |
-| `valve.py` | MKS SERVO42C needle-valve driver (UART on `board.TX`/`board.RX`) |
+| `valve.py` | MKS SERVO42D needle-valve driver (UART on `board.TX`/`board.RX`) |
 
 ## Rebuild Steps
 

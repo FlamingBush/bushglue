@@ -1,406 +1,142 @@
-# MKS SERVO42C-MT V1.1 UART Protocol
+# MKS SERVO42D UART Protocol
 
-Binary serial protocol between the Pico 2 W and the MKS SERVO42C-MT V1.1 integrated closed-loop stepper servo.
+Binary serial protocol between the XIAO nRF52840 and the **MKS SERVO42D** closed-loop
+stepper servo driving the needle valve. The 42D replaced the 42C (killed by reverse
+power, 2026-06-04) and its serial protocol is **substantially different** — this doc
+documents the 42D, not the 42C (`git log` for the old 42C reference).
 
-Consolidated from the upstream wiki (https://github.com/makerbase-mks/MKS-SERVO42C/wiki) and our own field experience. Covers every documented command, the on-board menu, and what's specific to the **MT** (multi-turn) variant we use. The wiki itself documents only the base SERVO42C — MT-specific behavior is called out inline.
+Source: MKS SERVO42D/57D_RS485 User Manual (Makerbase, `github.com/makerbase-motor/MKS-SERVO42D-57D`)
++ the vendor's Arduino examples. RS485 and the TTL-UART port are the **same byte protocol**
+(RS485 is just a transceiver in front of the same UART), so the "RS485" manual is correct
+for our 3.3 V TTL wiring. Do **not** use the CAN or Modbus manuals — those bytes differ.
 
-## Hardware
+> ⚠️ Nothing here has run on a 42D yet. Values tagged VERIFY in `valve.py` (direction
+> sense, current, RPM, accel, stall behaviour, 0x92 zero semantics) are estimates and
+> must be confirmed on the bench.
 
-| Spec | Value |
-|---|---|
-| Operating voltage | 7–28 V |
-| Current range | 0–3000 mA (200 mA gear steps via 0x83) |
-| Max speed | 1000 RPM |
-| Angle resolution | 0.08° |
-| Display | OLED + 4-button menu |
-| Driver | 4× half-bridge, 8× MOSFET |
-| Encoder | Closed-loop magnetic (multi-turn on **MT** variant) |
-
-## Physical Layer
+## Physical layer
 
 | Parameter | Value |
 |---|---|
-| Baud rate | 115200 (must be set in MKS on-board menu: `UartBaud` = 6; factory default is 38400) |
-| Data bits | 8 |
-| Stop bits | 1 |
-| Parity | None |
-| Logic level | 3.3V TTL |
-| Pico TX pin | GP4 |
-| Pico RX pin | GP5 |
+| Baud | **38400** (42D default — no menu change needed) |
+| Data/stop/parity | 8N1 |
+| Logic level | 3.3 V TTL |
+| Slave address | `0x01` (default) |
+| XIAO TX | D6 (`board.TX`) → 42D RX |
+| XIAO RX | D7 (`board.RX`) ← 42D TX |
 
-The MKS UART must be explicitly enabled via the on-board menu before serial commands will work. Set `UartBaud` to your desired rate.
-
-## Packet Format
-
-All communication is binary. Every packet follows:
+## Frame format
 
 ```
-[ADDR] [CMD] [PARAM_0] ... [PARAM_N] [CHK]
+downlink (host→servo):  FA <addr> <func> <data...> <crc>
+uplink   (servo→host):  FB <addr> <func> <data...> <crc>
 ```
 
-| Field | Size | Description |
-|---|---|---|
-| ADDR | 1 byte | Device address. Default `0xE0`. Configurable `0xE0`-`0xE9`. |
-| CMD | 1 byte | Command code |
-| PARAM | 0-5 bytes | Parameters (count depends on command) |
-| CHK | 1 byte | Checksum: `(ADDR + CMD + PARAM_0 + ... + PARAM_N) & 0xFF` |
+- Head: **`0xFA`** outbound, **`0xFB`** inbound (not an echo of FA).
+- `crc = sum(all preceding bytes) & 0xFF` (head + addr + func + data).
+- Multi-byte fields are **big-endian**.
+- No length field — reply length is per-`func` (the firmware keys a `_RESP_PLEN` table off it).
+- Most replies are a 1-byte `status` → 5-byte frame `FB 01 <func> <status> <crc>`.
 
-Responses use the same format. Multi-byte values are **big-endian**.
+Worked example: read encoder `FA 01 31 <crc>` → crc = (0xFA+0x01+0x31)&0xFF = `0x2C` → `FA 01 31 2C`.
 
-Standard success/fail response: `[ADDR] [0x01] [CHK]` = success, `[ADDR] [0x00] [CHK]` = fail.
+## Work mode — the gotcha
 
-All parameters are mandatory. Do not omit a parameter byte even if its value is zero — the controller treats short packets as errors.
-
-## Initialization Sequence
-
-The Pico sends these on boot (see `valve.py:init()`):
-
-1. Set work mode to CR_UART: `E0 82 02 64`
-2. Set microstepping to 16: `E0 84 10 74`
-3. Set current to 200mA (gear 1): `E0 83 01 64`
-4. Enable stall protection: `E0 88 01 69`
-5. Set acceleration to gentlest (286): `E0 A4 01 1E 83`
-6. Enable motor: `E0 F3 01 D4`
-
-The motor must be in CR_UART mode for serial motion commands to work.
-
-## Command Index
-
-| Opcode | Direction | Name | Used by firmware |
-|---|---|---|---|
-| 0x30 | Read | Encoder value (multi-turn on MT) | Yes — absolute position (read continuously) |
-| 0x33 | Read | Pulse count (commanded steps) | No |
-| 0x36 | Read | Motor angle | No (layout varies between FW revs) |
-| 0x39 | Read | Angle error (desired − actual) | No — useful diagnostic |
-| 0x3A | Read | Enable-pin status | No — useful diagnostic |
-| 0x3D | Write | Clear stall-protect latch | Yes — at start of homing |
-| 0x3E | Read | Motor shaft status (blocked?) | No — useful diagnostic |
-| 0x3F | Write | Restore factory defaults | No — recovery (resets baud) |
-| 0x80 | Write | Calibrate encoder | No — run once unloaded |
-| 0x81 | Write | Set motor type | No (set via menu) |
-| 0x82 | Write | Set control mode | Yes (init: CR_UART) |
-| 0x83 | Write | Set current gear | Yes (init: 200 mA) |
-| 0x84 | Write | Set microstepping | Yes (init: 16×) |
-| 0x85 | Write | Set EN-pin active level | No |
-| 0x86 | Write | Set rotation direction | No |
-| 0x87 | Write | Auto-shutdown screen | No |
-| 0x88 | Write | Set stall protection | Yes (init: on) |
-| 0x89 | Write | Subdivision interpolation | No |
-| 0x8A | Write | Set baud rate | No (set via menu) |
-| 0x8B | Write | Set UART address | No |
-| 0x90 | Write | Set zero mode | Yes (homing) |
-| 0x91 | Write | Set current position as zero | No — handled by 0x94 |
-| 0x92 | Write | Set zero speed | Yes (homing) |
-| 0x93 | Write | Set zero direction | Yes (homing) |
-| 0x94 | Write | Return to zero (home) | Yes |
-| 0xA1–A3, A5 | Write | Position PID / max torque | No (defaults work) |
-| 0xA4 | Write | Set acceleration | Yes (init: gentlest ramp for breathing) |
-| 0xF3 | Write | Enable/disable motor (UART) | Yes (init: enable) |
-| 0xF6 | Write | Constant-speed move | Yes — breathing oscillator |
-| 0xF7 | Write | Emergency stop | Yes |
-| 0xFD | Write | Relative move (position) | Yes — sentiment-driven baseline jumps |
-| 0xFF | Write | Save / clear status (C8 = save, CA = clear) | No |
-
-## Commands (detail)
-
-### Read Encoder (0x30)
+The 42D ships in **CR_vFOC (pulse mode)** and silently ignores serial motion commands
+until switched to a serial mode. `init()` sets **SR_vFOC** (full closed-loop FOC serial):
 
 ```
-TX: E0 30 10
-RX: E0 [int32 carry] [uint16 value] CHK    (8 bytes total)
+Set work mode SR_vFOC:  FA 01 82 05 <crc>
 ```
 
-The base SERVO42C wiki says this returns a 16-bit value (0–FFFF). **The MT variant we use extends it to 48 bits**: 4-byte signed `carry` (turn count) + 2-byte unsigned `value` (within-rotation position). Combined raw position: `(carry << 16) | value`.
+Modes (`0x82` data): 0 CR_OPEN, 1 CR_CLOSE, 2 CR_vFOC (default, pulse), 3 SR_OPEN,
+4 SR_CLOSE, **5 SR_vFOC** (serial, closed-loop — our analog to the 42C's CR_UART).
 
-This is the firmware's absolute-position source. Homing captures the raw value at the zeroed margin (`_enc_zero_raw`) and the OPEN/CLOSED sign, then `_encoder_pos_steps()` maps any raw read to absolute steps (~20.48 encoder counts per microstep at 16×). The firmware reads 0x30 after every move/nudge, and once per breath cycle at the valley, to ground the position absolutely. **This MKS does not answer 0x30 reliably while the motor is in continuous motion**, so every read is taken when the motor is stopped (between moves, or at the breath's bottom rest). During the inchworm home it also compares consecutive raws to detect the onset of seat contact.
+## Commands used by the firmware
 
-V1.1.2 firmware also responds to `0x36`, but the byte layout is undocumented and varies between firmware revisions. Stick to `0x30` on this hardware.
+| Func | Name | Request data | Reply | Notes |
+|---|---|---|---|---|
+| `0x31` | Read encoder (addition) | — | `int48` big-endian (6 B) | **Absolute multi-turn ground truth.** +0x4000 (16384) per CW turn → 16384 cts/rev. `_encoder_pos_steps()` scales: 16384/(200·µstep) = 5.12 cts/µstep at 16×. |
+| `0x82` | Set work mode | `[mode]` | status | init: `05` (SR_vFOC) |
+| `0x83` | Set working current | `[mA hi][mA lo]` uint16 | status | **raw mA, 0–3000** (not 200 mA gears). `maxtorque` topic re-targets this. |
+| `0x84` | Set microstep | `[1–255, 0=256]` | status | init: `10` (16×) |
+| `0x88` | Locked-rotor protection | `[1 on / 0 off]` | status | init: on — the stall latch homing relies on |
+| `0x8C` | Set respond/active | `[respon][active]` | status | init: `01 01` → two-stage motion replies |
+| `0xF3` | Enable / disable | `[1 / 0]` | status | de-energized at idle (valve self-holds) |
+| `0xF6` | Speed mode | `[dir\|spd_hi][spd_lo][acc]` | status | continuous rotation; **speed 0 stops**. Drives the breath oscillator. |
+| `0xFD` | Relative position | `[dir\|spd_hi][spd_lo][acc][pulse int32 BE]` | 2-stage status | moves + nudge + homing seek |
+| `0xF7` | Emergency stop | — | status | |
+| `0x3D` | Release locked-rotor latch | — | status | clears a stall before re-driving |
+| `0x3E` | Read shaft-protection state | — | `[1 latched / 0]` | homing-timeout backstop |
+| `0x92` | Set current axis = zero | — | status | homing finalize |
 
-### Read Pulse Count (0x33)
-
-```
-TX: E0 33 13
-RX: E0 [int32 pulses] CHK    (6 bytes total)
-```
-
-Returns the controller's accumulated commanded pulse count. Diagnostic only — the closed-loop position is `0x30`'s encoder reading. Useful for detecting "the controller thinks it moved but the encoder disagrees" failure modes.
-
-### Read Angle Error (0x39)
-
-```
-TX: E0 39 19
-RX: E0 [int16 error] CHK    (4 bytes total)
-```
-
-Difference between desired and actual angle. Diagnostic.
-
-### Read Enable Pin Status (0x3A)
+### Motion command encoding (0xF6 / 0xFD)
 
 ```
-TX: E0 3A 1A
-RX: E0 [status] CHK
+byte4 = (dir<<7) | (speed >> 8) & 0x0F     # dir in b7, speed bits 11..8
+byte5 =  speed & 0xFF                        # speed bits 7..0  (12-bit, 0–3000)
+acc   = 0–255                                # 0 = instant (no ramp); each unit-RPM
+                                             # step takes (256-acc)*50µs, so small
+                                             # acc = gentle ramp, large = fast ramp
+0xFD only: pulse = uint32 big-endian          # microsteps (3200 = 1 rev at 16×)
 ```
 
-Status: `0x01` = enabled, `0x02` = disabled, `0x00` = error.
+`dir`: manual says 0 = CCW, 1 = CW. Which physical sense opens vs closes the valve is
+**unverified on this build** — `valve.py` `DIR_TOWARD_OPEN/CLOSED` are guesses; swap if a
+move drives the wrong way. **Speed is RPM** at microstep ≥ 16 (`actual_rpm = speed·16/µstep`).
 
-### Read Motor Shaft Status (0x3E)
+### Motion replies — the state machine
 
-```
-TX: E0 3E 1E
-RX: E0 [status] CHK
-```
+With respond=1/active=1 (set in init), a `0xFD` move emits **two** `FB 01 FD <status>` frames:
 
-Status: `0x01` = stalled/blocked, `0x02` = running normally, `0x00` = error.
+| status | meaning |
+|---|---|
+| 1 | run starting (immediate) |
+| 2 | run complete |
+| 3 | stopped on a limit switch |
+| **0** | **fail / stall** |
 
-### Clear Stall-Protect Latch (0x3D)
+The firmware drives a state machine off these (`_on_move_reply`): `1` → arm completion
+timeout, `2` → re-read the encoder to ground position, `0` → stall. A `0xF6` *run* returns
+only `1`/`0`; a `0xF6` stop (speed 0) returns `0`/`1`/`2`.
 
-```
-TX: E0 3D 1D
-RX: E0 [result] CHK
-```
+## Homing — stallguard, no inchworm
 
-Clears the latched stall-protection trigger so a subsequent move can run. Not in the upstream wiki — discovered in firmware reverse-engineering. Our `cmd_home()` sends this first so a stalled-and-aborted prior move doesn't block the homing chain.
+The 42D has native locked-rotor (stallguard) detection, so the 42C's hand-rolled
+encoder-delta inchworm is gone. `cmd_home()`:
 
-### Restore Factory Defaults (0x3F)
+1. Release the latch (`0x3D`), enable, low working current (bounds seat force).
+2. Seed the encoder (`0x31`).
+3. One `0xFD` toward the closed seat for `HOME_MAX_PULSES` at low RPM.
+4. **Contact = the 42D stalls** → `0xFD` returns `status=0` (or, if it latches silently,
+   the move times out and a `0x3E` read returns 1). Either path → `_home_on_contact`.
+5. Back off `HOME_BACKOFF_STEPS` toward open, verify it moved freely, `0x92` zero there,
+   de-energize, re-read `0x31` to seed `_enc_zero_raw`.
 
-```
-TX: E0 3F 1F
-RX: E0 [result] CHK
-```
+So `motor_pos 0` is a margin off the force-sensitive seat, never resting on it — same
+safety invariant as before, but the seat is *found* by the controller's stall sensing.
 
-**Resets baud rate too.** After this command, the controller falls back to its factory default (38400) and you must reconfigure `UartBaud` via the on-board menu before serial works again. Use only when the controller is in a known-bad state that survives power cycles.
+## Differences from the 42C (what broke in the port)
 
-### Enable/Disable Motor (0xF3)
+1. Frame is `FA <addr> <func> … <crc>`; replies headed **`FB`** (not `E0`-echo).
+2. Must set **SR_vFOC** (`0x82 05`) or serial motion is ignored.
+3. **Current is raw mA** (`0x83` uint16, ≤3000), not 200 mA gears.
+4. `0xF6`/`0xFD` carry a **12-bit RPM + an accel byte**; `0xFD` pulses are a 32-bit BE field.
+5. Encoder via **`0x31` int48** (16384 cts/rev), vs the 42C's `0x30` carry+value (65536).
+6. **No `0xA5` max-torque / `0xA4` global accel** — accel is per-command; force is bounded by current.
+7. Homing uses native **stallguard**, not the inchworm; zero/home opcodes reorganized
+   (`0x92` set-zero, `0x91` go-home, `0x90` home-switch params).
+8. Default baud **38400** (42C needed a menu change to 115200).
 
-```
-Enable:  E0 F3 01 D4
-Disable: E0 F3 00 D3
-```
-
-### Emergency Stop (0xF7)
-
-```
-TX: E0 F7 D7
-RX: E0 01 E1
-```
-
-### Move to Position (0xFD)
-
-Primary motion command. Moves a relative number of pulses at a given speed.
-
-```
-TX: E0 FD [speed_dir] [pulse_B3] [pulse_B2] [pulse_B1] [pulse_B0] CHK
-RX: E0 01 E1    (status=1, "starting", sent immediately)
-RX: E0 02 E2    (status=2, "complete", sent when motion finishes)
-RX: E0 00 E0    (status=0, "stalled/rejected", on locked-rotor or error)
-```
-
-The two-stage response is critical: a 0xFD command emits **two** 3-byte ACKs on success. Parsers that expect a single ACK will misalign on the second one. On stall, a single status=0 is emitted in place of the status=2.
-
-The motor returns status=2 even when it didn't physically move (e.g. when the work mode isn't CR_UART). Because of this, init failure modes can be silent — diagnose by reading the encoder before and after a test move if you suspect this.
-
-**Speed/direction byte encoding:**
-- Bit 7: direction (0 = CW, 1 = CCW)
-- Bits 6-0: speed gear (1-127)
-
-In our valve convention:
-- CW (bit 7 = 0) = toward closed (decreasing position)
-- CCW (bit 7 = 1) = toward open (increasing position)
-
-**Pulse count:** 4-byte big-endian unsigned integer. Number of microstep pulses to move.
-
-Example — move CCW (toward open) 3200 pulses (1 revolution) at speed 10:
-```
-TX: E0 FD 8A 00 00 0C 80 CHK
-     │    │  │  └──────────┘ pulse count = 3200 = 0x00000C80
-     │    │  └─ speed 10 | direction CCW (0x80 | 0x0A = 0x8A)
-     │    └─ CMD_MOVE_POS
-     └─ address
-```
-
-### Constant Speed (0xF6)
+## Position & breath conventions (unchanged)
 
 ```
-TX: E0 F6 [speed_dir] CHK
+motor_pos 0          = closed seat margin (zero set at homing)
+motor_pos open_steps = fully open
+MQTT 0.0 = closed, 1.0 = open;  step_position = target * open_steps
 ```
 
-Continuous rotation at a fixed speed in a fixed direction. Same `speed_dir` byte encoding as 0xFD. Stops on a second 0xF6 with `speed_dir=0` or on 0xF7. The firmware drives the **breathing oscillator** with a continuous 0xF6 whose velocity is the skewed-sine derivative plus a drift term toward the baseline. The MKS interpolates between speed levels via the acceleration set by 0xA4 in init — keep ACC at its minimum (286) for smoothest motion. The 0xF6 is sent bare (its ACK is unreliable mid-motion and unneeded).
-
-0xF6 reports no position (no completion ACK). Position is dead-reckoned from gear × time between reads and re-grounded on the 0x30 encoder once per cycle at the valley — the bottom of the breath, where velocity rounds to zero and the motor briefly stops (the only point a read is reliable, since the MKS goes quiet during motion). That valley re-grounding bounds drift to a single cycle.
-
-### Set Acceleration (0xA4)
-
-```
-TX: E0 A4 [acc_hi] [acc_lo] CHK
-```
-
-16-bit big-endian acceleration parameter. Documented range 286–1042; default 286 (`0x011E`). Smaller value = gentler ramp between speeds. The firmware sets this to 286 in init so the breathing oscillator's 0xF6 speed updates produce smooth transitions instead of stepped-square velocity.
-
-Wiki warns: too-large values can damage the board. Stay in the documented range.
-
-### Return to Zero (0x94)
-
-Drives toward the configured zero direction until stall, then sets position as zero.
-
-```
-TX: E0 94 00 74
-RX: E0 01 E1    (when complete)
-```
-
-Before issuing, configure zero behavior:
-- Set zero mode to DirMode: `E0 90 01 71`
-- Set zero direction to CCW: `E0 93 01 74`
-- Set zero speed to slowest: `E0 92 04 76`
-
-The 0x94 response is unreliable at low current — the firmware fires it without expecting an ACK and detects completion via encoder-stall fallback in `service()`.
-
-### Set Current Position as Zero (0x91)
-
-```
-TX: E0 91 00 71
-RX: E0 01 E1
-```
-
-### Set Motor Current (0x83)
-
-```
-TX: E0 83 [gear] CHK
-```
-
-Gear values: `0x00`=0mA, `0x01`=200mA, `0x02`=400mA, ... `0x0C`=2400mA (200mA steps).
-
-Default for this project: `0x01` (200mA) — stall-as-fuse.
-
-### Set Work Mode (0x82)
-
-```
-TX: E0 82 [mode] CHK
-```
-
-Modes: `0x00`=CR_OPEN, `0x01`=CR_vFOC, `0x02`=CR_UART.
-
-### Set Microstepping (0x84)
-
-```
-TX: E0 84 [subdiv] CHK
-```
-
-Subdivision: `0x01`-`0xFF` (1-255), `0x00`=256. Default for this project: `0x10` (16).
-
-### Set Stall Protection (0x88)
-
-```
-TX: E0 88 01 69    (enable)
-TX: E0 88 00 68    (disable)
-```
-
-When enabled, the controller halts and emits `status=0` on a 0xFD instead of indefinitely stalling. Required for our homing-by-stall convention to terminate cleanly.
-
-### Save / Clear Status (0xFF)
-
-```
-TX: E0 FF C8 ...   (save: persist current params to NVRAM)
-TX: E0 FF CA ...   (clear: discard pending status)
-```
-
-Wiki note: "disables after save" — the controller stops accepting new commands until power-cycled or otherwise reset. Use sparingly.
-
-## Recovery
-
-When the controller gets into a bad state:
-
-1. **Soft path:** disable + re-enable motor (`E0 F3 00 D3` then `E0 F3 01 D4`). Clears most transient errors. Encoder reads should resume.
-2. **Re-init:** re-run the full init sequence (lines 1–5 above). Safe to do any time.
-3. **Restore defaults (0x3F):** resets everything including baud rate. After this you must reconfigure `UartBaud` via the on-board menu before serial works again.
-4. **Power cycle:** when all else fails. The MT variant retains absolute encoder position across power cycles, so re-homing isn't strictly required for accuracy — but our firmware doesn't know that and will refuse moves until homed.
-
-If the controller stops responding to UART entirely (encoder reads return nothing, ACKs never arrive): suspect physical-layer trouble first. Check wiring at GP4/GP5, then the MKS power LED, then the OLED display. Conductive alkaline dust shorting the driver is the documented Burning Man failure mode (see `CALIBRATION.md`).
-
-## On-Board Menu Reference
-
-The MKS controller has an OLED + 4-button menu. Below is the complete menu tree.
-
-| Item | Options | What it does |
-|---|---|---|
-| **CAL** | — | Calibrate the encoder. Run once with motor unloaded. |
-| **MotType** | 0.9°, 1.8° | Motor step angle. Set to 1.8° for NEMA 17 |
-| **Mode** | CR_OPEN, CR_vFOC, CR_UART | Control mode. Firmware sets CR_UART via 0x82 on boot |
-| **Ma** | 0–4095 | Current in CR_OPEN mode only. Ignored under CR_UART |
-| **MStep** | 1, 2, 4, 8, 16, 32, 64, 128, 256 | Microstepping. Firmware sets 16 via 0x84 on boot |
-| **En** | H, L, Hold | EN-pin active level. Irrelevant under UART control |
-| **Dir** | CW, CCW | Positive direction. Our firmware uses raw bit-7 in 0xFD, so this is don't-care |
-| **AutoSDD** | Enable, Disable | OLED sleep |
-| **Protect** | Enable, Disable | Stall protection. Firmware re-asserts via 0x88 on boot |
-| **MPlyer** | Enable, Disable | Internal 256-subdivision interpolation |
-| **UartBaud** | Disable, 9600–115200 (1=9600 … 6=115200) | **Must be 6 (115200) for our firmware.** Factory default is 38400 |
-| **UartAddr** | 0xE0–0xE9 (0–9) | **Must be 0 (0xE0)** to match firmware |
-| **0_Mode** | Disable, DirMode, NearMode | Auto-homing behavior on power-on. Firmware drives homing explicitly, so this can be Disable |
-| **Set 0** | — | Sets current physical position as zero |
-| **0_Speed** | 0–4 | Auto-home speed. Smaller = faster. Firmware sets via 0x92 |
-| **0_Dir** | CW, CCW | Auto-home direction. Firmware sets via 0x93 |
-| **Goto 0** | — | Trigger return-to-zero from menu |
-| **ACC** | Disable, 286–1042 | Acceleration profile. Wiki warns: too-large values can damage the board |
-| **Restore** | — | Reset all parameters to defaults (including baud!). Equivalent to 0x3F |
-| **Exit** | — | Leave menu |
-
-The firmware-required settings (must be set by hand once per controller, before any serial use):
-
-- `UartBaud` = 6 (115200)
-- `UartAddr` = 0 (0xE0)
-- `MotType` = 1 (1.8°)
-
-Everything else is overridden via serial commands on each boot.
-
-## Checksum Calculation
-
-```python
-def checksum(packet_bytes):
-    return sum(packet_bytes) & 0xFF
-```
-
-Example: `E0 36` -> `(0xE0 + 0x36) & 0xFF = 0x16` -> full packet: `E0 36 16`
-
-## Position Convention
-
-```
-Step 0           = closed seat margin (homing backs off the seat and zeros here)
-Step open_steps  = fully open
-
-MQTT target 0.0  = closed
-MQTT target 1.0  = open
-
-step_position = mqtt_target * open_steps
-```
-
-The motor homes by inching gently INTO the closed needle seat until the encoder shows the onset of contact resistance, then backs off a fixed margin toward open and sets that backed-off point as zero — so motor_pos 0 never rests on the force-sensitive seat. (An earlier revision homed toward an open mechanical stop; that is no longer the case.)
-
-Position is tracked from the MT absolute encoder (0x30), not dead-reckoned: every move, nudge, and breath tick re-reads the encoder, so commanded and actual positions can't drift apart.
-
-## Speed Reference
-
-At 16x microstepping on a 1.8 deg motor:
-```
-RPM = (speed_gear * 30000) / (16 * 200)
-    = speed_gear * 9.375
-```
-
-| Speed Gear | RPM | Use Case |
-|---|---|---|
-| 1 | 9.4 | Ultra-slow positioning |
-| 10 | 93.8 | Homing |
-| 20 | 187.5 | Normal valve movement |
-| 127 | 1190.6 | Maximum (not recommended for valve) |
-
-## MT Variant Notes
-
-The MT (multi-turn) variant differs from the base SERVO42C in:
-
-- **Absolute multi-turn encoder.** Position is tracked across turns and persists through power cycles. `0x30` returns 48 bits instead of the documented 16.
-- **The base wiki documents only the single-turn variant.** Treat any "0–FFFF" range note in the wiki as the within-rotation portion of the MT response. Our `0x30` parser reads 8 bytes total.
-- All other opcodes behave identically.
-
-## References
-
-- Upstream wiki (most authoritative): https://github.com/makerbase-mks/MKS-SERVO42C/wiki
-- Upstream repo (firmware, hardware, vendor PDFs): https://github.com/makerbase-mks/MKS-SERVO42C
-- Vendor PDFs live under `01_Makerbase SERVO42C Related documents/` in the upstream repo. Not mirrored here to keep the bushglue repo small; clone the upstream if you need them.
+Position is read from `0x31` after every move/nudge and once per breath cycle at the
+valley (the bottom rest, where the motor is briefly stopped — the only reliable read
+point), bounding breath drift to a single cycle. Breath velocity is computed in steps/s,
+converted to RPM for the `0xF6` speed field.
