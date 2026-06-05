@@ -323,15 +323,15 @@ public class MainActivity extends Activity {
         }
         scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) { toast("LE scanner unavailable"); return; }
-        List<ScanFilter> filters = new ArrayList<>();
-        filters.add(new ScanFilter.Builder().setServiceUuid(new ParcelUuid(SVC)).build());
         ScanSettings settings = new ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
         scanning = true;
         setStatus("scanning for " + DEVICE_NAME + "…");
         connectBtn.setText("Cancel");
         try {
-            scanner.startScan(filters, settings, scanCb);
+            // Unfiltered: a 128-bit service UUID may not fit the 31-byte advert alongside
+            // the name, so we match by name OR UUID in the callback instead of a hard filter.
+            scanner.startScan(null, settings, scanCb);
         } catch (SecurityException e) { toast("scan permission denied"); scanning = false; return; }
         ui.postDelayed(() -> {
             if (scanning && !ready) { stopScan(); setStatus("no valve found — tap Connect to retry"); connectBtn.setText("Connect"); }
@@ -347,6 +347,17 @@ public class MainActivity extends Activity {
     final ScanCallback scanCb = new ScanCallback() {
         @Override public void onScanResult(int type, ScanResult result) {
             if (!scanning) return;
+            android.bluetooth.le.ScanRecord rec = result.getScanRecord();
+            String advName = rec != null ? rec.getDeviceName() : null;
+            String devName = null;
+            try { devName = result.getDevice().getName(); } catch (SecurityException ignored) {}
+            boolean nameMatch = DEVICE_NAME.equals(advName) || DEVICE_NAME.equals(devName);
+            boolean uuidMatch = rec != null && rec.getServiceUuids() != null
+                    && rec.getServiceUuids().contains(new ParcelUuid(SVC));
+            android.util.Log.d("bushvalve", "scan " + result.getDevice().getAddress()
+                    + " name=" + advName + "/" + devName
+                    + " uuids=" + (rec != null ? rec.getServiceUuids() : "null"));
+            if (!nameMatch && !uuidMatch) return;
             stopScan();
             BluetoothDevice dev = result.getDevice();
             ui.post(() -> setStatus("connecting…"));

@@ -6,6 +6,7 @@
 # (topic, payload) interface IS the line protocol, so there's no translation here.
 
 from adafruit_ble import BLERadio
+from adafruit_ble.advertising import Advertisement
 from adafruit_ble.advertising.standard import ProvideServicesAdvertisement
 from adafruit_ble.services.nordic import UARTService
 
@@ -16,8 +17,12 @@ BLE_NAME = "bushvalve"
 ble = BLERadio()
 ble.name = BLE_NAME
 _uart = UARTService()
+# The 128-bit NUS UUID (18 B) + flags (3 B) + the complete name (11 B) = 32 B, one over
+# the 31-byte advertisement limit -> start_advertising would raise and never advertise.
+# Keep the service UUID in the main packet and put the name in the scan response.
 _adv = ProvideServicesAdvertisement(_uart)
-_adv.complete_name = BLE_NAME
+_scan_response = Advertisement()
+_scan_response.complete_name = BLE_NAME
 
 _rx = bytearray()
 
@@ -99,7 +104,7 @@ def main():
             if was_connected:
                 print("BLE: central disconnected")
             if not advertising:
-                ble.start_advertising(_adv)
+                ble.start_advertising(_adv, scan_response=_scan_response)
                 advertising = True
         was_connected = connected
 
