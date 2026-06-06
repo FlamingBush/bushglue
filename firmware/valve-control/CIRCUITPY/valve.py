@@ -23,14 +23,16 @@
 #    stall behaviour). Nothing here has run on a 42D yet.
 
 import board
-import busio
 import supervisor
 import json
 import math
 import struct
 import time
 
-uart = busio.UART(board.TX, board.RX, baudrate=38400, timeout=0.1)
+# UART to the MKS is created by the board glue (code.py) and assigned here, since the
+# pins differ per board (XIAO D6/D7 vs Pico GP4/GP5). Must be set before init():
+#   valve.uart = busio.UART(tx, rx, baudrate=38400, timeout=0.1)
+uart = None
 
 # ── MKS SERVO42D RS485/UART protocol ─────────────────────────────────────────
 TX_HEAD = 0xFA               # downlink (host -> servo) frame head
@@ -225,6 +227,7 @@ _stream_out      = []              # queued outbound telemetry (pong/streampos)
 
 # ── RGB status LED (XIAO onboard, active-low) -- shows actuation level ────────
 _led          = None
+_led_mode     = None     # "rgb" (XIAO) | "digital" (Pico W single LED) | None
 _led_last_ms  = 0
 LED_UPDATE_MS = 60
 
@@ -1217,30 +1220,42 @@ def _service_stream(now):
 # ── RGB status LED ────────────────────────────────────────────────────────────
 
 def _led_init():
-    global _led
+    global _led, _led_mode
     try:
         import pwmio
         _led = (pwmio.PWMOut(board.LED_RED, frequency=1000, duty_cycle=65535),
                 pwmio.PWMOut(board.LED_GREEN, frequency=1000, duty_cycle=65535),
                 pwmio.PWMOut(board.LED_BLUE, frequency=1000, duty_cycle=65535))
-    except Exception as e:
-        print("Valve: RGB LED unavailable:", e)
-        _led = None
+        _led_mode = "rgb"
+    except Exception:
+        try:
+            import digitalio
+            d = digitalio.DigitalInOut(board.LED)   # Pico W: one LED on the cyw43, digital only
+            d.direction = digitalio.Direction.OUTPUT
+            _led = (d,)
+            _led_mode = "digital"
+        except Exception as e:
+            print("Valve: status LED unavailable:", e)
+            _led = None
+            _led_mode = None
 
 
 def _update_led(now):
-    """Map actuation level to the onboard RGB LED: faint blue pilot when closed ->
-    bright red/orange as the valve opens. Pins are active-low (duty 0 = full on)."""
+    """Show actuation level on the status LED. RGB (XIAO): faint-blue pilot when closed
+    -> red/orange as it opens (active-low). Single LED (Pico W): coarse on when open."""
     global _led_last_ms
     if _led is None or _ticks_diff(now, _led_last_ms) < LED_UPDATE_MS:
         return
     _led_last_ms = now
     f = _pos_fraction()
     f = 0.0 if f < 0.0 else 1.0 if f > 1.0 else f
-    r, g, b = f, f * f * 0.5, (1.0 - f) * 0.2
-    _led[0].duty_cycle = 65535 - int(r * 65535)
-    _led[1].duty_cycle = 65535 - int(g * 65535)
-    _led[2].duty_cycle = 65535 - int(b * 65535)
+    if _led_mode == "rgb":
+        r, g, b = f, f * f * 0.5, (1.0 - f) * 0.2
+        _led[0].duty_cycle = 65535 - int(r * 65535)
+        _led[1].duty_cycle = 65535 - int(g * 65535)
+        _led[2].duty_cycle = 65535 - int(b * 65535)
+    else:
+        _led[0].value = f > 0.10
 
 
 # ── Service loop ─────────────────────────────────────────────────────────────
