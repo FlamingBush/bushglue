@@ -34,8 +34,8 @@ If init fails: the likely culprits, in order — TX/RX swapped, baud ≠ 38400, 
 Homing drives `DIR_TOWARD_CLOSED` *into* the seat. If that bit is backwards, homing drives the wrong way. Learn the real sense first, motor **unloaded or backed well off the seat**.
 
 1. Fake a home at mid-travel so moves are allowed (the `demo_breath.py` `_fake_home` does this), or just use `nudge` which allows motion in `unknown` state.
-2. `nudge +5` (firmware: + = toward closed) and `nudge -5` (toward open). Watch the shaft.
-3. Confirm `+` physically corresponds to the valve **closing** and `-` to **opening**. If reversed, swap `DIR_TOWARD_OPEN` / `DIR_TOWARD_CLOSED` in `valve.py` (lines ~58) and repeat.
+2. `nudge +5` (payload is **degrees**; + = toward closed) and `nudge -5` (toward open). Watch the shaft — 5° is a small jog, so use 30–45 if the direction is hard to see.
+3. Confirm `+` physically corresponds to the valve **closing** and `-` to **opening**. If reversed, swap the `DIR_TOWARD_OPEN` / `DIR_TOWARD_CLOSED` constants near the top of `valve.py` (~line 85) and repeat.
 
 Do not proceed to homing until this is confirmed.
 
