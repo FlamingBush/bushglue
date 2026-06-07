@@ -59,6 +59,11 @@ the code before touching hardware. Work the phases in order; each proves one thi
   levers are `--no-flame` and killing the publisher.
 - **The closed seat is force-sensitive** — `pos_min` must stay above the homed seat margin; never
   command a full-speed stroke into the seat. (project_valve_closed_seat_safety)
+- **Homing is DISABLED for now** (`HOMING_DISABLED = True` in `valve.py`): boot and `home` set
+  position 0 to the **current shaft position**, so `[pos_min, pos_max]` are relative to wherever it
+  powered up, NOT the real seat. Until real homing is re-enabled, don't trust seat safety — keep the
+  valve uncoupled on the bench, or hand-park it mid-travel before powering on. Phase B's homing
+  steps don't apply while this is set.
 - **E-stop:** publish `bush/fire/valve/stop` (bush-monitor / `mosquitto_pub`) or kill `bush-cue play`.
 
 ## Phase A — bring the Pico node up

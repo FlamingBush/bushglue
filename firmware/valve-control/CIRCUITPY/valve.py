@@ -149,7 +149,13 @@ _pending_move   = None
 _move_settle_at = 0
 MOVE_SETTLE_MS  = 120
 
-# ── Stallguard homing ───────────────────────────────────────────────────────
+# ── Homing ───────────────────────────────────────────────────────────────────
+# FOR NOW: homing is DISABLED. Boot (and `home`) just declare the CURRENT shaft
+# position to be 0 -- no stallguard seek into the seat. Set False to re-enable the
+# real seat-finding homing below.
+HOMING_DISABLED = True
+
+# ── Stallguard homing (used only when HOMING_DISABLED is False) ──────────────
 # Drive toward the closed seat in one 0xFD at low current with locked-rotor
 # protection on. Contact = the 42D stalls: 0xFD returns status=0, or (if it
 # latches silently) the move times out and 0x3E reads "protected". Then back off
@@ -446,15 +452,37 @@ def _finalize_nudge_to(pos):
 
 # ── Stallguard homing ────────────────────────────────────────────────────────
 
+def _fake_home_at_zero():
+    """No homing: declare the CURRENT shaft position to be 0, then go idle/homed.
+    Reads the encoder to ground the zero reference; falls back to raw 0 if no reply."""
+    global _enc_zero_raw, _enc_sign, motor_pos_steps, target_pos_steps, homed, state
+    raw = _blocking_read_encoder()
+    if raw is not None:
+        _enc_zero_raw = raw
+    _enc_sign = 1
+    motor_pos_steps = 0
+    target_pos_steps = 0
+    homed = True
+    state = "idle"
+    print(f"Valve: homing disabled -- boot/home position = 0 (enc_zero_raw={_enc_zero_raw})")
+
+
 def cmd_home():
-    """Begin homing. Drive toward the closed seat; the 42D's locked-rotor protection
-    trips on contact (0xFD status=0, or a timeout + 0x3E latch). Asynchronous."""
+    """Homing. With HOMING_DISABLED, just re-zero at the current shaft position (no seek).
+    Otherwise drive toward the closed seat; the 42D's locked-rotor protection trips on
+    contact (0xFD status=0, or a timeout + 0x3E latch). Asynchronous."""
     global state, homed, pending_target, _home_seed_raw, _home_started_ms
     global _breath_last_rpm, _pending_move, _motion_ctx
     if state == "breathing" or _breath_last_rpm is not None:
         _send(bytes([CMD_STOP]))
         _breath_last_rpm = None
     pending_target = None
+    _pending_move = None
+    _motion_ctx = None
+    if HOMING_DISABLED:
+        _drain_can()
+        _fake_home_at_zero()
+        return
     homed = False
     state = "homing"
     _pending_move = None
@@ -1007,8 +1035,12 @@ def init():
         if ok:
             _send(bytes([CMD_STOP]))
             _send(bytes([CMD_ENABLE, 0x00]))   # de-energize at idle; valve self-holds
-            print("Valve(42D): init OK (de-energized) -- must home before moves")
-            state = "unknown"
+            if HOMING_DISABLED:
+                _fake_home_at_zero()           # boot position = 0, ready immediately
+                print("Valve(42D): init OK -- homing disabled, boot pos = 0, ready")
+            else:
+                print("Valve(42D): init OK (de-energized) -- must home before moves")
+                state = "unknown"
             return
         print("Valve(42D): init attempt", attempt, "-- setup ACK failed")
         time.sleep(0.2)
