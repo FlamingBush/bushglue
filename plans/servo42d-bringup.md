@@ -9,25 +9,26 @@ before the next can hurt anything. Reference: `firmware/valve-control/PROTOCOL.m
 Golden rules for every phase:
 - **Check supply polarity before applying power.** Reverse power is what killed the 42C.
 - **Keep current low** (`VALVE_CURRENT_MA`, start ~300 mA) until homing is proven — current bounds the force into the seat.
-- E-stop is `bush/fire/valve/stop` (or cut power). The `STOP` button in the Android app sends it.
+- E-stop is `bush/fire/valve/stop` over MQTT (or cut power) — via bush-monitor, `mosquitto_pub`, or killing `bush-cue play`.
 
 ## Before you start
 
-- Wiring: XIAO **D6 → 42D RX**, **D7 → 42D TX**, **common GND**. 42D on its own supply.
-- Power the 42D, confirm the OLED is on and it can jog from its own menu (proves the servo itself is alive and not bricked).
+- **Transport is CAN** (the SERVO42D_CAN variant) on a **Pico 2 W + MCP2515** — the Pico has no native CAN. See PROTOCOL.md's CAN section.
+- Wiring: 12–24 V → 42D **`V+`/`GND`** (NOT `IN_*`, those are limit inputs — check polarity, reverse power killed the 42C); 42D **`CAN_H`/`CAN_L`** → the MCP2515 transceiver; **common ground** between the Pico/MCP2515 and the 42D; **120 Ω termination** at the bus ends.
+- Power the 42D, confirm the OLED is on and it can jog from its own menu (proves the servo is alive and not bricked).
 - **Calibrate the encoder once, motor UNLOADED** (42D menu `Cal`, or `0x80`) before attaching the valve. Closed-loop position is garbage until this is done.
-- Confirm 42D menu: baud **38400** (default), address **1**, motor type 1.8°, UART not disabled. We set work mode / microstep / current over serial, so those don't need menu changes.
-- XIAO already runs CircuitPython 10.2.1.
+- Confirm 42D menu: **CAN bitrate 500 k**, **CAN ID 1**, motor type 1.8°. Work mode / microstep / current are set over CAN at init, so those don't need menu changes.
+- On the Pico: CircuitPython + `circup install adafruit_mcp2515`. Set the CAN config (SPI pins, CS, `crystal_freq` — 16 MHz Adafruit/Waveshare, 8 MHz generic — and motor CAN ID) at the top of `code.py`.
 
 ## Phase 0 — comms only, no motion
 
-Prove the FA/FB frame layer and the init handshake before anything moves.
+Prove the CAN link + the init handshake before anything moves.
 
-1. Copy `valve.py` to the board. From the REPL: `import valve; valve.init()`.
-2. Expect `Valve(42D): init OK`. If `init FAILED` → baud (38400?), wiring (TX/RX swap?), or the 42D didn't accept `SR_vFOC`. Scope the TX line if stuck.
-3. `valve._blocking_read_encoder()` should return an int (not `None`) — confirms `0x31` framing + checksum both directions.
+1. Easiest: copy `demo_breath.py` → `code.py` (it sets up the MCP2515 and runs init). Or from the REPL set up the bus like `code.py` does (`valve.can = CAN(...)`, `valve.Message = Message`) then `valve.init()`.
+2. Expect `Valve(42D): init over CAN` → `init OK`. If `init FAILED`, it's the CAN link, not the motor.
+3. `valve._blocking_read_encoder()` should return an int (not `None`) — confirms a CAN round-trip + CRC both ways.
 
-If init fails: the likely culprits, in order — TX/RX swapped, baud ≠ 38400, `0x82 05` (SR_vFOC) rejected by this firmware rev, or no common ground.
+If init fails, likely culprits in order: **wrong `crystal_freq`** (8 vs 16 MHz — silently wrong bitrate), missing **120 Ω termination**, wrong **motor CAN ID** (`valve.ADDR`), bitrate ≠ 500 k, `CAN_H`/`CAN_L` swapped or no common ground, or the 42D didn't accept `SR_vFOC` (`0x82 05`).
 
 ## Phase 1 — direction sense (CRITICAL, before any homing)
 
@@ -39,7 +40,7 @@ Homing drives `DIR_TOWARD_CLOSED` *into* the seat. If that bit is backwards, hom
 
 Do not proceed to homing until this is confirmed.
 
-## Phase 2 — breathing demo (no homing, no BLE)
+## Phase 2 — breathing demo (no homing, no MQTT)
 
 Validates init + `0x31` + `0xF6` speed mode + the breath oscillator on the bare motor.
 
@@ -68,11 +69,11 @@ Failure modes:
 
 With homing working: drive to fully-open, read the encoder, and set `OPEN_STEPS` to the real open extent (or push it live via `bush/fire/valve/calibrate`). Then confirm `target` 0.0 / 0.5 / 1.0 land where expected.
 
-## Phase 5 — full BLE + app + pipeline
+## Phase 5 — full Wi-Fi/MQTT + pipeline
 
-1. `circup install adafruit_ble`, copy the real `code.py` (BLE glue) + `valve.py`.
-2. Pair the Android app (`bushvalve`). Exercise home / target / breath / nudge; confirm telemetry (`actual`, `status`) updates.
-3. Optionally bring up the host bridge (`uv run --package bush-core bush-valve-ble`) and drive it from MQTT / `bush-monitor` end-to-end.
+1. `circup install adafruit_mcp2515`, copy the real `code.py` (Wi-Fi/MQTT + CAN glue) + `valve.py`, and create `secrets.py` (Wi-Fi + `MQTT_BROKER` = the odroid). The Pico runs two buses: Wi-Fi/MQTT to the odroid + CAN to the motor. No BLE and no `bush_valve_ble` bridge — the Pico subscribes to `bush/fire/valve/*` directly.
+2. From MQTT (bush-monitor, `mosquitto_pub`, or `bush-cue`) exercise home / target / breath / nudge; confirm telemetry (`actual`, `status`) comes back.
+3. Stream a waveform end-to-end: `bush-cue play sheet.json --no-flame` → odroid MQTT → Pico → CAN → motor; watch `bush/fire/valve/streampos`.
 
 ## VERIFY constants — quick reference
 
@@ -85,6 +86,7 @@ With homing working: drive to fully-open, read the encoder, and set `OPEN_STEPS`
 | `HOME_MAX_PULSES` | 6 rev | Must exceed full-open→seat travel. |
 | `BREATH_MAX_RPM` | 120 | Breath velocity ceiling. |
 | `OPEN_STEPS` | 2000 | Phase 4 recalibration. |
+| CAN config (`code.py`) | SCK/MOSI/MISO GP18/19/16, CS GP17, 500k, 16 MHz, ID 1 | SPI pins / `crystal_freq` / motor CAN ID — wrong crystal = no comms. |
 
 ## Open questions to resolve on the bench
 
@@ -92,3 +94,5 @@ With homing working: drive to fully-open, read the encoder, and set `OPEN_STEPS`
 - **`0x92` zero semantics:** does set-axis-zero reset the `0x31` readout to 0, or just mark an internal zero? The driver works either way (it re-seeds `_enc_zero_raw` from a post-zero read), but confirm.
 - **Stall signalling:** does this 42D firmware emit `0xFD status=0` on a stall, or silently latch (caught only by the `0x3E` backstop)? Determines homing latency.
 - **`SR_vFOC` acceptance:** confirm `0x82 05` is honoured by this firmware rev (some ship serial mode locked behind a menu toggle).
+- **CAN `crystal_freq`:** confirm the MCP2515 module's crystal (8 vs 16 MHz) and set `CAN_CRYSTAL` in `code.py` to match — a mismatch silently uses the wrong bitrate (no comms).
+- **24-bit pulses:** CAN `0xFD` carries a 24-bit pulse count (≤ 16.7 M); confirm `HOME_MAX_PULSES`/`open_steps` stay within that (they do at 16× microstep).

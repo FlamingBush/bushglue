@@ -1,16 +1,33 @@
-# demo_breath.py -- BENCH DEMO, no BLE. Copy onto the board AS code.py to auto-run.
+# demo_breath.py -- BENCH DEMO (no MQTT). Copy onto the board AS code.py to auto-run.
 #
 # There's no valve attached, so homing (which drives into the closed seat) is
 # DISABLED. Instead we read the encoder once, declare the current shaft position
 # to be mid-travel, and run valve.py's real breathing routine -- the bare MKS
 # motor gently oscillates. Everything below valve.py is unchanged; this only
-# stands in for the normal home->idle->breathe entry that BLE/MQTT would drive.
+# stands in for the normal home->idle->breathe entry that MQTT would drive.
 #
-# Targets the MKS SERVO42D (see valve.py).
+# Targets the MKS SERVO42D over CAN (see valve.py / PROTOCOL.md). Needs an MCP2515
+# (circup install adafruit_mcp2515). Edit the CAN config block for your board.
 
+import board
+import busio
+import digitalio
 import supervisor
 
+from adafruit_mcp2515 import MCP2515 as CAN
+from adafruit_mcp2515.canio import Message
+
 import valve
+
+# CAN config -- match your MCP2515 wiring (mirror code.py).
+CAN_SCK, CAN_MOSI, CAN_MISO, CAN_CS = board.GP18, board.GP19, board.GP16, board.GP17
+CAN_BITRATE, CAN_CRYSTAL = 500000, 16_000_000   # 8_000_000 for a generic 8 MHz module
+
+_spi = busio.SPI(CAN_SCK, CAN_MOSI, CAN_MISO)
+_cs = digitalio.DigitalInOut(CAN_CS)
+_cs.switch_to_output(True)
+valve.Message = Message
+valve.can = CAN(_spi, _cs, baudrate=CAN_BITRATE, crystal_freq=CAN_CRYSTAL)
 
 # No physical endstops without a valve, so pick a travel range that breathes
 # visibly (the firmware default 2000 rounds the breath velocity to ~0 RPM) and
@@ -32,14 +49,15 @@ def _fake_home(raw):
 
 
 def main():
-    print("DEMO: breathing, no BLE, homing DISABLED (no valve attached)")
+    print("DEMO: breathing over CAN, no MQTT, homing DISABLED (no valve attached)")
     valve.init()
     if valve.state == "error":
-        print("DEMO: valve.init failed -- check 42D power, SR_vFOC, baud 38400, UART (D6/D7). Halting.")
+        print("DEMO: valve.init failed -- check 42D power, CAN wiring/termination, "
+              "motor CAN ID, bitrate 500k, crystal_freq. Halting.")
         return
     raw = valve._blocking_read_encoder()
     if raw is None:
-        print("DEMO: no encoder (0x31) response -- check 42D power + UART wiring. Halting.")
+        print("DEMO: no encoder (0x31) reply -- check CAN wiring + MCP2515 config. Halting.")
         return
     _fake_home(raw)
     print(f"DEMO: faux-home seeded raw={raw} pos={MID}/{DEMO_OPEN_STEPS} -- breathing now")
