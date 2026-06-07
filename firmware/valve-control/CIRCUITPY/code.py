@@ -1,9 +1,9 @@
 # code.py — Pi Pico 2 W standalone NEEDLE-VALVE node (CircuitPython 10.x)
 #
-# Drives the MKS SERVO42D over UART and plays bush-cue streamed waveforms, all over
-# Wi-Fi + MQTT. This REPLACES the solenoid (relay-control) firmware on this board for
-# now; it is intentionally a separate, valve-only firmware (no flame relays here). The
-# XIAO/BLE glue is kept alongside as code_xiao_ble.py for if the nRF52 turns up.
+# Drives the MKS SERVO42D as a plain stepper over its STEP/DIR/EN pulse interface and
+# plays bush-cue streamed waveforms, all over Wi-Fi + MQTT. This REPLACES the solenoid
+# (relay-control) firmware on this board for now; it is intentionally a separate,
+# valve-only firmware (no flame relays here).
 #
 # Invariants for this main loop:
 #   1. MQTT keepalive: a PINGREQ must reach the broker within KEEP_ALIVE (15 s), so
@@ -18,8 +18,8 @@
 # open :1883 and verifies via bush/pipeline/ping -> bush/pipeline/pong.
 
 import board
-import busio
 import digitalio
+import pwmio
 import json
 import time
 import wifi
@@ -27,9 +27,6 @@ import socketpool
 import supervisor
 import struct
 import microcontroller
-
-from adafruit_mcp2515 import MCP2515 as CAN
-from adafruit_mcp2515.canio import Message
 
 import valve
 
@@ -39,34 +36,20 @@ try:
 except ImportError:
     raise RuntimeError("Create secrets.py — see secrets.example.py")
 
-# ── MKS SERVO42D over CAN (via an MCP2515 SPI CAN controller) ────────────────
-# The Pico 2 W has no native CAN, so an MCP2515 (+ transceiver) is required:
-# Adafruit PiCowbell CAN, a Waveshare RP2350-CAN board, or a generic module.
-# EDIT THESE FOR YOUR BOARD:
-#   - SPI pins: these reuse the old UART pins GP4/GP5 (already wired) as MISO/CS and add the
-#     two adjacent free pins GP6/GP7 -- GP4-GP7 are a natural SPI0 group on the RP2350. AVOID
-#     GP2/GP3 (the flare/bigjet relay pins in relay-control). A fixed-pin HAT like the Adafruit
-#     PiCowbell CAN instead forces SCK/MOSI/MISO = GP18/GP19/GP16 + its own CS.
-#   - CAN_CRYSTAL: 16 MHz on Adafruit/Waveshare, 8 MHz on cheap blue modules.
-#     A wrong crystal halves/doubles the effective bitrate -> no comms.
-#   - valve.ADDR is the motor's CAN ID (MKS default 1).
-CAN_SCK     = board.GP6     # SPI0 SCK
-CAN_MOSI    = board.GP7     # SPI0 TX (MOSI)
-CAN_MISO    = board.GP4     # SPI0 RX (MISO) -- reuses the old UART TX pin
-CAN_CS      = board.GP5     # CS (any GPIO) -- reuses the old UART RX pin
-CAN_BITRATE = 500000        # MKS SERVO42D default
-CAN_CRYSTAL = 16_000_000    # set 8_000_000 for an 8 MHz MCP2515 module
+# ── MKS SERVO42D as a plain stepper over its STEP/DIR/EN pulse interface ──────
+# No CAN/UART/controller: the Pico toggles STEP/DIR GPIO and the 42D closes its own loop
+# to the pulses. Reuse the two already-wired old-UART pins: STEP->GP4 (UART TX), DIR->GP5
+# (UART RX). Tie the 42D pulse-port COM to 3.3V (signals are 3.3V single-ended) + common GND.
+# EN is NOT wired -- set the 42D "En" menu to always-enabled (Hold) so it ignores the pin.
+# On the 42D: work mode = pulse interface, microstep = valve.MICROSTEP (16x), run current.
+# Flip valve.DIR_OPEN_LEVEL if a move goes the wrong way.
+PIN_STEP = board.GP4   # old UART TX -- already wired
+PIN_DIR  = board.GP5   # old UART RX -- already wired
 
-_spi = busio.SPI(CAN_SCK, CAN_MOSI, CAN_MISO)
-_cs = digitalio.DigitalInOut(CAN_CS)
-_cs.switch_to_output(True)
-# valve.py is transport-agnostic; hand it the CAN bus + Message class before init().
-valve.Message = Message
-valve.can = CAN(_spi, _cs, baudrate=CAN_BITRATE, crystal_freq=CAN_CRYSTAL)
-
-TOPIC_STREAM       = b"bush/fire/valve/stream"   # binary bush-cue waveform frames
-PIPELINE_PING      = b"bush/pipeline/ping"
-PIPELINE_PONG      = b"bush/pipeline/pong"
+valve.step = pwmio.PWMOut(PIN_STEP, frequency=1000, duty_cycle=0, variable_frequency=True)
+valve.dir = digitalio.DigitalInOut(PIN_DIR)
+valve.dir.switch_to_output(False)
+valve.en = None        # EN unwired; 42D set to always-enabled on its menu
 
 TOPIC_STREAM       = b"bush/fire/valve/stream"   # binary bush-cue waveform frames
 PIPELINE_PING      = b"bush/pipeline/ping"
