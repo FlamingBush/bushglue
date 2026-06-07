@@ -19,8 +19,8 @@ from adafruit_mcp2515.canio import Message
 
 import valve
 
-# CAN config -- match your MCP2515 wiring (mirror code.py).
-CAN_SCK, CAN_MOSI, CAN_MISO, CAN_CS = board.GP18, board.GP19, board.GP16, board.GP17
+# CAN config -- match your MCP2515 wiring (mirror code.py). GP4/GP5 reuse the old UART pins.
+CAN_SCK, CAN_MOSI, CAN_MISO, CAN_CS = board.GP6, board.GP7, board.GP4, board.GP5
 CAN_BITRATE, CAN_CRYSTAL = 500000, 16_000_000   # 8_000_000 for a generic 8 MHz module
 
 _spi = busio.SPI(CAN_SCK, CAN_MOSI, CAN_MISO)

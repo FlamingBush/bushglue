@@ -86,7 +86,7 @@ With homing working: drive to fully-open, read the encoder, and set `OPEN_STEPS`
 | `HOME_MAX_PULSES` | 6 rev | Must exceed full-open→seat travel. |
 | `BREATH_MAX_RPM` | 120 | Breath velocity ceiling. |
 | `OPEN_STEPS` | 2000 | Phase 4 recalibration. |
-| CAN config (`code.py`) | SCK/MOSI/MISO GP18/19/16, CS GP17, 500k, 16 MHz, ID 1 | SPI pins / `crystal_freq` / motor CAN ID — wrong crystal = no comms. |
+| CAN config (`code.py`) | SCK/MOSI/MISO GP6/GP7/GP4, CS GP5, 500k, 16 MHz, ID 1 | GP4/5 reuse the old UART pins (GP4-7 = SPI0); avoid GP2/3 (relays); wrong crystal = no comms. |
 
 ## Open questions to resolve on the bench
 

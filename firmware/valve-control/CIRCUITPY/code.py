@@ -43,14 +43,17 @@ except ImportError:
 # The Pico 2 W has no native CAN, so an MCP2515 (+ transceiver) is required:
 # Adafruit PiCowbell CAN, a Waveshare RP2350-CAN board, or a generic module.
 # EDIT THESE FOR YOUR BOARD:
-#   - SPI pins (PiCowbell/most: SCK=GP18, MOSI=GP19, MISO=GP16) and CS.
+#   - SPI pins: these reuse the old UART pins GP4/GP5 (already wired) as MISO/CS and add the
+#     two adjacent free pins GP6/GP7 -- GP4-GP7 are a natural SPI0 group on the RP2350. AVOID
+#     GP2/GP3 (the flare/bigjet relay pins in relay-control). A fixed-pin HAT like the Adafruit
+#     PiCowbell CAN instead forces SCK/MOSI/MISO = GP18/GP19/GP16 + its own CS.
 #   - CAN_CRYSTAL: 16 MHz on Adafruit/Waveshare, 8 MHz on cheap blue modules.
 #     A wrong crystal halves/doubles the effective bitrate -> no comms.
 #   - valve.ADDR is the motor's CAN ID (MKS default 1).
-CAN_SCK     = board.GP18
-CAN_MOSI    = board.GP19
-CAN_MISO    = board.GP16
-CAN_CS      = board.GP17
+CAN_SCK     = board.GP6     # SPI0 SCK
+CAN_MOSI    = board.GP7     # SPI0 TX (MOSI)
+CAN_MISO    = board.GP4     # SPI0 RX (MISO) -- reuses the old UART TX pin
+CAN_CS      = board.GP5     # CS (any GPIO) -- reuses the old UART RX pin
 CAN_BITRATE = 500000        # MKS SERVO42D default
 CAN_CRYSTAL = 16_000_000    # set 8_000_000 for an 8 MHz MCP2515 module
 

@@ -42,8 +42,10 @@ the code before touching hardware. Work the phases in order; each proves one thi
   mounted `CIRCUITPY` drive (restarts on write); create `secrets.py` from `secrets.example.py`
   (Wi-Fi + `MQTT_BROKER` = the odroid). Needs `circup install adafruit_mcp2515` (pulls
   `adafruit_bus_device`). Set the **CAN config block** at the top of `code.py`: SPI pins
-  (default SCK/MOSI/MISO = GP18/19/16), `CAN_CS` (GP17), `CAN_CRYSTAL` (16 MHz Adafruit/Waveshare,
-  **8 MHz** generic blue module — wrong value = no comms), motor CAN ID (`valve.ADDR`, default 1).
+  (default SCK/MOSI/MISO = GP6/GP7/GP4, CS GP5 — GP4/GP5 reuse the old UART wiring, GP4-GP7 are an
+  SPI0 group; avoid GP2/GP3 = relay pins; a PiCowbell HAT forces GP18/19/16 + its own CS),
+  `CAN_CRYSTAL` (16 MHz Adafruit/Waveshare, **8 MHz** generic blue module — wrong value = no comms),
+  motor CAN ID (`valve.ADDR`, default 1).
 - **odroid (engine):** `git push`, then on the odroid `git pull && ~/.local/bin/uv sync
   --all-packages` (or the `deploy` skill) so `~/bushglue/.venv/bin/bush-cue` picks up edits.
 
