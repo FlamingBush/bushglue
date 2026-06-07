@@ -1,5 +1,10 @@
 # PIO-CAN demonstrator (Pico 2 W → MKS SERVO42D, no MCP2515)
 
+> **SUPERSEDED (2026-06-06):** CAN was abandoned — the MCP2515 controller died, and the valve node
+> now drives the 42D as a plain stepper over **STEP/DIR** (no CAN, no transceiver, no encoder). This
+> demonstrator is kept for history only. See `firmware/valve-control/PROTOCOL.md` (step/dir section)
+> and `plans/servo42d-bringup.md`.
+
 Goal: prove the RP2350 can talk CAN to the 42D using **PIO + a bare transceiver** (no MCP2515
 controller) by sending one MKS command and seeing the reply (and optionally a slow motor turn).
 This de-risks a controller-less path before committing to rewriting the valve node.
