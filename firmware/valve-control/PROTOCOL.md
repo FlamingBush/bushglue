@@ -14,6 +14,33 @@ for our 3.3 V TTL wiring. Do **not** use the CAN or Modbus manuals — those byt
 > sense, current, RPM, accel, stall behaviour, 0x92 zero semantics) are estimates and
 > must be confirmed on the bench.
 
+## CAN transport (CURRENT build — the hardware is the SERVO42D_CAN variant)
+
+The valve node now runs on a **Pico 2 W over CAN** (the nRF52 is gone). The Pico has no
+native CAN, so an **MCP2515** SPI controller + transceiver is required, driven by the
+`adafruit_mcp2515` lib (`circup install adafruit_mcp2515`). The function codes below are
+unchanged — only the framing/CRC/transport differ from RS485:
+
+- **Bus:** 500 kbps, standard 11-bit IDs. Motor CAN ID = `ADDR` (MKS default `0x01`),
+  broadcast `0x00`. 120 Ω termination at the bus ends.
+- **Frame:** arbitration id = motor CAN ID; data = `[func, params…, CRC]`, where
+  **CRC = (CAN_ID + func + params) & 0xFF** — the CAN CRC includes the ID (unlike the RS485
+  FA/FB byte sum). A reply returns with the same id and `[func, status/data…, CRC]`.
+- **8-byte frame limit:** classic CAN data is ≤ 8 bytes, so position moves use a **24-bit
+  pulse count** (3 bytes): `0xFD` = `[func, dir|spd_hi, spd_lo, acc, p2, p1, p0, CRC]` = 8 B.
+  (`0xF6` speed mode = `[func, dir|spd_hi, spd_lo, acc, CRC]` = 5 B; `0x31` encoder reply =
+  `[0x31, int48(6 B), CRC]`, DLC 8.)
+- **Source:** MKS SERVO42D/57D **CAN** User Manual (V1.0.6) + the `ricardodeazambuja/mks_servo_can`
+  reference. Use the CAN manual (not RS485) for framing.
+
+The function-code table below (written for RS485) still applies byte-for-byte as the CAN
+**data payload** — only the framing + CRC + transport (MCP2515, not UART) change.
+
+**Pico wiring:** 12–24 V → SERVO42D `V+`/`GND` (NOT `IN_*`, those are limit inputs);
+`CAN_H`/`CAN_L` → the MCP2515 transceiver; **common ground** between the Pico/MCP2515 and
+the driver. Set the SPI pins / CS / `crystal_freq` (16 MHz Adafruit/Waveshare, 8 MHz generic
+module) / motor CAN ID at the top of `code.py`.
+
 ## Physical layer
 
 | Parameter | Value |

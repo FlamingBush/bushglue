@@ -29,10 +29,14 @@ import math
 import struct
 import time
 
-# UART to the MKS is created by the board glue (code.py) and assigned here, since the
-# pins differ per board (XIAO D6/D7 vs Pico GP4/GP5). Must be set before init():
-#   valve.uart = busio.UART(tx, rx, baudrate=38400, timeout=0.1)
-uart = None
+# Transport to the MKS is created by the board glue (code.py). This build talks CAN
+# (the SERVO42D_CAN variant): the glue sets valve.Message (adafruit_mcp2515.canio.Message)
+# and valve.can (MCP2515 bus) before init(). CAN frame data = [func, params..., crc],
+# crc = (CAN_ID + func + params) & 0xFF, arbitration id = ADDR. See PROTOCOL.md.
+can           = None     # MCP2515 CAN bus object (board glue sets it)
+Message       = None     # adafruit_mcp2515.canio.Message class (board glue sets it)
+_can_listener = None
+uart = None              # legacy RS485/UART transport (unused on the CAN build)
 
 # ── MKS SERVO42D RS485/UART protocol ─────────────────────────────────────────
 TX_HEAD = 0xFA               # downlink (host -> servo) frame head
@@ -262,10 +266,15 @@ def _checksum(data):
 
 
 def _send(body):
-    """body = bytes([func, param0, ...]); frame = FA ADDR <body> <crc>."""
-    pkt = bytes([TX_HEAD, ADDR]) + bytes(body)
-    pkt = pkt + bytes([_checksum(pkt)])
-    uart.write(pkt)
+    """Send a command over CAN. body = [func, param0, ...]; frame data = body + crc,
+    crc = (CAN_ID + sum(body)) & 0xFF, arbitration id = ADDR."""
+    if can is None or Message is None:
+        return
+    crc = (ADDR + sum(body)) & 0xFF
+    try:
+        can.send(Message(id=ADDR, data=bytes(body) + bytes([crc])))
+    except Exception as e:
+        print("Valve: CAN send failed:", e)
 
 
 def _send_and_expect(body, label):
@@ -284,18 +293,63 @@ def _speed_body(func, dir_bit, rpm, acc, pulses=None):
     hi, lo = _speed_bytes(rpm)
     b = bytes([func, (dir_bit & 0x80) | hi, lo, acc & 0xFF])
     if pulses is not None:
-        b = b + (int(pulses) & 0xFFFFFFFF).to_bytes(4, "big")
+        # CAN 0xFD/0xFE carry a 24-bit pulse count (3 bytes), not the RS485 32-bit, so
+        # the frame [func, dir|hi, lo, acc, p2, p1, p0, crc] fits one 8-byte CAN frame.
+        b = b + (int(pulses) & 0xFFFFFF).to_bytes(3, "big")
     return b
 
 
-def _drain_uart_buffer():
-    global _rx_buf
-    while True:
-        avail = uart.in_waiting
-        if avail <= 0:
+def _ensure_listener():
+    global _can_listener
+    if _can_listener is None and can is not None:
+        try:
+            _can_listener = can.listen(timeout=0.0)   # non-blocking, receive all
+        except Exception as e:
+            print("Valve: CAN listen failed:", e)
+    return _can_listener
+
+
+def _drain_can():
+    """Discard any pending inbound CAN frames."""
+    lis = _ensure_listener()
+    if lis is None:
+        return
+    try:
+        while lis.in_waiting():
+            lis.receive()
+    except Exception:
+        pass
+
+
+def _poll_can():
+    """Dispatch all pending inbound CAN reply frames (called every service tick)."""
+    lis = _ensure_listener()
+    if lis is None:
+        return
+    try:
+        n = lis.in_waiting()
+    except Exception:
+        return
+    for _ in range(n):
+        try:
+            msg = lis.receive()
+        except Exception:
             break
-        uart.read(avail)
-    _rx_buf = bytearray()
+        if msg is None:
+            break
+        _handle_can_msg(msg)
+
+
+def _handle_can_msg(msg):
+    """One CAN reply frame -> dispatch. data = [func, status/data..., crc],
+    crc = (id + func + data) & 0xFF."""
+    data = bytes(getattr(msg, "data", b"") or b"")
+    if len(data) < 2:
+        return
+    if (msg.id + sum(data[:-1])) & 0xFF != data[-1]:
+        _log_cksum_fail(list(data[:3]))
+        return
+    _dispatch(data[0], data[1:-1])
 
 
 # ── Commands ─────────────────────────────────────────────────────────────────
@@ -405,7 +459,7 @@ def cmd_home():
     state = "homing"
     _pending_move = None
     _motion_ctx = None
-    _drain_uart_buffer()
+    _drain_can()
     _home_started_ms = supervisor.ticks_ms()
     print("Valve: homing -- clear latch, enable, drive into seat")
     _send_and_expect(bytes([CMD_RELEASE_PROT]), "home_release")
@@ -487,7 +541,7 @@ def _finish_homing():
     target_pos_steps = 0
     move_in_flight_delta = 0
     _send(bytes([CMD_ENABLE, 0x00]))
-    _drain_uart_buffer()
+    _drain_can()
     _send_and_expect(bytes([CMD_READ_ENCODER]), "home_zero_seed")
     print("Valve: homed (zero = margin off seat, de-energized) -- seeding enc zero")
 
@@ -661,13 +715,6 @@ def _set_error(err):
     global state, last_error
     state = "error"
     last_error = err
-
-
-def _drain_uart_into_buf():
-    global _rx_buf
-    data = uart.read(64)
-    if data:
-        _rx_buf.extend(data)
 
 
 def _check_mks_silence(now):
@@ -886,36 +933,27 @@ def _cmd_nudge(deg):
 # ── Init ─────────────────────────────────────────────────────────────────────
 
 def _blocking_drain():
-    global _rx_buf
-    while True:
-        avail = uart.in_waiting
-        if avail <= 0:
-            break
-        uart.read(avail)
-    _rx_buf = bytearray()
+    _drain_can()
 
 
 def _blocking_wait_status(timeout_ms=500):
-    """Read until a valid FB <addr> <func> <status> <crc> 5-byte frame; return status."""
+    """Block until a reply CAN frame arrives; return its status byte, or None on timeout."""
+    lis = _ensure_listener()
+    if lis is None:
+        return None
     deadline = (supervisor.ticks_ms() + timeout_ms) & 0x3FFFFFFF
-    buf = bytearray()
     while True:
         if _ticks_diff(supervisor.ticks_ms(), deadline) < 0x1FFFFFFF:
             return None
-        data = uart.read(uart.in_waiting or 1)
-        if data:
-            buf.extend(data)
-        while len(buf) >= 5:
-            if buf[0] != RX_HEAD:
-                del buf[0]
-                continue
-            if _checksum(buf[0:4]) != buf[4]:
-                del buf[0]
-                continue
-            status = buf[3]
-            del buf[0:5]
-            return status
-        time.sleep(0.005)
+        try:
+            msg = lis.receive()
+        except Exception:
+            msg = None
+        if msg is not None:
+            d = bytes(getattr(msg, "data", b"") or b"")
+            if len(d) >= 3 and (msg.id + sum(d[:-1])) & 0xFF == d[-1]:
+                return d[1]
+        time.sleep(0.002)
 
 
 def _blocking_setup(body, timeout_ms=600):
@@ -925,35 +963,32 @@ def _blocking_setup(body, timeout_ms=600):
 
 
 def _blocking_read_encoder(timeout_ms=600):
-    """Blocking 0x31 read (motor must be stopped). Returns int48 raw, or None."""
-    _blocking_drain()
+    """Blocking 0x31 read (motor stopped). Returns int48 raw, or None on timeout."""
+    _drain_can()
     _send(bytes([CMD_READ_ENCODER]))
+    lis = _ensure_listener()
+    if lis is None:
+        return None
     deadline = (supervisor.ticks_ms() + timeout_ms) & 0x3FFFFFFF
-    buf = bytearray()
-    total = 3 + 6 + 1
     while True:
         if _ticks_diff(supervisor.ticks_ms(), deadline) < 0x1FFFFFFF:
             return None
-        data = uart.read(uart.in_waiting or 1)
-        if data:
-            buf.extend(data)
-        while len(buf) >= total:
-            if buf[0] != RX_HEAD or buf[2] != CMD_READ_ENCODER:
-                del buf[0]
-                continue
-            if _checksum(buf[0:total - 1]) != buf[total - 1]:
-                del buf[0]
-                continue
-            raw = _read_int48(bytes(buf[3:9]))
-            del buf[0:total]
-            return raw
-        time.sleep(0.005)
+        try:
+            msg = lis.receive()
+        except Exception:
+            msg = None
+        if msg is not None:
+            d = bytes(getattr(msg, "data", b"") or b"")
+            if (len(d) == 8 and d[0] == CMD_READ_ENCODER
+                    and (msg.id + sum(d[:-1])) & 0xFF == d[-1]):
+                return _read_int48(d[1:7])
+        time.sleep(0.002)
 
 
 def init():
     """Configure the 42D for serial closed-loop control. Blocking; runs once at boot."""
     global state, last_error
-    print("Valve(42D): init UART D6/D7 @ 38400")
+    print("Valve(42D): init over CAN")
     _led_init()
     time.sleep(0.2)
     _blocking_drain()
@@ -977,7 +1012,8 @@ def init():
             return
         print("Valve(42D): init attempt", attempt, "-- setup ACK failed")
         time.sleep(0.2)
-    print("Valve(42D): init FAILED -- check SR_vFOC support, baud 38400, wiring")
+    print("Valve(42D): init FAILED -- check CAN wiring/termination, motor CAN ID, "
+          "bitrate 500k, crystal_freq, SR_vFOC")
     state = "error"
     last_error = "init_setup_failed"
 
@@ -1265,10 +1301,7 @@ def service():
     global target_pos_steps, _pending_move, _pending_sync_target, _pending_jump_target
 
     now = supervisor.ticks_ms()
-    _drain_uart_into_buf()
-    while len(_rx_buf) >= 5:
-        if not _parse_response():
-            break
+    _poll_can()
     _check_timeout()
     _check_mks_silence(now)
 

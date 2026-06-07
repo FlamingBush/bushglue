@@ -19,6 +19,7 @@
 
 import board
 import busio
+import digitalio
 import json
 import time
 import wifi
@@ -26,6 +27,9 @@ import socketpool
 import supervisor
 import struct
 import microcontroller
+
+from adafruit_mcp2515 import MCP2515 as CAN
+from adafruit_mcp2515.canio import Message
 
 import valve
 
@@ -35,9 +39,31 @@ try:
 except ImportError:
     raise RuntimeError("Create secrets.py — see secrets.example.py")
 
-# ── MKS UART (Pico GP4 TX / GP5 RX @ 38400 for the SERVO42D) ─────────────────
-# valve.py is board-agnostic; the board glue assigns the UART before valve.init().
-valve.uart = busio.UART(board.GP4, board.GP5, baudrate=38400, timeout=0.1)
+# ── MKS SERVO42D over CAN (via an MCP2515 SPI CAN controller) ────────────────
+# The Pico 2 W has no native CAN, so an MCP2515 (+ transceiver) is required:
+# Adafruit PiCowbell CAN, a Waveshare RP2350-CAN board, or a generic module.
+# EDIT THESE FOR YOUR BOARD:
+#   - SPI pins (PiCowbell/most: SCK=GP18, MOSI=GP19, MISO=GP16) and CS.
+#   - CAN_CRYSTAL: 16 MHz on Adafruit/Waveshare, 8 MHz on cheap blue modules.
+#     A wrong crystal halves/doubles the effective bitrate -> no comms.
+#   - valve.ADDR is the motor's CAN ID (MKS default 1).
+CAN_SCK     = board.GP18
+CAN_MOSI    = board.GP19
+CAN_MISO    = board.GP16
+CAN_CS      = board.GP17
+CAN_BITRATE = 500000        # MKS SERVO42D default
+CAN_CRYSTAL = 16_000_000    # set 8_000_000 for an 8 MHz MCP2515 module
+
+_spi = busio.SPI(CAN_SCK, CAN_MOSI, CAN_MISO)
+_cs = digitalio.DigitalInOut(CAN_CS)
+_cs.switch_to_output(True)
+# valve.py is transport-agnostic; hand it the CAN bus + Message class before init().
+valve.Message = Message
+valve.can = CAN(_spi, _cs, baudrate=CAN_BITRATE, crystal_freq=CAN_CRYSTAL)
+
+TOPIC_STREAM       = b"bush/fire/valve/stream"   # binary bush-cue waveform frames
+PIPELINE_PING      = b"bush/pipeline/ping"
+PIPELINE_PONG      = b"bush/pipeline/pong"
 
 TOPIC_STREAM       = b"bush/fire/valve/stream"   # binary bush-cue waveform frames
 PIPELINE_PING      = b"bush/pipeline/ping"
