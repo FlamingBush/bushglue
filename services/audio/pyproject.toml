@@ -1,7 +1,7 @@
 [project]
 name = "bush-audio"
 version = "0.1.0"
-description = "Audio I/O services (sound synthesis, speech-to-text)"
+description = "Audio I/O services (speech-to-text, audio cues)"
 requires-python = ">=3.11"
 dependencies = [
     "paho-mqtt>=2.0",
@@ -24,7 +24,6 @@ test = [
 ]
 
 [project.scripts]
-bush-sound = "bush_sound:main"
 bush-stt = "bush_stt:main"
 bush-cue = "bush_cue:main"
 
@@ -32,7 +31,7 @@ bush-cue = "bush_cue:main"
 bushutil = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bush_sound", "src/bush_stt", "src/bush_cue"]
+packages = ["src/bush_stt", "src/bush_cue"]
 
 [build-system]
 requires = ["hatchling"]

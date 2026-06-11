@@ -29,7 +29,7 @@ See the [root README](../README.md) for setup and deploy instructions.
 
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
-| `bush/flame/pulse` | → | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control, sound-service |
+| `bush/flame/pulse` | → | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control |
 | `bush/flame/status` | ← | relay-control | (monitor) |
 
 ### Needle Valve Topics
