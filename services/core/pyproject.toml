@@ -7,6 +7,7 @@ dependencies = [
     "paho-mqtt>=2.0",
     "bushutil",
     "bleak>=0.22",
+    "pyserial>=3.5",
 ]
 
 [project.optional-dependencies]
@@ -21,12 +22,13 @@ bush-t2v = "bush_t2v:main"
 bush-tts = "bush_tts:main"
 bush-variable-valves = "bush_variable_valves:main"
 bush-valve-ble = "bush_valve_ble:main"
+bush-valve-serial = "bush_valve_serial:main"
 
 [tool.uv.sources]
 bushutil = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bush_audio_agent", "src/bush_t2v", "src/bush_tts", "src/bush_variable_valves", "src/bush_valve_ble"]
+packages = ["src/bush_audio_agent", "src/bush_t2v", "src/bush_tts", "src/bush_variable_valves", "src/bush_valve_ble", "src/bush_valve_serial"]
 
 [build-system]
 requires = ["hatchling"]

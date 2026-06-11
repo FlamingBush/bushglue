@@ -1,93 +1,117 @@
-# MKS SERVO42D — STEP/DIR pulse interface (current) + serial protocol (history)
+# MKS SERVO42D — CAN bus protocol (current)
 
-The valve node drives the **MKS SERVO42D** closed-loop stepper as a **plain stepper over its
-STEP/DIR/EN pulse interface**, straight from Pico 2 W GPIO. There is **no serial/CAN link** to
-the motor — the Pico sends step pulses and the 42D closes its own loop internally. The serial
-(RS485/UART/CAN) protocol below is **kept for history only** (a transport could return); none of
-those bytes are on the wire now.
+The valve node drives the **MKS SERVO42D** closed-loop stepper servo (needle valve) over
+**CAN**, via an **MCP2515** SPI-CAN controller and `valve.py`. CAN is the only motor link now:
+UART/RS485 and a brief STEP/DIR pulse-interface interlude are retired (kept as history below).
 
-Transport history: 42C (RS485/UART, died to reverse power 2026-06-04) → 42D over UART → 42D over
-CAN (MCP2515) → **42D over STEP/DIR** (the MCP2515 died, CAN abandoned, 2026-06-06). `git log` has
-each firmware.
+The node is a small fleet, all running the same `valve.py` CAN driver and differing only in
+**host link** + **CAN carrier**: **Pico 2 W + CanBerry** (Wi-Fi → MQTT, `code.py`), **XIAO
+nRF52840 + MCP2515** (BLE → `bush_valve_ble` bridge, `code_xiao_ble.py`), and **Waveshare
+RP2350-CAN** (onboard XL2515, no radio → USB-serial → `bush_valve_serial` bridge,
+`code_usb_serial.py`) are the nodes. A reflashed **BridgePlate + CanBerry** centerpiece, also
+over USB-serial, is still planned (no hardware yet).
 
-## STEP/DIR pulse interface (CURRENT build — VERIFIED on the bench 2026-06-06)
+Transport history (`git log` has each firmware): 42C RS485/UART (died to reverse power
+2026-06-04) → 42D over UART → 42D over CAN (MCP2515) → a STEP/DIR pulse interlude (`fe19073`,
+after the first MCP2515 died) → **back to 42D over CAN** with new CAN silicon. Recover the
+step/dir firmware with `git show 3f40ee8:firmware/valve-control/CIRCUITPY/code.py` (+ `valve.py`);
+the UART firmware with `git show 9c709f5^:firmware/valve-control/CIRCUITPY/code_xiao_ble.py`.
 
-The 42D is in **pulse mode (CR_vFOC)** and takes step pulses on its STP/DIR pulse port. The Pico
-toggles those pins from `valve.py`; no controller, no transceiver, no encoder readback.
+Source for the function codes: MKS SERVO42D/57D **CAN** User Manual (V1.0.6) +
+`ricardodeazambuja/mks_servo_can`. The RS485 manual's function-code table applies byte-for-byte
+as the CAN data payload — only framing/CRC/transport differ (see below). Do **not** use the
+Modbus manual — those bytes differ.
 
-- **Velocity primitive:** `_set_velocity(signed_steps_per_sec)` is the only motion call (breath,
-  bush-cue stream, target moves all use it). It drives a `pwmio.PWMOut` on STEP whose
-  **frequency = |steps/sec|** (duty `0` = stopped, `1<<15` = 50% = running) and sets DIR by sign.
-- **Position is dead-reckoned**, not measured: `_set_velocity` integrates `motor_pos_steps` from the
-  held velocity × elapsed time and clamps it to `[0, open_steps]`. There is no encoder to ground
-  against — telemetry is only as accurate as the step count.
-- **Microstep:** `MICROSTEP=16` → `STEPS_PER_REV=3200` (must match the 42D's MStep menu).
-- **Direction:** `DIR_OPEN_LEVEL=False` — DIR low drives toward OPEN (VERIFIED visually). Flip the
-  constant if a move goes the wrong way.
-- **EN is unwired** (`valve.en=None`): the 42D En menu must be **Hold** (always-enabled) so it
-  ignores the pin. The lead screw self-holds, so firmware still "de-energizes when idle" by simply
-  stopping pulses (no current cut over an unwired EN).
-- **No homing:** with no feedback there is no stall/contact sensing. Boot position = 0 dead-reckoned
-  at the current shaft pose; `home` = "zero here" (re-declares the current position 0).
-- **Run current** is set on the 42D's own menu, NOT in firmware — the `maxtorque` MQTT topic is a
-  no-op now.
+> ✅ **CAN closed loop is bench-proven (2026-06-10, Waveshare RP2350-CAN).** Verified +
+> locked in: `DIR_TOWARD_OPEN=0x00` / `DIR_TOWARD_CLOSED=0x80` (encoder counts up closing,
+> `_enc_sign=-1`); current = torque (`0x83`, the only knob); lockrotor protection kept ON as
+> the seat detector (`0x3E`) + jam net; `OPEN_STEPS=11200` (full travel ~3.76 rev). Homing is
+> ENABLED and GENTLE (`HOMING_DISABLED=False`) — see *Homing* below. Bus bring-up needs a 120 Ω
+> terminator or the controller can't even transmit (TXREQ stuck, TEC frozen at 0). RPM/accel
+> envelope is still untuned (the operator pushes those live).
 
-**42D menu config (required):** Mode = **CR_vFOC** (pulse interface; was CR_CAN), MStep = **16**,
-En = **Hold**.
+## CAN transport (CURRENT)
 
-**Pico wiring:** `GP4` → 42D **STP**, `GP5` → 42D **DIR** (the old UART pins, already wired); 42D
-pulse-port **COM → 3.3 V** (signals are 3.3 V single-ended); **common ground** between the Pico and
-the driver; power **12–24 V → V+/GND** (NOT `IN_*`, those are limit inputs — check polarity, reverse
-power killed the 42C). EN left unwired.
-
-Pin/config block in `code.py`: `PIN_STEP=board.GP4`, `PIN_DIR=board.GP5`, `valve.en=None`.
-
-The MQTT topics + bush-cue stream framing + breath JSON interface (below / in `valve.py`) are
-unchanged across the transport switch.
-
----
-
-# (HISTORY) MKS SERVO42D serial protocol — NOT in use on the step/dir build
-
-Everything from here down documents the serial (RS485/UART) and CAN transports that drove the 42D
-before the step/dir rewrite. Kept for reference should a serial transport return; it does **not**
-describe how the firmware talks to the motor today.
-
-Source: MKS SERVO42D/57D_RS485 User Manual (Makerbase, `github.com/makerbase-motor/MKS-SERVO42D-57D`)
-+ the vendor's Arduino examples. RS485 and the TTL-UART port are the **same byte protocol**
-(RS485 is just a transceiver in front of the same UART), so the "RS485" manual is correct
-for the 3.3 V TTL wiring. Do **not** use the Modbus manual — those bytes differ.
-
-## CAN transport (HISTORY — the MCP2515 died, CAN abandoned 2026-06-06)
-
-The 42D ran briefly on a **Pico 2 W over CAN**. The Pico has no native CAN, so an **MCP2515** SPI
-controller + transceiver was required, driven by the `adafruit_mcp2515` lib. The function codes
-below are unchanged — only the framing/CRC/transport differed from RS485:
+The MCU has no native CAN, so every node uses an **MCP2515** SPI-CAN controller + transceiver,
+driven by the `adafruit_mcp2515` lib (`circup install adafruit_mcp2515`; it **polls** — no INT
+pin needed). The board glue (`code.py` / `code_xiao_ble.py`) builds the MCP2515 and assigns
+`valve.can` + `valve.Message` before `valve.init()`; `valve.py` is carrier-agnostic. The
+function codes are unchanged from RS485 — only the framing/CRC/transport differ:
 
 - **Bus:** 500 kbps, standard 11-bit IDs. Motor CAN ID = `ADDR` (MKS default `0x01`),
   broadcast `0x00`. 120 Ω termination at the bus ends.
 - **Frame:** arbitration id = motor CAN ID; data = `[func, params…, CRC]`, where
   **CRC = (CAN_ID + func + params) & 0xFF** — the CAN CRC includes the ID (unlike the RS485
   FA/FB byte sum). A reply returns with the same id and `[func, status/data…, CRC]`.
-- **8-byte frame limit:** classic CAN data is ≤ 8 bytes, so position moves used a **24-bit
+- **8-byte frame limit:** classic CAN data is ≤ 8 bytes, so position moves use a **24-bit
   pulse count** (3 bytes): `0xFD` = `[func, dir|spd_hi, spd_lo, acc, p2, p1, p0, CRC]` = 8 B.
   (`0xF6` speed mode = `[func, dir|spd_hi, spd_lo, acc, CRC]` = 5 B; `0x31` encoder reply =
   `[0x31, int48(6 B), CRC]`, DLC 8.)
-- **Source:** MKS SERVO42D/57D **CAN** User Manual (V1.0.6) + the `ricardodeazambuja/mks_servo_can`
-  reference.
 
-## Physical layer
+The function-code table further down (written for RS485) still applies byte-for-byte as the CAN
+**data payload** — only the framing + CRC + transport (MCP2515, not UART) change.
+
+### CAN carriers (which SPI pins + crystal)
+`code.py` selects a profile from `secrets["BOARD"]`; `code_usb_serial.py` from `settings.toml`
+`BOARD=` (default `waveshare`). **`crystal_freq` MUST match the module's crystal or the bus
+silently never ACKs** — this is the #1 bring-up failure.
+
+| `BOARD` | Controller / transceiver | SPI clk/mosi/miso/cs | Crystal | Notes |
+|---|---|---|---|---|
+| `canberry` | MCP2515 + MCP2551 | Pico 2 W `GP6/GP7/GP4/GP5` | **16 MHz** | CanBerry Pi V1.1.1 (IndustrialBerry, open HW). MCP2551 needs **5 V** (from the Pico `VBUS`). |
+| `waveshare` | XL2515 + SIT65HVD230 (3.3 V) | `GP10/GP11/GP12/GP9` | **16 MHz** | Waveshare RP2350-CAN (SPI1, INT `GP8`); schematic-verified, CAN bring-up bench-confirmed. No radio → USB-serial node. 3.3 V transceiver — no 5 V rail. |
+| XIAO | MCP2515 module | `board.SCK/MOSI/MISO` + `D3` cs | 16 MHz typical | `code_xiao_ble.py`; the CS pin is a wiring choice. |
+
+**Common to every carrier:** 12–24 V → SERVO42D `V+`/`GND` (NOT `IN_*`, those are limit inputs —
+check polarity, reverse power killed the 42C); `CAN_H`/`CAN_L` → the transceiver; **common
+ground**; 120 Ω at both bus ends. **42D menu: CAN rate 500 kbps, CAN ID 1, MStep 16.** The
+firmware sets work mode **SR_vFOC** and the run current over the bus in `valve.init()` (there is
+no "CR_CAN" work mode — see *Work mode* below; enable/disable is the `0xF3` command, no EN pin).
+
+> **CanBerry on a Pi-Plates stack** (the future BridgePlate centerpiece) adds coexistence rules
+> — lift the MCP2515 INT off **BCM25** (we poll), MCP2515 CS = **CE0**, JP2 off / JP3 on. Not
+> relevant to the Pico-2-W-direct wiring above; see the implementation plan for the stack build.
+
+### Host links (MCU → MQTT)
+The motor link is always CAN; the **host link** (how a node reaches the `bush/fire/valve/*` MQTT
+topics) differs per node. All three speak the same newline-framed `"<topic> <payload>"` line
+protocol — `valve.py`'s `(topic, payload)` interface IS that protocol, so the bridges do no
+translation.
+
+| Node | Host link | Firmware | Host bridge |
+|---|---|---|---|
+| Pico 2 W | Wi-Fi → MQTT direct | `code.py` | none (MQTT in firmware) |
+| XIAO nRF52840 | BLE Nordic-UART | `code_xiao_ble.py` | `bush_valve_ble` (bleak) |
+| Waveshare / BridgePlate | USB-serial (CDC) | `code_usb_serial.py` | `bush_valve_serial` (pyserial) |
+
+**USB-serial specifics:** `boot.py` runs `usb_cdc.enable(console=True, data=True)` — REPL on
+`console`, line protocol on the clean `data` CDC. boot.py only takes effect on a **hard reset**
+(power-cycle / `microcontroller.reset()`), not a soft reload. The board then enumerates **two**
+serial ports sharing one USB serial number; `bush_valve_serial` auto-picks the **data** CDC (the
+higher interface), overridable with `BUSH_VALVE_SERIAL_PORT` (point it at a stable
+`/dev/serial/by-id/...-if02` on the odroid). Binary `0xF5` stream frames pass straight through;
+both sides keep I/O non-blocking so `valve.service()` deadlines hold.
+
+## RS485 / UART framing (HISTORY — superseded by CAN above)
+
+The 42D's UART/RS485 transport is retired (recover with
+`git show 9c709f5^:firmware/valve-control/CIRCUITPY/code_xiao_ble.py`). Under CAN the framing is
+different (see *CAN transport* above), **but the function codes, the per-`func` reply-length
+table, and the big-endian field convention are transport-agnostic** and describe the current CAN
+data payload too. Only the FA/FB head + the byte-sum CRC + the UART physical layer are history.
+
+### Physical layer (UART)
 
 | Parameter | Value |
 |---|---|
-| Baud | **38400** (42D default — no menu change needed) |
+| Baud | **38400** (42D default) |
 | Data/stop/parity | 8N1 |
 | Logic level | 3.3 V TTL |
 | Slave address | `0x01` (default) |
 | XIAO TX | D6 (`board.TX`) → 42D RX |
 | XIAO RX | D7 (`board.RX`) ← 42D TX |
 
-## Frame format
+### Frame format (UART)
 
 ```
 downlink (host→servo):  FA <addr> <func> <data...> <crc>
@@ -95,12 +119,15 @@ uplink   (servo→host):  FB <addr> <func> <data...> <crc>
 ```
 
 - Head: **`0xFA`** outbound, **`0xFB`** inbound (not an echo of FA).
-- `crc = sum(all preceding bytes) & 0xFF` (head + addr + func + data).
-- Multi-byte fields are **big-endian**.
-- No length field — reply length is per-`func` (the firmware keys a `_RESP_PLEN` table off it).
+- `crc = sum(all preceding bytes) & 0xFF` (head + addr + func + data). *(CAN instead uses
+  `(CAN_ID + func + params) & 0xFF` — see above.)*
+- Multi-byte fields are **big-endian** (CAN too).
+- No length field — reply length is per-`func` (the firmware keys a `_RESP_PLEN` table off it;
+  used on both transports).
 - Most replies are a 1-byte `status` → 5-byte frame `FB 01 <func> <status> <crc>`.
 
-Worked example: read encoder `FA 01 31 <crc>` → crc = (0xFA+0x01+0x31)&0xFF = `0x2C` → `FA 01 31 2C`.
+Worked example (UART): read encoder `FA 01 31 <crc>` → crc = (0xFA+0x01+0x31)&0xFF = `0x2C` →
+`FA 01 31 2C`. The CAN equivalent is data `[0x31, crc]` with `crc = (0x01+0x31)&0xFF = 0x32`.
 
 ## Work mode — the gotcha
 
@@ -143,9 +170,9 @@ acc   = 0–255                                # 0 = instant (no ramp); each uni
 0xFD only: pulse = uint32 big-endian          # microsteps (3200 = 1 rev at 16×)
 ```
 
-`dir`: manual says 0 = CCW, 1 = CW. Which physical sense opens vs closes the valve is
-**unverified on this build** — `valve.py` `DIR_TOWARD_OPEN/CLOSED` are guesses; swap if a
-move drives the wrong way. **Speed is RPM** at microstep ≥ 16 (`actual_rpm = speed·16/µstep`).
+`dir`: manual says 0 = CCW, 1 = CW. **Bench-verified 2026-06-10:** `DIR_TOWARD_OPEN=0x00`
+(encoder counts DOWN), `DIR_TOWARD_CLOSED=0x80` (counts UP), `_enc_sign=-1`. **Speed is RPM**
+at microstep ≥ 16 (`actual_rpm = speed·16/µstep`).
 
 ### Motion replies — the state machine
 
@@ -162,21 +189,24 @@ The firmware drives a state machine off these (`_on_move_reply`): `1` → arm co
 timeout, `2` → re-read the encoder to ground position, `0` → stall. A `0xF6` *run* returns
 only `1`/`0`; a `0xF6` stop (speed 0) returns `0`/`1`/`2`.
 
-## Homing — stallguard, no inchworm
+## Homing — gentle protection-seek (ENABLED, bench-proven 2026-06-10)
 
-The 42D has native locked-rotor (stallguard) detection, so the 42C's hand-rolled
-encoder-delta inchworm is gone. `cmd_home()`:
+`HOMING_DISABLED=False`. `cmd_home()` is **blocking** and **deliberately gentle**: a healthy
+needle valve is smooth across its whole travel, so a low seek current traverses it freely and
+only stalls at the seat. It does **NOT** bump current to force past resistance — forcing shreds
+the internals (that grinding is what creates sticky spots), so rough homing perpetuates damage.
 
-1. Release the latch (`0x3D`), enable, low working current (bounds seat force).
-2. Seed the encoder (`0x31`).
-3. One `0xFD` toward the closed seat for `HOME_MAX_PULSES` at low RPM.
-4. **Contact = the 42D stalls** → `0xFD` returns `status=0` (or, if it latches silently,
-   the move times out and a `0x3E` read returns 1). Either path → `_home_on_contact`.
-5. Back off `HOME_BACKOFF_STEPS` toward open, verify it moved freely, `0x92` zero there,
-   de-energize, re-read `0x31` to seed `_enc_zero_raw`.
+1. Protection ON (`0x88 01`), release any latch (`0x3D`), enable, set `HOME_SEEK_CUR` (300 mA — gentle).
+2. One `0xFD` toward the closed seat (`DIR_TOWARD_CLOSED=0x80`) for `HOME_MAX_PULSES` at `HOME_RPM`.
+3. **Seat = the 42D's locked-rotor latch fires**, read via `0x3E`==1 (polled with `_blocking_read_status`).
+4. Back off `HOME_BACKOFF_STEPS` toward open, verify it moved (else error `home_stuck` — a worn
+   valve that won't move gently is reported, never pushed), set `_enc_zero_raw`/`_enc_sign=-1`.
 
-So `motor_pos 0` is a margin off the force-sensitive seat, never resting on it — same
-safety invariant as before, but the seat is *found* by the controller's stall sensing.
+So `motor_pos 0` is a margin off the seat, never resting on it. A worn valve errors instead of
+being forced. Protection stays ON afterward as the operating jam net. **The 42D's own internal
+homing** (`0x90` go-home params + `0x91` GoHome + `0x92` set-zero, monitored via `0xF1`/`0x3E`)
+is the next avenue — configure it equally gentle, and mind the NVM auto-home-rams-on-boot gotcha
+(`init` sends SET_ZERO_MODE `0x00`). The encoder-flatline ramp-to-stall "method b" is in git.
 
 ## Differences from the 42C (what broke in the port)
 
@@ -190,14 +220,15 @@ safety invariant as before, but the seat is *found* by the controller's stall se
    (`0x92` set-zero, `0x91` go-home, `0x90` home-switch params).
 8. Default baud **38400** (42C needed a menu change to 115200).
 
-## Position & breath conventions (current — step/dir)
+## Position & breath conventions (unchanged)
 
 ```
-motor_pos 0          = dead-reckoned zero at boot/`home` (no seat reference without feedback)
-motor_pos open_steps = fully open (open_steps = OPEN_STEPS, calibrate via bush/fire/valve/calibrate)
+motor_pos 0          = closed seat margin (zero set at homing)
+motor_pos open_steps = fully open
 MQTT 0.0 = closed, 1.0 = open;  step_position = target * open_steps
 ```
 
-`motor_pos_steps` is dead-reckoned by `_set_velocity` (no encoder). Breath velocity is computed in
-steps/s and fed straight to the STEP PWM frequency; there is no valley re-grounding because there is
-nothing to re-ground against. `OPEN_STEPS=2000` is a PLACEHOLDER until travel is calibrated.
+Position is read from `0x31` after every move/nudge and once per breath cycle at the
+valley (the bottom rest, where the motor is briefly stopped — the only reliable read
+point), bounding breath drift to a single cycle. Breath velocity is computed in steps/s,
+converted to RPM for the `0xF6` speed field.

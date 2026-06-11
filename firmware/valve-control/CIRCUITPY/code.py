@@ -1,9 +1,8 @@
 # code.py — Pi Pico 2 W standalone NEEDLE-VALVE node (CircuitPython 10.x)
 #
-# Drives the MKS SERVO42D as a plain stepper over its STEP/DIR/EN pulse interface and
-# plays bush-cue streamed waveforms, all over Wi-Fi + MQTT. This REPLACES the solenoid
-# (relay-control) firmware on this board for now; it is intentionally a separate,
-# valve-only firmware (no flame relays here).
+# Drives the MKS SERVO42D over CAN (MCP2515 SPI-CAN controller; valve.py is the
+# closed-loop driver) and plays bush-cue streamed waveforms, all over Wi-Fi + MQTT.
+# This is a separate, valve-only firmware (no flame relays here).
 #
 # Invariants for this main loop:
 #   1. MQTT keepalive: a PINGREQ must reach the broker within KEEP_ALIVE (15 s), so
@@ -13,13 +12,14 @@
 #   3. Halt valve motion (valve_safe) before any blocking op (Wi-Fi recovery / subnet
 #      scan): a streamed 0xF6 constant-speed keeps the motor running while we block.
 #
-# secrets.py must define SSID, PASSWORD, MQTT_BROKER (+ optional MQTT_PORT/USER/PASSWORD).
-# Broker discovery: after 3 failures on the configured broker it scans the /24 for an
-# open :1883 and verifies via bush/pipeline/ping -> bush/pipeline/pong.
+# secrets.py: Wi-Fi via NETWORKS=[{ssid,password},...] (or single SSID/PASSWORD), brokers
+# via MQTT_BROKERS=[ip,...] (or single MQTT_BROKER), CAN carrier via BOARD ("canberry").
+# Broker discovery: after MAX_CONFIGURED_TRIES passes over the broker list it scans the
+# /24 for an open :1883 and verifies via bush/pipeline/ping -> bush/pipeline/pong.
 
 import board
+import busio
 import digitalio
-import pwmio
 import json
 import time
 import wifi
@@ -27,6 +27,9 @@ import socketpool
 import supervisor
 import struct
 import microcontroller
+
+from adafruit_mcp2515 import MCP2515 as CAN
+from adafruit_mcp2515.canio import Message
 
 import valve
 
@@ -36,20 +39,30 @@ try:
 except ImportError:
     raise RuntimeError("Create secrets.py — see secrets.example.py")
 
-# ── MKS SERVO42D as a plain stepper over its STEP/DIR/EN pulse interface ──────
-# No CAN/UART/controller: the Pico toggles STEP/DIR GPIO and the 42D closes its own loop
-# to the pulses. Reuse the two already-wired old-UART pins: STEP->GP4 (UART TX), DIR->GP5
-# (UART RX). Tie the 42D pulse-port COM to 3.3V (signals are 3.3V single-ended) + common GND.
-# EN is NOT wired -- set the 42D "En" menu to always-enabled (Hold) so it ignores the pin.
-# On the 42D: work mode = pulse interface, microstep = valve.MICROSTEP (16x), run current.
-# Flip valve.DIR_OPEN_LEVEL if a move goes the wrong way.
-PIN_STEP = board.GP4   # old UART TX -- already wired
-PIN_DIR  = board.GP5   # old UART RX -- already wired
-
-valve.step = pwmio.PWMOut(PIN_STEP, frequency=1000, duty_cycle=0, variable_frequency=True)
-valve.dir = digitalio.DigitalInOut(PIN_DIR)
-valve.dir.switch_to_output(False)
-valve.en = None        # EN unwired; 42D set to always-enabled on its menu
+# ── MKS SERVO42D over CAN (MCP2515 SPI-CAN controller) ────────────────────────
+# valve.py is the CAN closed-loop driver; assign valve.can + valve.Message before
+# valve.init(). The CAN *carrier* (which SPI pins + crystal) is per-board — pick it from
+# secrets["BOARD"]. On the Pico 2 W the CanBerry's MCP2515 SPI reuses the old UART pins.
+# The crystal MUST match the module (16 vs 8 MHz) or the bus silently never ACKs.
+# 42D menu: CAN rate 500 kbps, CAN ID 1, microstep 16 (MStep) — valve.init() sets work
+# mode SR_vFOC and the run current over the bus. Flip valve.DIR_TOWARD_OPEN/CLOSED if a
+# target move drives the wrong way.
+BOARD_PROFILES = {
+    # CanBerry Pi V1.1.1 (MCP2515 @ 16 MHz) wired to Pico 2 W GPIO (reuses old UART pins).
+    "canberry":  {"clk": board.GP6, "mosi": board.GP7, "miso": board.GP4, "cs": board.GP5,
+                  "crystal": 16_000_000},
+    # Waveshare RP2350-CAN onboard XL2515 (SPI1). Crystal: bench-confirm 16 vs 8 MHz.
+    # (Waveshare has no radio, so it runs the USB-serial main — kept here for parity.)
+    "waveshare": {"clk": board.GP10, "mosi": board.GP11, "miso": board.GP12, "cs": board.GP9,
+                  "crystal": 16_000_000},
+}
+CAN_BITRATE = 500_000
+_prof = BOARD_PROFILES[secrets.get("BOARD", "canberry")]
+_can_spi = busio.SPI(_prof["clk"], _prof["mosi"], _prof["miso"])
+_can_cs = digitalio.DigitalInOut(_prof["cs"])
+_can_cs.switch_to_output(True)
+valve.Message = Message
+valve.can = CAN(_can_spi, _can_cs, baudrate=CAN_BITRATE, crystal_freq=_prof["crystal"])
 
 TOPIC_STREAM       = b"bush/fire/valve/stream"   # binary bush-cue waveform frames
 PIPELINE_PING      = b"bush/pipeline/ping"
@@ -85,11 +98,17 @@ def valve_safe():
 # ─────────────────────────────────────────────────────────────────────────────
 
 MQTT_PORT     = secrets.get("MQTT_PORT", 1883)
-MQTT_BROKER   = secrets["MQTT_BROKER"]
+# Multiple brokers: try each in turn before scanning. Back-compatible with single MQTT_BROKER.
+BROKERS       = secrets.get("MQTT_BROKERS") or [secrets["MQTT_BROKER"]]
+broker_index  = 0           # current broker; left pointing at the last-good one
 MQTT_USER     = secrets.get("MQTT_USER", None)
 MQTT_PASSWORD = secrets.get("MQTT_PASSWORD", None)
 KEEP_ALIVE    = 15          # seconds
 PING_INTERVAL = 10_000      # ms between PINGREQs
+
+
+def current_broker():
+    return BROKERS[broker_index % len(BROKERS)]
 
 sock          = None
 pool          = None
@@ -99,7 +118,7 @@ connected     = False
 
 # ── Connection state machine ─────────────────────────────────────────────────
 ST_CONNECTED        = 0   # normal operation
-ST_RETRY_CONFIGURED = 1   # retrying secrets["MQTT_BROKER"]
+ST_RETRY_CONFIGURED = 1   # cycling through the configured brokers (BROKERS)
 ST_SCAN_PROBE       = 2   # TCP-probing one subnet IP per loop pass
 ST_SCAN_CONNECT     = 3   # probe succeeded — attempt full MQTT handshake
 ST_VERIFY_PIPELINE  = 4   # connected to scanned broker — await pipeline proof
@@ -175,15 +194,40 @@ def encode_remaining(n):
     return bytes(out)
 
 
+# Multiple Wi-Fi networks: try each in turn. Back-compatible with single SSID/PASSWORD.
+NETWORKS = secrets.get("NETWORKS") or [{"ssid": secrets["SSID"],
+                                        "password": secrets.get("PASSWORD", "")}]
+
+
 def wifi_connect():
+    """Join the first reachable network in NETWORKS. Scans once and tries networks whose
+    SSID is currently visible first, then falls back to trying each configured net blind.
+    The per-attempt timeout caps blocking time so a hung join can't starve the main loop;
+    raises if none join (the recovery ladder then toggles the radio / resets)."""
     global pool
-    print("Connecting to Wi-Fi:", secrets["SSID"])
-    # Explicit timeout caps a single attempt's blocking time. Without it, a
-    # hung join can hold the main loop for many minutes, starving the
-    # homing watchdog and other periodic checks.
-    wifi.radio.connect(secrets["SSID"], secrets["PASSWORD"], timeout=10)
-    print("Wi-Fi OK, IP:", wifi.radio.ipv4_address)
-    pool = socketpool.SocketPool(wifi.radio)
+    try:
+        visible = set(n.ssid for n in wifi.radio.start_scanning_networks())
+    except Exception:
+        visible = set()
+    finally:
+        try:
+            wifi.radio.stop_scanning_networks()
+        except Exception:
+            pass
+    ordered = [n for n in NETWORKS if n["ssid"] in visible] + \
+              [n for n in NETWORKS if n["ssid"] not in visible]
+    last_err = None
+    for net in ordered:
+        try:
+            print("Connecting to Wi-Fi:", net["ssid"])
+            wifi.radio.connect(net["ssid"], net.get("password", ""), timeout=10)
+            print("Wi-Fi OK, IP:", wifi.radio.ipv4_address)
+            pool = socketpool.SocketPool(wifi.radio)
+            return
+        except Exception as e:
+            last_err = e
+            print("  join failed:", net["ssid"], "-", e)
+    raise last_err or RuntimeError("no configured Wi-Fi network reachable")
 
 
 WIFI_RETRIES_BEFORE_RADIO_RESET    = 3
@@ -254,7 +298,7 @@ def mqtt_open(broker=None):
     """Open TCP socket, send CONNECT, wait for CONNACK, then go non-blocking."""
     global sock, rx_buf, connected, last_ping_ms
     if broker is None:
-        broker = MQTT_BROKER
+        broker = current_broker()
     if sock:
         try:
             sock.close()
@@ -454,31 +498,37 @@ while True:
             conn_state = ST_RETRY_CONFIGURED
             configured_failures = 0
 
-    # ── RETRY_CONFIGURED: keep hammering the known broker ───────────────────
+    # ── RETRY_CONFIGURED: cycle through the configured brokers ───────────────
     elif conn_state == ST_RETRY_CONFIGURED:
         now = supervisor.ticks_ms()
         if ticks_diff(now, last_reconnect_ms) >= RECONNECT_INTERVAL:
             last_reconnect_ms = now
             valve.service()
+            broker = current_broker()
             try:
                 if not wifi.radio.ipv4_address:
                     wifi_connect_with_recovery()
                     compute_scan_base()
-                mqtt_open(MQTT_BROKER)
+                mqtt_open(broker)
             except Exception as e:
                 print("Reconnect error:", e)
             if connected:
                 subscribe_all()
                 publish_valve_online()
                 conn_state = ST_CONNECTED
-                configured_failures = 0
+                configured_failures = 0   # leave broker_index on this last-good broker
             else:
-                configured_failures += 1
-                print(f"Configured broker failed ({configured_failures}/{MAX_CONFIGURED_TRIES})")
-                if configured_failures >= MAX_CONFIGURED_TRIES:
-                    print("Scanning subnet for MQTT broker…")
-                    conn_state = ST_SCAN_PROBE
-                    scan_index = 0
+                # advance to the next broker; a full wrap through BROKERS = one pass
+                broker_index += 1
+                if broker_index % len(BROKERS) == 0:
+                    configured_failures += 1
+                    print(f"All brokers failed (pass {configured_failures}/{MAX_CONFIGURED_TRIES})")
+                    if configured_failures >= MAX_CONFIGURED_TRIES:
+                        print("Scanning subnet for MQTT broker…")
+                        conn_state = ST_SCAN_PROBE
+                        scan_index = 0
+                else:
+                    print("Broker failed, trying next:", current_broker())
 
     # ── SCAN_PROBE: probe one IP per loop pass ───────────────────────────────
     elif conn_state == ST_SCAN_PROBE:
@@ -488,10 +538,10 @@ while True:
             configured_failures = 0
             continue
 
-        # Periodically retry the configured broker mid-scan
+        # Periodically retry the configured brokers mid-scan (rotating through the list)
         if scan_index > 0 and scan_index % SCAN_RETRY_INTERVAL == 0:
             valve.service()
-            mqtt_open(MQTT_BROKER)
+            mqtt_open(current_broker())
             if connected:
                 subscribe_all()
                 publish_valve_online()
@@ -499,13 +549,14 @@ while True:
                 conn_state = ST_CONNECTED
                 configured_failures = 0
                 continue
+            broker_index += 1
 
         candidate = scan_base + str(scan_index)
         my_ip = str(wifi.radio.ipv4_address)
         scan_index += 1
 
-        # Skip our own IP and the configured broker (already tried)
-        if candidate == my_ip or candidate == MQTT_BROKER:
+        # Skip our own IP and any configured broker (already tried)
+        if candidate == my_ip or candidate in BROKERS:
             continue
 
         valve.service()
