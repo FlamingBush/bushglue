@@ -536,6 +536,12 @@ requires-dist = [
 name = "bushutil"
 version = "0.1.0"
 source = { editable = "packages/bushutil" }
+dependencies = [
+    { name = "paho-mqtt" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "paho-mqtt", specifier = ">=2.0" }]
 
 [[package]]
 name = "certifi"

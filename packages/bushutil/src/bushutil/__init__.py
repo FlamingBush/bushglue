@@ -1,7 +1,12 @@
 """Shared utilities for Bush Glue service scripts."""
 import json
 import pathlib
+import signal
 import subprocess
+import sys
+import threading
+
+import paho.mqtt.client as mqtt
 
 # Persisted audio device selections
 _CONFIG_FILE = pathlib.Path.home() / ".config" / "bush" / "audio-devices.json"
@@ -88,6 +93,64 @@ def build_sox_effects(clarity: int = 0) -> list:
         "reverb", str(reverberance), "12", str(room_scale), "100", str(pre_delay), str(wet_gain),
         "compand", "0.01,0.05", "-70,-70,-30,-15,0,-6", "3",
     ]
+
+
+def make_logger(name: str):
+    """Return a logger: log("msg") prints "[name] msg", flushed."""
+    def log(msg: str):
+        print(f"[{name}] {msg}", flush=True)
+    return log
+
+
+def run_mqtt_service(name: str, topics: list, on_message, *, on_connect=None,
+                     background_loop=None, on_shutdown=None, port: int = 1883):
+    """Shared MQTT service lifecycle; blocks in loop_forever().
+
+    Subscribes to *topics* on (re)connect, then calls on_connect(client) for
+    extras like retained-status publishes. SIGTERM/SIGINT run on_shutdown()
+    and exit. background_loop(client, stop_event) runs in a daemon thread.
+    Must be called from the main thread (signal handlers).
+    """
+    log = make_logger(name)
+    broker = get_mqtt_broker()
+    log(f"MQTT broker: {broker}:{port}")
+
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    stop = threading.Event()
+
+    def _on_connect(client, userdata, flags, reason_code, properties):
+        log(f"MQTT connected (rc={reason_code})")
+        for topic in topics:
+            client.subscribe(topic)
+        log("Subscribed to " + ", ".join(topics))
+        if on_connect:
+            on_connect(client)
+
+    client.on_connect = _on_connect
+    client.on_message = on_message
+
+    def _shutdown(signum, frame):
+        log("Shutting down...")
+        stop.set()
+        if on_shutdown:
+            on_shutdown()
+        client.loop_stop()
+        client.disconnect()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    try:
+        client.connect(broker, port, 60)
+    except Exception as e:
+        log(f"Cannot connect to broker: {e}")
+        sys.exit(1)
+
+    if background_loop:
+        threading.Thread(target=background_loop, args=(client, stop), daemon=True).start()
+
+    client.loop_forever()
 
 
 def get_mqtt_broker() -> str:

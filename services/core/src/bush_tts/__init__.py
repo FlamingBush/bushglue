@@ -11,16 +11,15 @@ import json
 import os
 import pathlib
 import queue
-import signal
 import subprocess
-import sys
 import threading
 import time
 
 import paho.mqtt.client as mqtt
 
-from bushutil import (get_mqtt_broker, load_audio_device, save_audio_device,
-                      load_setting, save_setting, build_sox_effects)
+from bushutil import (make_logger, run_mqtt_service, load_audio_device,
+                      save_audio_device, load_setting, save_setting,
+                      build_sox_effects)
 
 # ── config ─────────────────────────────────────────────────────────────────
 TOPIC_VERSE         = "bush/pipeline/t2v/verse"
@@ -30,7 +29,6 @@ TOPIC_SET_DEVICE    = "bush/audio/tts/set-device"
 TOPIC_DEVICE_STATUS = "bush/audio/tts/device"
 TOPIC_SET_CLARITY   = "bush/audio/tts/set-clarity"
 TOPIC_CLARITY       = "bush/audio/tts/clarity"
-MQTT_PORT = 1883
 
 # Extra silence after sox finishes before signalling done (reverb tail)
 DONE_TAIL_S = 0.5
@@ -93,8 +91,7 @@ def _sox_cmd(sample_rate: int) -> list[str]:
     ] + output_args + build_sox_effects(clarity)
 
 
-def log(msg: str):
-    print(f"[tts-service] {msg}", flush=True)
+log = make_logger("tts-service")
 
 
 def _build_engine():
@@ -270,20 +267,6 @@ def _interrupt_and_enqueue(text: str):
 
 
 # ── MQTT ────────────────────────────────────────────────────────────────────
-def on_connect(client, userdata, flags, reason_code, properties):
-    log(f"MQTT connected (rc={reason_code})")
-    client.subscribe(TOPIC_VERSE)
-    client.subscribe(TOPIC_SET_DEVICE)
-    client.subscribe(TOPIC_SET_CLARITY)
-    log(f"Subscribed to {TOPIC_VERSE}")
-    with _device_lock:
-        dev = _tts_device
-    client.publish(TOPIC_DEVICE_STATUS, json.dumps({"device": dev}), retain=True)
-    with _clarity_lock:
-        clarity = _tts_clarity
-    client.publish(TOPIC_CLARITY, json.dumps({"clarity": clarity}), retain=True)
-
-
 def on_message(client, userdata, msg):
     global _tts_device, _tts_clarity
     if msg.topic == TOPIC_VERSE:
@@ -326,39 +309,27 @@ def on_message(client, userdata, msg):
 
 
 def main():
-    broker = get_mqtt_broker()
-    log(f"MQTT broker: {broker}:{MQTT_PORT}")
-
     global _engine
     _engine = _build_engine()
 
-    worker = threading.Thread(target=_speak_worker, daemon=True)
-    worker.start()
+    threading.Thread(target=_speak_worker, daemon=True).start()
 
-    global _mqttc
-    mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    mqttc.on_connect = on_connect
-    mqttc.on_message = on_message
-    _mqttc = mqttc
+    def _post_connect(client):
+        global _mqttc
+        _mqttc = client
+        with _device_lock:
+            dev = _tts_device
+        client.publish(TOPIC_DEVICE_STATUS, json.dumps({"device": dev}), retain=True)
+        with _clarity_lock:
+            clarity = _tts_clarity
+        client.publish(TOPIC_CLARITY, json.dumps({"clarity": clarity}), retain=True)
 
-    def _shutdown(signum, frame):
-        log("Shutting down...")
+    def _on_shutdown():
         speech_queue.put(None)
         _kill_current()
-        mqttc.loop_stop()
-        mqttc.disconnect()
-        sys.exit(0)
 
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
-
-    try:
-        mqttc.connect(broker, MQTT_PORT, 60)
-    except Exception as e:
-        log(f"Cannot connect to broker: {e}")
-        sys.exit(1)
-
-    mqttc.loop_forever()
+    run_mqtt_service("tts-service", [TOPIC_VERSE, TOPIC_SET_DEVICE, TOPIC_SET_CLARITY],
+                     on_message, on_connect=_post_connect, on_shutdown=_on_shutdown)
 
 
 if __name__ == "__main__":

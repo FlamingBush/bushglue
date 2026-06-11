@@ -21,14 +21,12 @@ The valve target tracks the bush's emotional intent:
 """
 
 import json
-import signal
-import sys
 import threading
 import time
 
 import paho.mqtt.client as mqtt
 
-from bushutil import get_mqtt_broker
+from bushutil import make_logger, run_mqtt_service
 
 # ── MQTT topics ─────────────────────────────────────────────────────────────
 TOPIC_SENTIMENT  = "bush/pipeline/sentiment/result"
@@ -37,7 +35,6 @@ TOPIC_DONE       = "bush/pipeline/tts/done"
 TOPIC_VALVE_TARGET = "bush/fire/valve/target"
 TOPIC_VALVE_STATUS = "bush/fire/valve/status"
 TOPIC_VALVE_AUTO   = "bush/fire/valve/auto"
-MQTT_PORT = 1883
 
 # Pico state values that are part of normal operation. Transitions WITHIN this
 # set are skipped to avoid logging every idle↔moving cycle (~2 Hz). Transitions
@@ -80,8 +77,7 @@ PUBLISH_INTERVAL_S = 1.0 / PUBLISH_HZ
 STALE_TIMEOUT_S = 60.0
 
 
-def log(msg: str):
-    print(f"[variable-valves] {msg}", flush=True)
+log = make_logger("variable-valves")
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -279,21 +275,6 @@ def _publish_loop(mqttc: mqtt.Client, stop: threading.Event):
 
 
 def main():
-    broker = get_mqtt_broker()
-    log(f"MQTT broker: {broker}:{MQTT_PORT}")
-
-    mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    stop = threading.Event()
-
-    def on_connect(client, userdata, flags, reason_code, properties):
-        log(f"MQTT connected (rc={reason_code})")
-        client.subscribe(TOPIC_SENTIMENT)
-        client.subscribe(TOPIC_SPEAKING)
-        client.subscribe(TOPIC_DONE)
-        client.subscribe(TOPIC_VALVE_STATUS)
-        client.subscribe(TOPIC_VALVE_AUTO)
-        log(f"Subscribed to sentiment, tts/speaking, tts/done, valve/status, valve/auto")
-
     def on_message(client, userdata, msg):
         if msg.topic == TOPIC_SENTIMENT:
             _on_sentiment(msg.payload)
@@ -306,29 +287,12 @@ def main():
         elif msg.topic == TOPIC_VALVE_AUTO:
             _on_auto(msg.payload)
 
-    mqttc.on_connect = on_connect
-    mqttc.on_message = on_message
-
-    def _shutdown(signum, frame):
-        log("Shutting down...")
-        stop.set()
-        mqttc.loop_stop()
-        mqttc.disconnect()
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
-
-    try:
-        mqttc.connect(broker, MQTT_PORT, 60)
-    except Exception as e:
-        log(f"Cannot connect to broker: {e}")
-        sys.exit(1)
-
-    publisher = threading.Thread(target=_publish_loop, args=(mqttc, stop), daemon=True)
-    publisher.start()
-
-    mqttc.loop_forever()
+    run_mqtt_service(
+        "variable-valves",
+        [TOPIC_SENTIMENT, TOPIC_SPEAKING, TOPIC_DONE, TOPIC_VALVE_STATUS, TOPIC_VALVE_AUTO],
+        on_message,
+        background_loop=_publish_loop,
+    )
 
 
 if __name__ == "__main__":

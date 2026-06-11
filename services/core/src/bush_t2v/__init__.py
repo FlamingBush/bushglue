@@ -8,14 +8,11 @@ and publishes results to bush/pipeline/t2v/verse.
 import json
 import os
 import pathlib
-import signal
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
-
-import paho.mqtt.client as mqtt
 
 # ── text-to-verse subprocess config ────────────────────────────────────────
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]  # bushglue/
@@ -33,14 +30,11 @@ EMBED_MODEL = "qwen3-embedding:0.6b"
 TOPIC_TRANSCRIPT  = "bush/pipeline/stt/transcript"
 TOPIC_PROCESSING  = "bush/pipeline/t2v/processing"
 TOPIC_VERSE       = "bush/pipeline/t2v/verse"
-MQTT_PORT = 1883
 
 
-from bushutil import get_mqtt_broker
+from bushutil import make_logger, run_mqtt_service
 
-
-def log(msg: str):
-    print(f"[t2v-service] {msg}", flush=True)
+log = make_logger("t2v-service")
 
 
 def wait_for_http(url: str, name: str, timeout: int = 120, proc: subprocess.Popen = None):
@@ -74,9 +68,6 @@ def query_t2v(text: str) -> dict:
 
 
 def main():
-    broker = get_mqtt_broker()
-    log(f"MQTT broker: {broker}:{MQTT_PORT}")
-
     # Start t2v Rust binary
     log(f"Starting text-to-verse on port {T2V_PORT}...")
     t2v_proc = subprocess.Popen(
@@ -93,15 +84,6 @@ def main():
         stderr=subprocess.PIPE,
     )
     log(f"text-to-verse PID {t2v_proc.pid}")
-
-    # Ensure subprocess is cleaned up on signal
-    def _shutdown(signum, frame):
-        log("Shutting down t2v subprocess...")
-        t2v_proc.terminate()
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
 
     try:
         wait_for_http(T2V_HEALTH_URL, "text-to-verse", timeout=120, proc=t2v_proc)
@@ -124,9 +106,6 @@ def main():
     except Exception as e:
         log(f"Warning: could not pin embedding model: {e}")
 
-    # Connect MQTT
-    mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-
     def on_message(client, userdata, msg):
         try:
             data = json.loads(msg.payload)
@@ -146,22 +125,12 @@ def main():
         except Exception as e:
             log(f"Message handling error: {e}")
 
-    def on_connect(client, userdata, flags, reason_code, properties):
-        log(f"MQTT connected (rc={reason_code})")
-        client.subscribe(TOPIC_TRANSCRIPT)
-        log(f"Subscribed to {TOPIC_TRANSCRIPT}")
-
-    mqttc.on_connect = on_connect
-    mqttc.on_message = on_message
-    mqttc.connect(broker, MQTT_PORT, 60)
-
     try:
-        mqttc.loop_forever()
+        run_mqtt_service("t2v-service", [TOPIC_TRANSCRIPT], on_message,
+                         on_shutdown=t2v_proc.terminate)
     finally:
-        log("MQTT loop stopped. Terminating t2v subprocess...")
+        # Non-signal loop exit (signal path terminates via on_shutdown)
         t2v_proc.terminate()
-        mqttc.disconnect()
-        log("Done.")
 
 
 if __name__ == "__main__":
