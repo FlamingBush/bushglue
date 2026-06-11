@@ -50,6 +50,7 @@ TOPICS = [
     "bush/pipeline/t2v/verse",
     "bush/pipeline/sentiment/result",
     "bush/flame/pulse",
+    "bush/flame/status",
     "bush/pipeline/tts/speaking",
     "bush/pipeline/tts/done",
     "bush/audio/devices",

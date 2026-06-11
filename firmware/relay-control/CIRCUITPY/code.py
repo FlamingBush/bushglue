@@ -1,4 +1,4 @@
-# main.py — Pi Pico 2 W MQTT GPIO pulse controller + motorized needle valve
+# main.py — Pi Pico 2 W MQTT GPIO pulse controller
 # CircuitPython 10.x
 #
 # CRITICAL INVARIANTS — every code path in this main loop must respect both:
@@ -7,13 +7,9 @@
 #      delay an OFF deadline. Relays must never get stuck on.
 #   2. MQTT keepalive: pings must reach the broker within KEEP_ALIVE (15 s).
 #      That means mqtt_loop has to be reached every iteration, and no
-#      single iteration may take more than a few ms. valve.service() in
-#      particular must stay non-blocking and bounded.
+#      single iteration may take more than a few ms.
 # If you add work here, measure or reason about its worst-case duration
-# under load (heavy MQTT traffic + frequent UART activity from the MKS).
-#
-# Valve control: MKS SERVO42C-MT V1.1 on UART (GP4 TX, GP5 RX).
-# See valve.py for protocol details and PROTOCOL.md for documentation.
+# under load (heavy MQTT traffic).
 #
 # secrets.py must define:
 #   SSID, PASSWORD, MQTT_BROKER
@@ -36,8 +32,6 @@ import socketpool
 import supervisor
 import struct
 import microcontroller
-
-import valve
 
 # ── Load secrets ────────────────────────────────────────────────────────────
 try:
@@ -65,6 +59,7 @@ off_ms_bigjet = None
 off_ms_poof   = None
 
 TOPIC_FLAME        = b"bush/flame/pulse"
+TOPIC_FLAME_STATUS = b"bush/flame/status"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -124,11 +119,13 @@ MQTT_USER     = secrets.get("MQTT_USER", None)
 MQTT_PASSWORD = secrets.get("MQTT_PASSWORD", None)
 KEEP_ALIVE    = 15          # seconds
 PING_INTERVAL = 10_000      # ms between PINGREQs
+STATUS_INTERVAL_MS = 5_000  # ms between bush/flame/status beacons
 
 sock          = None
 pool          = None
 rx_buf        = bytearray()  # persistent receive buffer
 last_ping_ms  = 0
+last_status_ms = 0
 connected     = False
 
 # ── Connection state machine ─────────────────────────────────────────────────
@@ -214,7 +211,7 @@ def wifi_connect():
     print("Connecting to Wi-Fi:", secrets["SSID"])
     # Explicit timeout caps a single attempt's blocking time. Without it, a
     # hung join can hold the main loop for many minutes, starving the
-    # homing watchdog and other periodic checks.
+    # rest of the main loop.
     wifi.radio.connect(secrets["SSID"], secrets["PASSWORD"], timeout=10)
     print("Wi-Fi OK, IP:", wifi.radio.ipv4_address)
     pool = socketpool.SocketPool(wifi.radio)
@@ -369,12 +366,6 @@ def process_packets():
                 pos = pkt_end
                 continue
 
-            # Route valve topics to valve module
-            if topic in valve.ALL_VALVE_TOPICS:
-                valve.handle_mqtt(topic, payload)
-                pos = pkt_end
-                continue
-
             if topic != TOPIC_FLAME:
                 pos = pkt_end
                 continue
@@ -465,30 +456,33 @@ def mqtt_loop():
 
 # ── Subscribe helper ─────────────────────────────────────────────────────────
 def subscribe_all():
-    """Subscribe to all flame and valve topics."""
+    """Subscribe to flame topics."""
     sock.send(mqtt_subscribe_packet(TOPIC_FLAME, packet_id=1))
-    for i, topic in enumerate(valve.ALL_VALVE_TOPICS):
-        sock.send(mqtt_subscribe_packet(topic, packet_id=20 + i))
-    print("Subscribed (flame + valve).")
+    print("Subscribed (flame).")
 
 
-def publish_valve_online(online=True):
-    """Publish valve online/offline birth/LWT status."""
+def publish_flame_status(force=False):
+    """Liveness beacon — deploy verification subscribes to this."""
+    global last_status_ms
+    now = supervisor.ticks_ms()
+    if not force and ticks_diff(now, last_status_ms) < STATUS_INTERVAL_MS:
+        return
+    last_status_ms = now
+    payload = json.dumps({"ticks_ms": now, "flare": pin_flare.value,
+                          "bigjet": pin_bigjet.value, "poof": pin_poof.value})
     try:
-        sock.send(mqtt_publish_packet(valve.TOPIC_VALVE_ONLINE,
-                                      b"online" if online else b"offline"))
-    except Exception:
+        sock.send(mqtt_publish_packet(TOPIC_FLAME_STATUS, payload))
+    except OSError:
         pass
 
 
 # ── Boot ─────────────────────────────────────────────────────────────────────
-valve.init()
 wifi_connect_with_recovery()
 compute_scan_base()
 mqtt_open()
 if connected:
     subscribe_all()
-    publish_valve_online()
+    publish_flame_status(force=True)
     conn_state = ST_CONNECTED
 else:
     conn_state = ST_RETRY_CONFIGURED
@@ -500,19 +494,11 @@ while True:
     # 🔴 Pins FIRST — always, unconditionally, ~2 µs
     service_pins()
 
-    # 🔧 Valve UART — service regardless of MQTT state
-    valve.service()
-
     # ── CONNECTED: normal operation ──────────────────────────────────────────
     if conn_state == ST_CONNECTED:
         mqtt_loop()
-        # Publish valve status/position updates
         if connected and sock is not None:
-            for vtopic, vpayload in valve.get_publish_messages():
-                try:
-                    sock.send(mqtt_publish_packet(vtopic, vpayload))
-                except OSError:
-                    pass
+            publish_flame_status()
         if not connected:
             print("Connection lost, retrying configured broker…")
             conn_state = ST_RETRY_CONFIGURED
@@ -533,7 +519,7 @@ while True:
                 print("Reconnect error:", e)
             if connected:
                 subscribe_all()
-                publish_valve_online()
+                publish_flame_status(force=True)
                 conn_state = ST_CONNECTED
                 configured_failures = 0
             else:
@@ -558,7 +544,7 @@ while True:
             mqtt_open(MQTT_BROKER)
             if connected:
                 subscribe_all()
-                publish_valve_online()
+                publish_flame_status(force=True)
                 print("Configured broker back online, subscribed.")
                 conn_state = ST_CONNECTED
                 configured_failures = 0
@@ -606,7 +592,7 @@ while True:
         if pipeline_verified:
             # Good broker — subscribe to fire topics and go live
             subscribe_all()
-            publish_valve_online()
+            publish_flame_status(force=True)
             print(f"Pipeline verified on {scan_candidate}, subscribed.")
             conn_state = ST_CONNECTED
         elif ticks_expired(verify_deadline_ms):

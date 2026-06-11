@@ -40,7 +40,7 @@ docs/              Architecture docs, MQTT topics reference
     bush-sentiment PUB bush/flame/pulse  {valve,ms}  (loop until bush/pipeline/tts/done)
 5c. bush-variable-valves SUB bush/pipeline/sentiment/result + tts/speaking + tts/done
     bush-variable-valves PUB bush/fire/valve/target  (10 Hz, smooth sentiment→valve mapping)
-    relay-control forwards valve/target to MKS SERVO42C via UART
+    valve-control (CAN fleet) drives the MKS SERVO42D needle valve from valve/target
 6. bush-stt    SUB  bush/pipeline/tts/speaking  →  mute mic
    bush-stt    SUB  bush/pipeline/tts/done      →  unmute + reset Vosk
 ```
@@ -68,9 +68,10 @@ The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s timeout.
 | Topic | Publisher | Subscribers |
 |-------|-----------|-------------|
 | `bush/flame/pulse` | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control, sound-service |
-| `bush/fire/valve/target` | bush-variable-valves | relay-control |
-| `bush/fire/valve/actual` | relay-control | (monitor) |
-| `bush/fire/valve/status` | relay-control | (monitor) |
+| `bush/fire/valve/target` | bush-variable-valves | valve-control |
+| `bush/fire/valve/actual` | valve-control | (monitor) |
+| `bush/fire/valve/status` | valve-control | (monitor) |
+| `bush/flame/status` | relay-control | (monitor) |
 
 See [docs/README.md](docs/README.md) for audio topics, message payloads, timing constants, and fire patterns.
 

@@ -37,6 +37,7 @@ digraph bushglue {
     TTS [label="bush-tts\ntts-service.py\n──────────────\nespeak-ng\nsox reverb" fillcolor="#cfe2f3" color="#1155cc"]
     SENTIMENT [label="bush-sentiment\nsentiment-service.py\n──────────────\nDistilBERT\nsentiment analysis\nfire orchestration" fillcolor="#cfe2f3" color="#1155cc"]
     RELAYS [label="relay-control/\nCIRCUITPY/code.py\n──────────────\nrpi pico 2\nlives in orange box" fillcolor="#cfe2f3" color="#1155cc"]
+    VALVES [label="valve-control fleet\nCIRCUITPY (CAN)\n──────────────\nMKS SERVO42D" fillcolor="#cfe2f3" color="#1155cc"]
     FLAME_EXPR [label="bush-variable-valves\n──────────────\nsentiment → valve\nspeech modulation\n10 Hz target" fillcolor="#cfe2f3" color="#1155cc"]
     NEEDLE_VALVE [label="Needle Valve\n(propane modulation)" shape=ellipse fillcolor="#d9ead3" color="#38761d"]
 
@@ -67,6 +68,6 @@ digraph bushglue {
     // Needle valve (smooth modulation)
     SENTIMENT -> FLAME_EXPR [label="bush/pipeline/\nsentiment/result" color="#1155cc"]
     TTS -> FLAME_EXPR [label="bush/pipeline/tts/\nspeaking, done" color="#1155cc"]
-    FLAME_EXPR -> RELAYS [label="bush/fire/valve/target" color="#1155cc"]
-    RELAYS -> NEEDLE_VALVE [color="#38761d"]
+    FLAME_EXPR -> VALVES [label="bush/fire/valve/target" color="#1155cc"]
+    VALVES -> NEEDLE_VALVE [color="#38761d"]
 }

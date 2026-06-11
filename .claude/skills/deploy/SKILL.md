@@ -26,11 +26,11 @@ Deploy the current state of the bushglue repo to the odroid and verify the pipel
 
 4. **Check if any Pico 2 firmware files changed.** The relay-control Pico 2 W (CIRCUITPY) is auto-mounted at `/mnt/pico` with `uid=1000,gid=1000` (see fstab), so the odroid user can write to it without sudo. If any `firmware/relay-control/CIRCUITPY/*.py` files changed in the pull, copy them up:
    ```
-   ssh odroid 'cd ~/bushglue/firmware/relay-control/CIRCUITPY && cp code.py valve.py /mnt/pico/ && sync'
+   ssh odroid 'cd ~/bushglue/firmware/relay-control/CIRCUITPY && cp code.py /mnt/pico/ && sync'
    ```
-   Do NOT copy `secrets.example.py` — the Pico has its own `secrets.py` with real wifi creds. CircuitPython auto-restarts on file write, so wait ~8s for it to reconnect to MQTT before testing. Verify it's back by waiting for a status publish:
+   Do NOT copy `secrets.example.py` — the Pico has its own `secrets.py` with real wifi creds. CircuitPython auto-restarts on file write, so wait ~8s for it to reconnect to MQTT before testing. Verify it's back by waiting for its liveness beacon (published on `bush/flame/status` every 5 s):
    ```
-   ssh odroid 'timeout 15 mosquitto_sub -h localhost -t "bush/fire/valve/status" -C 1'
+   ssh odroid 'timeout 25 mosquitto_sub -h localhost -t "bush/flame/status" -C 1'
    ```
 
 5. **Restart affected services.** Restart whichever services had their script or service file changed. If unsure, restart all pipeline services:

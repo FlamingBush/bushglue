@@ -30,18 +30,19 @@ See the [root README](../README.md) for setup and deploy instructions.
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
 | `bush/flame/pulse` | → | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control, sound-service |
+| `bush/flame/status` | ← | relay-control | (monitor) |
 
 ### Needle Valve Topics
 
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
-| `bush/fire/valve/target` | → | bush-variable-valves, bush-valve | relay-control |
-| `bush/fire/valve/home` | → | bush-valve, (external) | relay-control |
-| `bush/fire/valve/stop` | → | bush-valve, (external) | relay-control |
-| `bush/fire/valve/calibrate` | → | bush-valve, (external) | relay-control |
-| `bush/fire/valve/actual` | ← | relay-control | bush-valve, (monitor) |
-| `bush/fire/valve/status` | ← | relay-control | bush-valve, (monitor) |
-| `bush/fire/valve/online` | ← | relay-control | (monitor) |
+| `bush/fire/valve/target` | → | bush-variable-valves, bush-valve | valve-control |
+| `bush/fire/valve/home` | → | bush-valve, (external) | valve-control |
+| `bush/fire/valve/stop` | → | bush-valve, (external) | valve-control |
+| `bush/fire/valve/calibrate` | → | bush-valve, (external) | valve-control |
+| `bush/fire/valve/actual` | ← | valve-control | bush-valve, (monitor) |
+| `bush/fire/valve/status` | ← | valve-control | bush-valve, (monitor) |
+| `bush/fire/valve/online` | ← | valve-control | (monitor) |
 
 ### Audio Management Topics (all retained)
 
