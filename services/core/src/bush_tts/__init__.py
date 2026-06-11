@@ -64,11 +64,11 @@ QUEUE_MAX = 2
 
 # Current TTS output device: None → sox default (-d), str → ALSA device name
 _tts_device: str | None = load_audio_device("tts")  # restore last saved device (or None)
-_device_lock = threading.Lock()
 
 # Current clarity level (0 = dramatic/default, 100 = most intelligible)
 _tts_clarity: int = load_setting("tts_clarity", 0)
-_clarity_lock = threading.Lock()
+
+_state_lock = threading.Lock()  # guards _tts_device + _tts_clarity
 
 
 def _sox_cmd(sample_rate: int) -> list[str]:
@@ -77,9 +77,8 @@ def _sox_cmd(sample_rate: int) -> list[str]:
     Args:
         sample_rate: Hz of the input PCM (engine.sample_rate from synthesis result).
     """
-    with _device_lock:
+    with _state_lock:
         dev = _tts_device
-    with _clarity_lock:
         clarity = _tts_clarity
     if dev is None:
         output_args = ["-d"]
@@ -134,12 +133,14 @@ def _kill_current():
         _current_procs.clear()
 
 
-def _publish_done():
+def _publish(topic: str, payload: dict):
+    """Publish from the worker thread; a no-op before the first connect."""
     if _mqttc:
-        try:
-            _mqttc.publish(TOPIC_DONE, json.dumps({"ts": time.time()}))
-        except Exception:
-            pass
+        _mqttc.publish(topic, json.dumps(payload))
+
+
+def _publish_done():
+    _publish(TOPIC_DONE, {"ts": time.time()})
 
 
 def _speak_worker():
@@ -149,17 +150,13 @@ def _speak_worker():
         if text is None:
             break
         log(f"Speaking: {text[:80]!r}")
-        if _mqttc:
-            try:
-                _mqttc.publish(TOPIC_SPEAKING, json.dumps({"text": text, "ts": time.time()}))
-            except Exception:
-                pass
+        _publish(TOPIC_SPEAKING, {"text": text, "ts": time.time()})
 
         # ALSA device-share gating: give STT time to release the capture
         # interface before sox opens playback. STT inner loop polls
         # audio_queue with 0.5s timeout, so worst-case teardown is ~500ms +
         # kill latency. Use 600ms to cover it.
-        with _device_lock:
+        with _state_lock:
             dev = _tts_device
         if dev is not None and (dev.startswith("hw:") or dev.startswith("plughw:")):
             time.sleep(0.6)
@@ -239,19 +236,17 @@ def _speak_worker():
 
 def _enqueue(text: str):
     """Add verse to queue, dropping oldest if full."""
-    try:
-        speech_queue.put_nowait(text)
-    except queue.Full:
-        try:
-            dropped = speech_queue.get_nowait()
-            log(f"Queue full — dropped: {dropped[:40]!r}")
-            speech_queue.task_done()
-        except queue.Empty:
-            pass
+    while True:
         try:
             speech_queue.put_nowait(text)
+            return
         except queue.Full:
-            log("Queue still full, skipping verse.")
+            try:
+                dropped = speech_queue.get_nowait()
+                log(f"Queue full — dropped: {dropped[:40]!r}")
+                speech_queue.task_done()
+            except queue.Empty:
+                pass  # worker drained it between put and get; retry the put
 
 
 def _interrupt_and_enqueue(text: str):
@@ -285,7 +280,7 @@ def on_message(client, userdata, msg):
             data = json.loads(msg.payload)
             raw = data.get("device")   # None or str
             dev = str(raw) if raw is not None else None
-            with _device_lock:
+            with _state_lock:
                 _tts_device = dev
             save_audio_device("tts", dev)
             log(f"Output device set to: {dev!r}")
@@ -298,7 +293,7 @@ def on_message(client, userdata, msg):
             data = json.loads(msg.payload)
             raw = int(data.get("clarity", 0))
             clamped = max(0, min(100, raw))
-            with _clarity_lock:
+            with _state_lock:
                 _tts_clarity = clamped
             save_setting("tts_clarity", clamped)
             log(f"Clarity set to: {clamped}")
@@ -317,11 +312,10 @@ def main():
     def _post_connect(client):
         global _mqttc
         _mqttc = client
-        with _device_lock:
+        with _state_lock:
             dev = _tts_device
-        client.publish(TOPIC_DEVICE_STATUS, json.dumps({"device": dev}), retain=True)
-        with _clarity_lock:
             clarity = _tts_clarity
+        client.publish(TOPIC_DEVICE_STATUS, json.dumps({"device": dev}), retain=True)
         client.publish(TOPIC_CLARITY, json.dumps({"clarity": clarity}), retain=True)
 
     def _on_shutdown():
