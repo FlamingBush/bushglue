@@ -438,6 +438,7 @@ dependencies = [
     { name = "bleak" },
     { name = "bushutil" },
     { name = "paho-mqtt" },
+    { name = "pyserial" },
 ]
 
 [package.optional-dependencies]
@@ -451,6 +452,7 @@ requires-dist = [
     { name = "bleak", specifier = ">=0.22" },
     { name = "bushutil", editable = "packages/bushutil" },
     { name = "paho-mqtt", specifier = ">=2.0" },
+    { name = "pyserial", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
     { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.0" },
 ]
@@ -3180,6 +3182,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/04/51/993a25a8b5220e23e0a31ff98747b8fce4685336e0fc4e8e156feab5c4f1/pyrnnoise-0.4.3-py3-none-manylinux1_x86_64.whl", hash = "sha256:1b094777e73797c5dd647782902c691ebb9a3c456c878e742597f5b55535a3db", size = 13273307, upload-time = "2026-01-14T08:44:27.801Z" },
     { url = "https://files.pythonhosted.org/packages/aa/e4/9a13ede6521360341314bf90d5b687cd3f1bd4259bfea740dbc88340484a/pyrnnoise-0.4.3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:161c57e05257e0b51f1b21675dcb2debb8cc86903c1fe2ccc3feb4322e545732", size = 13267247, upload-time = "2026-01-14T08:44:30.119Z" },
     { url = "https://files.pythonhosted.org/packages/cb/e9/795f8504fa7f07fc16e99e82413a6fe997df1999e18bb6fab0b428431a92/pyrnnoise-0.4.3-py3-none-win_amd64.whl", hash = "sha256:25e7d8d63f251238a439e6e3d54ad8cb147c9f2b7c7c56fc9d9a496f682d8b06", size = 13267061, upload-time = "2026-01-14T08:45:03.444Z" },
+]
+
+[[package]]
+name = "pyserial"
+version = "3.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/7d/ae3f0a63f41e4d2f6cb66a5b57197850f919f59e558159a4dd3a818f5082/pyserial-3.5.tar.gz", hash = "sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb", size = 159125, upload-time = "2020-11-23T03:59:15.045Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl", hash = "sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0", size = 90585, upload-time = "2020-11-23T03:59:13.41Z" },
 ]
 
 [[package]]
