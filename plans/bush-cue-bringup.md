@@ -1,5 +1,11 @@
 # bush-cue music bring-up (for a fresh Claude)
 
+> **2026-06-11:** The hardware sections below (history note, Phases A–B) describe the retired
+> STEP/DIR transport. The valve node is now the **CAN-based fleet** in `firmware/valve-control/`
+> (closed loop bench-proven 2026-06-10, encoder reads + gentle homing work) — see its
+> `PROTOCOL.md`/`CALIBRATION.md` and the CLAUDE.md valve section. The engine phases (C–F) remain
+> current. `plans/servo42d-bringup.md` was deleted with the step/dir era; see git history.
+
 Goal: take the audio→valve/flame feature to a real music show on the **current hardware**:
 a **Pico 2 W valve node** driving an **MKS SERVO42D as a plain stepper over STEP/DIR**, commanded
 over Wi-Fi/MQTT. You (the new Claude) have **no prior session context** — read this, the linked
@@ -34,8 +40,9 @@ first.
 ## Read first
 - `firmware/valve-control/PROTOCOL.md` — **step/dir section** (STEP/DIR/EN, pwmio velocity,
   dead-reckoned position, 42D menu, GP4/GP5 wiring).
-- `plans/servo42d-bringup.md` — the 42D motor bench plan over step/dir (jog → direction → breath →
-  calibrate; no homing). **Do that first**; this plan assumes a working, calibrated valve.
+- The 42D motor bench validation for the current CAN firmware (the step/dir bench plan was
+  deleted — see git history and `firmware/valve-control/CALIBRATION.md`). **Do that first**; this
+  plan assumes a working, calibrated valve.
 - Memories (verify vs code): **project_xiao_valve_node** (now Pico step/dir),
   **project_valve_mks_quirks**, **project_valve_supply_current**, **project_valve_closed_seat_safety**,
   **project_bush_cue_engine**.
@@ -79,7 +86,8 @@ first.
 3. Sanity: `mosquitto_sub -v -t 'bush/fire/valve/#'` on the odroid; you should see `status`/`actual`.
 
 ## Phase B — validate + calibrate the 42D (step/dir)
-Run **`plans/servo42d-bringup.md` Phases 0–4**: step/dir jog, direction sense (VERIFIED toward open
+Run the valve bench validation for the current CAN firmware (the step/dir plan was deleted — see
+git history and `firmware/valve-control/CALIBRATION.md`). Step/dir-era notes: jog, direction sense (VERIFIED toward open
 2026-06-06 — flip `DIR_OPEN_LEVEL` in `valve.py` if a move goes the wrong way), breath, **no homing
 (N/A — no feedback)**, and **calibrate `OPEN_STEPS`** (placeholder 2000; set real travel via
 `bush/fire/valve/calibrate <steps>`). Confirm `target` 0.0/0.5/1.0 land where expected. There is no
