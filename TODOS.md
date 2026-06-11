@@ -81,7 +81,7 @@ The feature is fully gated behind `--features openvino`, so default (`cargo buil
 
 ## NPU Tier 2 — DistilBERT sentiment (free side win)
 
-**What:** Currently `services/sentiment/src/bush_sentiment/__init__.py:5` has `torch.set_num_threads(1)` to prevent power-supply brownout on RK3568. M2 (RK3588S) shouldn't need this, but the workaround stays. Moving DistilBERT to the NPU returns the thread AND drops classify latency from ~150 ms (one A55) to <50 ms.
+**What:** `bush_sentiment` formerly pinned `torch.set_num_threads(1)` (RK3568 power-brownout workaround; removed 2026-06 — the fixed supply and RK3588S don't need it). Moving DistilBERT to the NPU drops classify latency from ~150 ms (one A55) to <50 ms.
 
 **Path:** HF model → ONNX export → RKNN convert via `rknn-toolkit2`. DistilBERT is a textbook BERT-class encoder; the path is well-trodden.
 

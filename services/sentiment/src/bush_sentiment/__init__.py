@@ -2,8 +2,6 @@
 
 # For text-classificaiton
 # Requires transformers and torch
-import torch
-torch.set_num_threads(1)  # limit CPU parallelism to prevent power-supply brownout on RK3568
 from transformers import pipeline as hf_pipeline
 
 # For serving the http interface
