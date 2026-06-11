@@ -285,7 +285,7 @@ if i had to rank the unfinished software-layer work to land in priority order:
 - **`services/core/src/bush_tts/__init__.py`** — TTS main loop, queue + interrupt, sox pipeline, clarity knob.
 - **`services/core/src/bush_tts/engines/`** — adapter contract + espeak + Piper.
 - **`utils/bush-stt-bench`**, **`utils/bush-tts-bench`** — bench harnesses.
-- **`utils/bush-npu-check`** — NPU readiness gate.
+- **`utils/bush-npu-check`** — NPU readiness gate. *(Removed from the repo 2026-06; see git history.)*
 - **`utils/bush-fetch-models`** — model fetcher with sha256 verification.
 - **`data/models-manifest.tsv`** — model URLs + dest paths.
 - **`data/tts-bench-corpus.tsv`** — default TTS corpus.

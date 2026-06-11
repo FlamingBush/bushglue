@@ -123,7 +123,6 @@ bush-stt's `VAD_BACKEND=rknn` and `STT_ENGINE=whisper-rknn` paths need the RK358
 ssh odroid 'echo rknpu | sudo tee /etc/modules-load.d/rknpu.conf && sudo modprobe rknpu'
 ssh odroid 'echo '\''KERNEL=="renderD129", MODE="0660", GROUP="render"'\'' | sudo tee /etc/udev/rules.d/99-rknpu.rules && sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=drm'
 ssh odroid 'sudo usermod -aG render odroid'
-ssh odroid 'cd ~/bushglue && .venv/bin/python utils/bush-npu-check'
 ```
 
 Models live in `models/rknn/` (git-lfs). Build them on an x86_64 Linux host:

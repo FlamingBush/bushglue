@@ -72,7 +72,6 @@ The feature is fully gated behind `--features openvino`, so default (`cargo buil
 - A flags-off regression test that verifies `STT_USE_VAD=0 STT_ENGINE=vosk` is byte-identical to today's behavior.
 - VAD endpointing smoke check (utterance start → finalize → transcript).
 - Piper TTS smoke check (verse → audio → tts/done).
-- NPU pre-check (only on aarch64 + when `bush-npu-check` exits 0).
 - Subscriber regression check that `bush-monitor` and Discord don't crash when `bush/pipeline/stt/partial` is absent.
 
 **Estimate:** ~1 day.
