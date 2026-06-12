@@ -166,10 +166,16 @@ MOVE_TIMEOUT_MS = 8000
 # any other 0x31 reply is an in-flight trace point (never clobbers a pending wait).
 _ENC_LABELS = ("sync_read", "move_sync", "nudge_sync", "stall_sync", "stream_end_read",
                "home_seed", "home_contact_read", "home_backoff_read", "home_zero_seed",
-               "breath_read")
+               "breath_read", "stream_seed")
+
+# A fresh encoder read while homed must agree with bookkeeping to within ~a rev;
+# a bigger gap = the 42D rebooted (brownout resets its accumulator + volatile config
+# while `homed` stays true) or the clutch slipped. Either way the zero is a lie.
+GROUND_LOST_STEPS = STEPS_PER_REV
 
 _move_timeout_ms = MOVE_TIMEOUT_MS   # per-move, rpm-aware (set when the move is staged)
 _move_meta       = None              # in-flight move record for the `moved` telemetry
+_current_ma      = VALVE_CURRENT_MA  # last commanded run current (re-asserted on ground loss)
 
 # A 0xFD right after ENABLE doesn't execute reliably; energize, stage, fire after settle.
 _pending_move   = None
@@ -488,6 +494,46 @@ def _issue_move(step_target):
 
 # ── Encoder-grounded move/nudge finalization ─────────────────────────────────
 
+def _ground_lost(pos, expect, where):
+    """The encoder frame moved out from under us (42D brownout/reboot, or slip).
+    Kill all motion authority, re-assert the volatile motor config, demand a re-home."""
+    global homed, state, last_error, _breath_enabled, _breath_last_rpm
+    global pending_target, _pending_move, _motion_ctx
+    global move_in_flight_delta, _nudge_delta, _stream_max_idx, _stream_played
+    homed = False
+    state = "error"
+    last_error = "ground_lost"
+    _breath_enabled = False
+    _breath_last_rpm = None
+    pending_target = None
+    _pending_move = None
+    _motion_ctx = None
+    _emit_moved(None, 1)            # no-op unless a move was in flight
+    move_in_flight_delta = 0
+    _nudge_delta = 0
+    _stream_max_idx = -1
+    _stream_played = -1
+    _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))
+    _send(bytes([CMD_STOP]))
+    _send(bytes([CMD_ENABLE, 0x00]))
+    _send(bytes([CMD_SET_WORKMODE, WORKMODE_SR_VFOC]))
+    _send(bytes([CMD_SET_MICROSTEP, MICROSTEP & 0xFF]))
+    _send(bytes([CMD_SET_CURRENT, (_current_ma >> 8) & 0xFF, _current_ma & 0xFF]))
+    _send(bytes([CMD_SET_PROTECT, 0x01]))
+    print("Valve: GROUND LOST at %s -- enc %d vs expected %d; motor rebooted or "
+          "slipped, disabled until re-home" % (where, pos, expect))
+
+
+def _ground_ok(raw, expect_steps, where):
+    """Fresh encoder read vs bookkeeping. Returns the position, or None after
+    declaring ground_lost. Unhomed reads pass through (setup jogging)."""
+    pos = _encoder_pos_steps(raw)
+    if not homed or abs(pos - expect_steps) <= GROUND_LOST_STEPS:
+        return pos
+    _ground_lost(pos, expect_steps, where)
+    return None
+
+
 def _dispatch_pending_target():
     global target_pos_steps
     step_target = _pending_sync_target
@@ -500,7 +546,10 @@ def _dispatch_pending_target():
 
 def _on_sync_read(raw):
     global motor_pos_steps
-    motor_pos_steps = max(0, min(open_steps, _encoder_pos_steps(raw)))
+    pos = _ground_ok(raw, motor_pos_steps, "target_sync")
+    if pos is None:
+        return                      # ground lost -- the queued target never dispatches
+    motor_pos_steps = max(0, min(open_steps, pos))
     _dispatch_pending_target()
 
 
@@ -822,13 +871,19 @@ def _dispatch(func, payload):
             if label == "sync_read":
                 _on_sync_read(raw)
             elif label == "move_sync":
-                pos = _encoder_pos_steps(raw)
-                _emit_moved(pos, 0)
-                _finalize_move_to(pos)
+                pos = _ground_ok(raw, motor_pos_steps + move_in_flight_delta, "move_sync")
+                if pos is not None:
+                    _emit_moved(pos, 0)
+                    _finalize_move_to(pos)
             elif label == "nudge_sync":
-                pos = _encoder_pos_steps(raw)
-                _emit_moved(pos, 0)
-                _finalize_nudge_to(pos)
+                pos = _ground_ok(raw, motor_pos_steps + _nudge_delta, "nudge_sync")
+                if pos is not None:
+                    _emit_moved(pos, 0)
+                    _finalize_nudge_to(pos)
+            elif label == "stream_seed":
+                pos = _ground_ok(raw, motor_pos_steps, "stream_seed")
+                if pos is not None:
+                    _on_stream_seed(pos)
             elif label == "stall_sync":
                 _on_stall_sync(raw)
             elif label == "stream_end_read":
@@ -1082,7 +1137,9 @@ def handle_mqtt(topic, payload):
 
 
 def _set_current(ma):
+    global _current_ma
     ma = max(0, min(3000, int(ma)))
+    _current_ma = ma
     _send(bytes([CMD_SET_CURRENT, (ma >> 8) & 0xFF, ma & 0xFF]))
     print(f"Valve: set current {ma} mA")
 
@@ -1468,7 +1525,10 @@ def _service_breath(now):
 
 def _on_breath_read(raw):
     global motor_pos_steps, _breath_last_good_read_ms
-    motor_pos_steps = max(0, min(open_steps, _encoder_pos_steps(raw)))
+    pos = _ground_ok(raw, motor_pos_steps, "breath_read")
+    if pos is None:
+        return                      # ground lost -- breathing already disabled
+    motor_pos_steps = max(0, min(open_steps, pos))
     _breath_last_good_read_ms = supervisor.ticks_ms()
 
 
@@ -1526,8 +1586,17 @@ def _stream_begin(payload):
     _breath_last_rpm = None
     _send(bytes([CMD_ENABLE, 0x01]))   # energize for continuous motion
     state = "streaming"
+    # seed read: verifies grounding (42D brownout = ground_lost, no playback) and
+    # re-grounds bookkeeping so the stream starts encoder-true. _service_stream
+    # holds samples while this read is pending; a reply timeout error-stops the stream.
+    _send_and_expect(bytes([CMD_READ_ENCODER]), "stream_seed")
     print("Valve: streaming @ %dHz base=%dms%s"
           % (_stream_rate, _stream_base_ms, "" if homed else " (open-loop, NOT homed)"))
+
+
+def _on_stream_seed(pos):
+    global motor_pos_steps
+    motor_pos_steps = max(0, min(open_steps, pos))
 
 
 def _stream_add(payload):

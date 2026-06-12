@@ -132,10 +132,19 @@ also emit a `streamend` divergence report) instead of silently dead-reckoning pa
 motor. Stream follow clamps per-sample slew to `stream_max_rpm` and dead-reckons only the
 distance the clamped speed covers, so later samples keep commanding catch-up until the level is
 truly reached; stream holds/underruns stop at acc 0, never BREATH_ACC (an acc-8 "stop" from
-600 rpm coasts ~revolutions — the 2026-06-11 seat ram). Streams never self-correct an initial
-offset: position the valve at the first sample before `0xF5` START. Move timeouts are
+600 rpm coasts ~revolutions — the 2026-06-11 seat ram). Move timeouts are
 rpm-aware (computed per move from distance + accel ramp), so slow `limits` settings aren't
 falsely killed at the old fixed 8 s.
+
+Ground-loss protection: a 42D power-cycle (e.g. supply brownout — the DDR-60G-24 overloads in
+hiccup mode) silently resets its encoder accumulator and volatile config while the MCU still
+believes `homed`. Every pre/post-motion encoder read (target sync, move/nudge end, breath
+cycle, stream start seed) therefore checks the encoder against bookkeeping; a gap > 1 rev
+declares **`ground_lost`**: motion authority killed (un-homed, state `error`), volatile config
+re-asserted (SR_vFOC, microstep, current, protection), and nothing moves until a re-home
+(`home` or `home here`). Streams gate on the start seed read — it also re-grounds bookkeeping,
+so a stream starting away from sample[0] slews there at `stream_max_rpm` instead of inheriting
+a permanent offset; a seed reply timeout error-stops the stream before any sample plays.
 
 ## RS485 / UART framing (HISTORY — superseded by CAN above)
 
