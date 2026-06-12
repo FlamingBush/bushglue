@@ -281,6 +281,14 @@ _trace_last_ms     = 0
 _trace_inflight_ms = 0             # ticks when the bare poll went out; 0 = none outstanding
 TRACE_STALE_MS     = 300
 
+# Stream runaway guard: open-loop follow cannot bound resonant overshoot (bench
+# 2026-06-12: a 15 Hz tone commanded inside 0.3..0.5 of span walked the shaft to
+# 1.41 and into the open stop). Poll the encoder while streaming; if the SHAFT
+# (not the bookkeeping) leaves the window by more than the margin, cut the stream.
+STREAM_GUARD_MS     = 50
+STREAM_GUARD_MARGIN = 400          # steps past [0, open_steps]; production stop is ~537 past top
+_guard_last_ms      = 0
+
 # Stall watch for the 0xF6 follow modes (stream/breath): 0xF6 replies are fire-and-forget,
 # so a lockrotor latch there is silent -- poll 0x3E and fail loudly instead.
 _prot_poll_last_ms = 0
@@ -549,13 +557,13 @@ def _on_sync_read(raw):
     pos = _ground_ok(raw, motor_pos_steps, "target_sync")
     if pos is None:
         return                      # ground lost -- the queued target never dispatches
-    motor_pos_steps = max(0, min(open_steps, pos))
+    motor_pos_steps = pos           # unclamped: off-window truth makes recovery moves correct
     _dispatch_pending_target()
 
 
 def _finalize_move_to(pos):
     global motor_pos_steps, move_in_flight_delta, state
-    motor_pos_steps = max(0, min(open_steps, pos))
+    motor_pos_steps = pos
     move_in_flight_delta = 0
     print(f"Valve: move complete, pos={motor_pos_steps}")
     if _breath_enabled and homed:
@@ -600,8 +608,8 @@ def _on_stall_sync(raw):
     global motor_pos_steps, target_pos_steps
     pos = _encoder_pos_steps(raw)
     _emit_moved(pos, 1)
-    motor_pos_steps = max(0, min(open_steps, pos))
-    target_pos_steps = motor_pos_steps
+    motor_pos_steps = pos
+    target_pos_steps = pos
 
 
 # ── Stallguard homing ────────────────────────────────────────────────────────
@@ -1239,8 +1247,31 @@ def _handle_trace_payload(payload):
 
 def _on_trace_read(raw):
     # unclamped: divergence outside [0, open_steps] is signal
-    _queue_out((TOPIC_VALVE_TRACEPT,
-                "%d %d" % (supervisor.ticks_ms(), _encoder_pos_steps(raw))))
+    pos = _encoder_pos_steps(raw)
+    if state == "streaming" and (pos < -STREAM_GUARD_MARGIN
+                                 or pos > open_steps + STREAM_GUARD_MARGIN):
+        _stream_runaway(pos)
+        return
+    if _trace_interval_ms:          # guard polls don't spam tracept unless asked
+        _queue_out((TOPIC_VALVE_TRACEPT,
+                    "%d %d" % (supervisor.ticks_ms(), pos)))
+
+
+def _stream_runaway(pos):
+    """The physical shaft left the window mid-stream. Grounding is still valid --
+    this is a control failure (resonant overshoot / rectified walk), not a zero loss."""
+    global state, last_error, _breath_last_rpm, _stream_max_idx, _stream_played
+    _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))   # snap halt
+    _send(bytes([CMD_STOP]))
+    _send(bytes([CMD_ENABLE, 0x00]))
+    _breath_last_rpm = None
+    state = "stalled"
+    last_error = "stream_runaway"
+    _stream_max_idx = -1
+    _stream_played = -1
+    _schedule_stream_end_read()
+    print("Valve: stream RUNAWAY -- shaft %d, window 0..%d (+/-%d); stopped"
+          % (pos, open_steps, STREAM_GUARD_MARGIN))
 
 
 def _parse_float(payload):
@@ -1528,7 +1559,7 @@ def _on_breath_read(raw):
     pos = _ground_ok(raw, motor_pos_steps, "breath_read")
     if pos is None:
         return                      # ground lost -- breathing already disabled
-    motor_pos_steps = max(0, min(open_steps, pos))
+    motor_pos_steps = pos
     _breath_last_good_read_ms = supervisor.ticks_ms()
 
 
@@ -1596,7 +1627,7 @@ def _stream_begin(payload):
 
 def _on_stream_seed(pos):
     global motor_pos_steps
-    motor_pos_steps = max(0, min(open_steps, pos))
+    motor_pos_steps = pos
 
 
 def _stream_add(payload):
@@ -1665,8 +1696,8 @@ def _on_stream_end_read(raw):
         "cmd": round(_stream_cmd_frac, 3),
         "enc": round(pos / open_steps, 3) if open_steps > 0 else 0.0,
         "err_steps": pos - cmd_steps})))
-    motor_pos_steps = max(0, min(open_steps, pos))
-    target_pos_steps = motor_pos_steps
+    motor_pos_steps = pos
+    target_pos_steps = pos
 
 
 def _stream_pong(payload):
@@ -1773,6 +1804,7 @@ def service():
     global pending_target, last_target_ms, state, last_error
     global target_pos_steps, _pending_move, _pending_sync_target, _pending_jump_target
     global _trace_last_ms, _trace_inflight_ms, _prot_poll_last_ms, _stream_end_read_at
+    global _guard_last_ms
 
     now = supervisor.ticks_ms()
     _poll_can()
@@ -1796,6 +1828,16 @@ def service():
                 and _pending_cmd not in _ENC_LABELS
                 and _ticks_diff(now, _trace_last_ms) >= _trace_interval_ms):
             _trace_last_ms = now
+            _trace_inflight_ms = now or 1
+            _send(bytes([CMD_READ_ENCODER]))
+
+    # Runaway guard polls: always-on while streaming, rides the trace reply path.
+    if state == "streaming":
+        if _trace_inflight_ms and _ticks_diff(now, _trace_inflight_ms) > TRACE_STALE_MS:
+            _trace_inflight_ms = 0
+        if (not _trace_inflight_ms and _pending_cmd not in _ENC_LABELS
+                and _ticks_diff(now, _guard_last_ms) >= STREAM_GUARD_MS):
+            _guard_last_ms = now
             _trace_inflight_ms = now or 1
             _send(bytes([CMD_READ_ENCODER]))
 

@@ -136,6 +136,21 @@ truly reached; stream holds/underruns stop at acc 0, never BREATH_ACC (an acc-8 
 rpm-aware (computed per move from distance + accel ramp), so slow `limits` settings aren't
 falsely killed at the old fixed 8 s.
 
+Positions are TRUTHFUL: `motor_pos_steps` stores the unclamped encoder-derived position, so
+`status.pos`/`actual`/`moved.enc` can legitimately report outside `[0, 1]` of span during an
+off-window excursion — that is signal, not corruption. Targets clamp to the window at the
+control layer (`target`, stream samples); recovery moves from off-window positions compute
+true deltas.
+
+Stream runaway guard: open-loop follow cannot bound resonant overshoot (a 15 Hz tone commanded
+inside 0.3–0.5 of span walked the shaft into the open stop, 2026-06-12), so while streaming the
+firmware polls the encoder every 50 ms (riding the trace reply path; tracept emission still
+requires host-enabled `trace`); if the SHAFT leaves the window by > 400 steps the stream cuts
+(snap halt, de-energize, state `stalled`, `last_error: stream_runaway`, `streamend` emitted).
+Grounding stays valid — recover with `stop`, no re-home needed. The guard bounds the walk, not
+the peak: at high slew the shaft can travel past the margin within one poll, so waveform
+band-limiting in the publisher remains the primary defense.
+
 Ground-loss protection: a 42D power-cycle (e.g. supply brownout — the DDR-60G-24 overloads in
 hiccup mode) silently resets its encoder accumulator and volatile config while the MCU still
 believes `homed`. Every pre/post-motion encoder read (target sync, move/nudge end, breath
