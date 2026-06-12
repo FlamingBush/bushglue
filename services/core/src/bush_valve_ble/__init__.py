@@ -50,6 +50,8 @@ COMMAND_TOPICS = [
     "bush/fire/valve/breath",
     "bush/fire/valve/maxtorque",
     "bush/fire/valve/nudge",
+    "bush/fire/valve/limits",
+    "bush/fire/valve/trace",
     TOPIC_STREAM,
 ]
 

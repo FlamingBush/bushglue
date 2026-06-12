@@ -1,11 +1,13 @@
 # Needle Valve Calibration
 
-> ⚠️ **STALE (42C-era).** The hardware is now a **MKS SERVO42D** on a **XIAO nRF52840
-> (BLE)** at **38400 baud** — not the 42C/Pico/115200 below. The 42D needs no
-> on-board menu changes (SR_vFOC/microstep/current are set over serial at boot) and
-> homes via native stallguard. See `PROTOCOL.md` (the 42D authority) and
-> `plans/servo42d-bringup.md`. The calibration *goal* below (find real `open_steps`
-> via `bush/fire/valve/calibrate`) still applies; the setup steps do not.
+> ⚠️ **STALE (42C-era).** The hardware is now a **MKS SERVO42D over CAN** on the
+> **Waveshare RP2350-CAN** (USB-serial → `bush_valve_serial`) — not the 42C/Pico/UART
+> below. The 42D needs no on-board menu beyond CAN 500k/ID 1/MStep 16 (SR_vFOC +
+> current are set over the bus at boot) and homes via gentle protection-seek. See
+> `PROTOCOL.md` (the authority, incl. the topic table). The calibration *goal* below
+> (find real `open_steps` via `bush/fire/valve/calibrate`) still applies; for a bench
+> window on a valve that can't seat-home, use `utils/bush-valve-sweep setup`
+> (`home here` + `calibrate <span>`). The setup steps below do not apply.
 
 ## Prerequisites
 

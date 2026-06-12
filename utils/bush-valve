@@ -9,7 +9,10 @@ Usage:
     bush-valve status           Print current valve status (waits for one message)
     bush-valve calibrate 16000  Set open_steps calibration
     bush-valve auto off         Pause sentiment auto-driver for manual control ('on' resumes)
-    bush-valve watch            Stream valve position updates
+    bush-valve limits           Query runtime motion limits
+    bush-valve limits '{"move_rpm":300,"move_acc":50}'  Set limits (in-memory; also stream_max_rpm/breath_max_rpm)
+    bush-valve trace 50         In-flight encoder trace every 50 ms (0 = off)
+    bush-valve watch [-v]       Stream status/actual/moved/streamend (-v adds tracept/streampos)
 
 Requires mosquitto or paho-mqtt. Uses the same broker auto-detection as other bush services.
 """
@@ -33,6 +36,13 @@ TOPIC_CALIBRATE = "bush/fire/valve/calibrate"
 TOPIC_AUTO      = "bush/fire/valve/auto"
 TOPIC_STATUS    = "bush/fire/valve/status"
 TOPIC_ACTUAL    = "bush/fire/valve/actual"
+TOPIC_LIMITS    = "bush/fire/valve/limits"
+TOPIC_LIMITS_ACK = "bush/fire/valve/limits_ack"
+TOPIC_TRACE     = "bush/fire/valve/trace"
+TOPIC_MOVED     = "bush/fire/valve/moved"
+TOPIC_STREAMEND = "bush/fire/valve/streamend"
+TOPIC_TRACEPT   = "bush/fire/valve/tracept"
+TOPIC_STREAMPOS = "bush/fire/valve/streampos"
 
 
 def get_broker():
@@ -62,6 +72,30 @@ def subscribe_one(broker, topic, timeout=5.0):
 
     def on_connect(client, userdata, flags, rc, properties=None):
         client.subscribe(topic)
+
+    def on_message(client, userdata, msg):
+        result[0] = msg.payload.decode(errors="replace")
+        got.set()
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(broker, MQTT_PORT, 10)
+    c.loop_start()
+    got.wait(timeout=timeout)
+    c.loop_stop()
+    c.disconnect()
+    return result[0]
+
+
+def publish_then_wait(broker, pub_topic, payload, sub_topic, timeout=3.0):
+    """Subscribe to the reply topic, then publish; return the first reply payload."""
+    result = [None]
+    got = threading.Event()
+
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe(sub_topic)
+        client.publish(pub_topic, payload)
 
     def on_message(client, userdata, msg):
         result[0] = msg.payload.decode(errors="replace")
@@ -151,8 +185,31 @@ def main():
             print("No status received (valve offline?)")
             sys.exit(1)
 
+    elif cmd == "limits":
+        payload = sys.argv[2] if len(sys.argv) > 2 else ""
+        ack = publish_then_wait(broker, TOPIC_LIMITS, payload, TOPIC_LIMITS_ACK)
+        if ack:
+            try:
+                print(json.dumps(json.loads(ack), indent=2))
+            except ValueError:
+                print(ack)
+        else:
+            print("No limits_ack received (valve offline?)")
+            sys.exit(1)
+
+    elif cmd == "trace":
+        if len(sys.argv) < 3:
+            print("Usage: bush-valve trace <interval_ms>  (0 = off)")
+            sys.exit(1)
+        ms = int(sys.argv[2])
+        publish_and_exit(broker, TOPIC_TRACE, str(ms))
+        print(f"trace -> {ms} ms")
+
     elif cmd == "watch":
-        watch(broker, [TOPIC_STATUS, TOPIC_ACTUAL])
+        topics = [TOPIC_STATUS, TOPIC_ACTUAL, TOPIC_MOVED, TOPIC_STREAMEND]
+        if "-v" in sys.argv[2:]:
+            topics += [TOPIC_TRACEPT, TOPIC_STREAMPOS]
+        watch(broker, topics)
 
     else:
         print(f"Unknown command: {cmd}")

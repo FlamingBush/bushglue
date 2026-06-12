@@ -1,4 +1,4 @@
-# valve.py -- Motorized needle valve via MKS SERVO42D over UART (D6 TX / D7 RX).
+# valve.py -- Motorized needle valve via MKS SERVO42D over CAN (MCP2515/XL2515).
 #
 # Rewritten from the SERVO42C driver for the 42D, whose serial protocol differs:
 #   frame   : FA <addr> <func> <data...> <sum&0xFF>   (reply headed 0xFB)
@@ -18,9 +18,9 @@
 # motor_pos_steps is DERIVED from the 0x31 encoder, never dead-reckoned: homing
 # captures the zero + sign, then every move/nudge/breath-valley re-reads 0x31.
 #
-# !! Values tagged VERIFY were carried/estimated from the 42C and the 42D manual
-#    and MUST be confirmed on the bench (direction sense, current, RPM, accel,
-#    stall behaviour). Nothing here has run on a 42D yet.
+# !! Values tagged VERIFY were carried/estimated from the 42C and the 42D manual.
+#    CAN closed loop bench-proven on the 42D 2026-06-10 (direction, current=torque,
+#    encoder, protection-seek homing); the RPM/accel envelope is still uncharacterized.
 
 import board
 import supervisor
@@ -89,11 +89,17 @@ MOVE_RPM        = 40         # VERIFY. 0xFD/0xF6 cruise speed (RPM; 42D speed IS
 MOVE_ACC        = 2          # VERIFY. accel byte: each unit-rpm step takes (256-acc)*50us;
                               # acc=0 is instant (no ramp), small acc = gentle ramp.
 
+# Runtime-tunable motion limits (bush/fire/valve/limits; in-memory, defaults above).
+# Homing speeds/currents are deliberately NOT runtime-settable.
+move_rpm        = MOVE_RPM
+move_acc        = MOVE_ACC
+
 # 0xFD/0xF6 direction bit (b7 of the speed_hi byte). 42D manual: 0=CCW, 1=CW.
-# Which physical sense opens vs closes the valve is UNKNOWN on this build -- VERIFY
-# and swap if a target move drives the wrong way.
 DIR_TOWARD_OPEN   = 0x00     # bench-verified 2026-06-10 (was 0x80)
 DIR_TOWARD_CLOSED = 0x80     # bench-verified 2026-06-10 (was 0x00); encoder counts UP closing
+ENC_SIGN_DEFAULT  = -1       # bench-verified: dir 0x00 (open) LOWERS raw. Used when zeroing
+                             # without a seat seek -- +1 here makes every open-ward move read
+                             # back as 0 and ratchet into the jamming OPEN stop.
 
 # ── MQTT topics (also the BLE/serial line-protocol keys) ─────────────────────
 TOPIC_VALVE_TARGET    = b"bush/fire/valve/target"
@@ -108,6 +114,12 @@ TOPIC_VALVE_STATUS    = b"bush/fire/valve/status"
 TOPIC_VALVE_ONLINE    = b"bush/fire/valve/online"
 TOPIC_VALVE_PONG      = b"bush/fire/valve/pong"        # stream clock-sync reply
 TOPIC_VALVE_STREAMPOS = b"bush/fire/valve/streampos"   # executed position (open-loop sync check)
+TOPIC_VALVE_LIMITS    = b"bush/fire/valve/limits"      # in: JSON motion limits; empty = query
+TOPIC_VALVE_TRACE     = b"bush/fire/valve/trace"       # in: in-flight 0x31 trace interval ms (0 = off)
+TOPIC_VALVE_LIMITS_ACK = b"bush/fire/valve/limits_ack" # out: one-shot limits readback
+TOPIC_VALVE_MOVED     = b"bush/fire/valve/moved"       # out: per-move result JSON
+TOPIC_VALVE_TRACEPT   = b"bush/fire/valve/tracept"     # out: "<ticks_ms> <pos_steps>"
+TOPIC_VALVE_STREAMEND = b"bush/fire/valve/streamend"   # out: stream divergence JSON
 
 ALL_VALVE_TOPICS = [
     TOPIC_VALVE_TARGET,
@@ -117,6 +129,8 @@ ALL_VALVE_TOPICS = [
     TOPIC_VALVE_BREATH,
     TOPIC_VALVE_MAXTORQUE,
     TOPIC_VALVE_NUDGE,
+    TOPIC_VALVE_LIMITS,
+    TOPIC_VALVE_TRACE,
 ]
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -147,6 +161,15 @@ _pending_cmd    = None       # label of the reply we're waiting on (state tracki
 _cmd_sent_ms    = 0
 CMD_TIMEOUT_MS  = 500
 MOVE_TIMEOUT_MS = 8000
+
+# A 0x31 reply is consumed by _pending_cmd ONLY when the label is one of these;
+# any other 0x31 reply is an in-flight trace point (never clobbers a pending wait).
+_ENC_LABELS = ("sync_read", "move_sync", "nudge_sync", "stall_sync", "stream_end_read",
+               "home_seed", "home_contact_read", "home_backoff_read", "home_zero_seed",
+               "breath_read")
+
+_move_timeout_ms = MOVE_TIMEOUT_MS   # per-move, rpm-aware (set when the move is staged)
+_move_meta       = None              # in-flight move record for the `moved` telemetry
 
 # A 0xFD right after ENABLE doesn't execute reliably; energize, stage, fire after settle.
 _pending_move   = None
@@ -218,6 +241,7 @@ _breath_last_good_read_ms = 0
 BREATH_BIG_JUMP        = 0.10
 BREATH_ENTER_DEADBAND  = 5 * _USTEP
 BREATH_MAX_RPM         = 120 * _USTEP   # VERIFY
+breath_max_rpm         = BREATH_MAX_RPM # runtime-tunable (bush/fire/valve/limits)
 BREATH_DRIFT_TAU_S     = 2.0
 
 # ── Streamed waveform playback ───────────────────────────────────────────────
@@ -233,6 +257,7 @@ SF_STOP    = 0x03
 SF_PING    = 0x05   # token(u16) -> pong telemetry
 STREAM_CAP      = 256              # ring capacity (~8.5 s @ 30 Hz)
 STREAM_MAX_RPM  = 600 * _USTEP     # VERIFY. cap on stream slew (42D allows up to 3000)
+stream_max_rpm  = STREAM_MAX_RPM   # runtime-tunable (bush/fire/valve/limits)
 STREAM_TELEM_MS = 200              # executed-position telemetry cadence
 
 _stream_buf      = bytearray(STREAM_CAP)
@@ -242,7 +267,23 @@ _stream_rate     = 30
 _stream_base_ms  = 0
 _stream_epoch    = 0
 _stream_last_telem_ms = 0
-_stream_out      = []              # queued outbound telemetry (pong/streampos)
+_stream_out      = []              # queued outbound telemetry (pong/streampos/moved/...)
+
+# In-flight encoder trace (bush/fire/valve/trace) -- bare 0x31 polls while moving/streaming.
+_trace_interval_ms = 0             # 0 = off
+_trace_last_ms     = 0
+_trace_inflight_ms = 0             # ticks when the bare poll went out; 0 = none outstanding
+TRACE_STALE_MS     = 300
+
+# Stall watch for the 0xF6 follow modes (stream/breath): 0xF6 replies are fire-and-forget,
+# so a lockrotor latch there is silent -- poll 0x3E and fail loudly instead.
+_prot_poll_last_ms = 0
+PROT_POLL_MS       = 400
+
+# Post-stream encoder ground-truth read (divergence report + re-ground).
+_stream_cmd_frac     = 0.0         # dead-reckoned authority captured at stream end/stall
+_stream_end_read_at  = 0           # ticks deadline for the settle-then-read; 0 = none
+STREAM_END_SETTLE_MS = 400
 
 # ── RGB status LED (XIAO onboard, active-low) -- shows actuation level ────────
 _led          = None
@@ -255,6 +296,18 @@ def _ticks_diff(later, earlier):
     return (later - earlier) & 0x3FFFFFFF
 
 
+def _queue_out(item):
+    """Queue outbound telemetry, bounded: with the host link down nothing drains the
+    queue, and a tracing stream would otherwise grow it until the node OOMs."""
+    if len(_stream_out) < 256:
+        _stream_out.append(item)
+
+
+def _cancel_stream_end_read():
+    global _stream_end_read_at
+    _stream_end_read_at = 0
+
+
 def _encoder_pos_steps(raw):
     """Absolute valve position in steps from a 0x31 raw read. 0 = homed margin."""
     return int(round((raw - _enc_zero_raw) * _enc_sign / ENC_PER_STEP))
@@ -262,6 +315,16 @@ def _encoder_pos_steps(raw):
 
 def _steps_to_rpm(steps_per_sec):
     return abs(steps_per_sec) * 60.0 / STEPS_PER_REV
+
+
+def _calc_move_timeout(pulses, rpm, acc):
+    """Expected 0xFD duration (cruise + accel ramp) x1.5 + 2 s slack, floored at the
+    old fixed budget so short moves keep their old timeout."""
+    rpm = max(1, rpm)
+    cruise_ms = pulses * 60000 // (rpm * STEPS_PER_REV)
+    ramp_ms = int(rpm * (256 - acc) * 0.05) if acc > 0 else 0
+    t = (3 * (cruise_ms + ramp_ms)) // 2 + 2000
+    return min(max(t, MOVE_TIMEOUT_MS), 300000)
 
 
 def _log_cksum_fail(head_bytes):
@@ -371,7 +434,7 @@ def _handle_can_msg(msg):
 
 def cmd_stop():
     global state, target_pos_steps, move_in_flight_delta, homed, pending_target
-    global _breath_last_rpm, _pending_move, _motion_ctx
+    global _breath_last_rpm, _pending_move, _motion_ctx, _move_meta
     global _stream_max_idx, _stream_played
     _send_and_expect(bytes([CMD_STOP]), "stop")
     _send(bytes([CMD_ENABLE, 0x00]))
@@ -379,6 +442,7 @@ def cmd_stop():
     _stream_played = -1
     _pending_move = None
     _motion_ctx = None
+    _move_meta = None        # aborted move -- never emit it as a `moved`
     move_in_flight_delta = 0
     target_pos_steps = motor_pos_steps
     pending_target = None
@@ -394,7 +458,7 @@ def cmd_stop():
 def _issue_move(step_target):
     """Stage a relative 0xFD toward absolute step_target: energize now, fire after settle."""
     global target_pos_steps, move_in_flight_delta, state, _pending_move, _move_settle_at
-    global _motion_ctx
+    global _motion_ctx, _move_timeout_ms, _move_meta
     if not homed:
         print("Valve: refusing move -- not homed")
         return False
@@ -409,9 +473,13 @@ def _issue_move(step_target):
     target_pos_steps = step_target
     move_in_flight_delta = delta
     _motion_ctx = None              # normal move (distinct from home/nudge contexts)
+    _cancel_stream_end_read()       # new motion invalidates a pending divergence read
     direction = DIR_TOWARD_OPEN if delta > 0 else DIR_TOWARD_CLOSED
     print(f"Valve: move {motor_pos_steps} -> {step_target} (d={delta})")
-    _pending_move = _speed_body(CMD_MOVE_POS, direction, MOVE_RPM, MOVE_ACC, abs(delta))
+    _move_meta = {"cmd": delta, "pre": motor_pos_steps, "rpm": move_rpm, "acc": move_acc,
+                  "fired": 0, "ms": 0}
+    _move_timeout_ms = _calc_move_timeout(abs(delta), move_rpm, move_acc)
+    _pending_move = _speed_body(CMD_MOVE_POS, direction, move_rpm, move_acc, abs(delta))
     _send(bytes([CMD_ENABLE, 0x01]))
     _move_settle_at = (supervisor.ticks_ms() + MOVE_SETTLE_MS) & 0x3FFFFFFF
     state = "moving"
@@ -459,6 +527,34 @@ def _finalize_nudge_to(pos):
     print(f"Valve: nudge done pos~={motor_pos_steps} -- de-energized")
 
 
+def _move_meta_done():
+    """Stamp the in-flight move's duration at its terminal 0xFD reply."""
+    if _move_meta is not None:
+        _move_meta["ms"] = _ticks_diff(supervisor.ticks_ms(), _move_meta["fired"])
+
+
+def _emit_moved(pos, stall):
+    """Queue the per-move result. pos = post-move encoder steps, or None if the read failed."""
+    global _move_meta
+    m = _move_meta
+    _move_meta = None
+    if m is None:
+        return
+    _queue_out((TOPIC_VALVE_MOVED, json.dumps({
+        "ms": m["ms"], "cmd": m["cmd"],
+        "enc": None if pos is None else pos - m["pre"],
+        "rpm": m["rpm"], "acc": m["acc"], "stall": stall})))
+
+
+def _on_stall_sync(raw):
+    """Re-ground position after a stall (0x31 replies even while latched)."""
+    global motor_pos_steps, target_pos_steps
+    pos = _encoder_pos_steps(raw)
+    _emit_moved(pos, 1)
+    motor_pos_steps = max(0, min(open_steps, pos))
+    target_pos_steps = motor_pos_steps
+
+
 # ── Stallguard homing ────────────────────────────────────────────────────────
 
 def _fake_home_at_zero():
@@ -468,12 +564,38 @@ def _fake_home_at_zero():
     raw = _blocking_read_encoder()
     if raw is not None:
         _enc_zero_raw = raw
-    _enc_sign = 1
+    _enc_sign = ENC_SIGN_DEFAULT
     motor_pos_steps = 0
     target_pos_steps = 0
     homed = True
     state = "idle"
     print(f"Valve: homing disabled -- boot/home position = 0 (enc_zero_raw={_enc_zero_raw})")
+
+
+def cmd_home_here():
+    """Bench zero: declare the CURRENT shaft = 0 (no seat seek) -- for rigs that must not
+    be seat-homed (worn valve, bare motor). Bare `home` keeps the real gentle seek."""
+    global pending_target, _pending_move, _pending_cmd, _motion_ctx, _breath_last_rpm
+    global last_error, _move_meta, move_in_flight_delta, _nudge_delta
+    global _trace_inflight_ms, _stream_end_read_at, _stream_max_idx, _stream_played
+    pending_target = None
+    _pending_move = None
+    _pending_cmd = None
+    _motion_ctx = None
+    _move_meta = None
+    _breath_last_rpm = None
+    move_in_flight_delta = 0
+    _nudge_delta = 0
+    _trace_inflight_ms = 0
+    _stream_end_read_at = 0
+    _stream_max_idx = -1
+    _stream_played = -1
+    _send(bytes([CMD_STOP]))
+    _send(bytes([CMD_RELEASE_PROT]))     # a stalled bench recovers here too
+    _send(bytes([CMD_ENABLE, 0x00]))
+    last_error = None
+    _drain_can()
+    _fake_home_at_zero()
 
 
 def cmd_home():
@@ -483,14 +605,18 @@ def cmd_home():
     seat -> release, bump current, keep going. On the seat latch: release, back off a margin
     toward open, verify it moved, and zero there. (HOMING_DISABLED -> just re-zero in place.)
     Blocks the main loop while homing -- the valve isn't operating then."""
-    global state, homed, pending_target, _pending_move, _motion_ctx, last_error
+    global state, homed, pending_target, _pending_move, _pending_cmd, _motion_ctx, last_error
     global _enc_zero_raw, _enc_sign, motor_pos_steps, target_pos_steps, _breath_last_rpm
+    global _move_meta, _stream_end_read_at
     if state == "breathing" or _breath_last_rpm is not None:
         _send(bytes([CMD_STOP]))
         _breath_last_rpm = None
     pending_target = None
     _pending_move = None
+    _pending_cmd = None      # a stale move_done wait would refuse moves until its timeout
     _motion_ctx = None
+    _move_meta = None
+    _stream_end_read_at = 0
     if HOMING_DISABLED:
         _drain_can()
         _fake_home_at_zero()
@@ -554,7 +680,8 @@ def cmd_home():
 
 
 def _home_begin_drive(seed_raw):
-    """Seed captured; fire the single stall-seeking 0xFD toward the closed seat."""
+    """Seed captured; fire the single stall-seeking 0xFD toward the closed seat.
+    (This async chain is dead since cmd_home went blocking; kept for a revival.)"""
     global _home_seed_raw, _motion_ctx, _move_settle_at, _pending_move
     _home_seed_raw = seed_raw
     print(f"Valve: homing -- seed raw={seed_raw}, driving into seat ({HOME_MAX_PULSES} max)")
@@ -679,27 +806,45 @@ def _parse_response():
 
 
 def _dispatch(func, payload):
-    global _pending_cmd
+    global _pending_cmd, _trace_inflight_ms
     if func == CMD_READ_ENCODER:
         raw = _read_int48(payload)
-        label = _pending_cmd
-        _pending_cmd = None
-        if label == "sync_read":
-            _on_sync_read(raw)
-        elif label == "move_sync":
-            _finalize_move_to(_encoder_pos_steps(raw))
-        elif label == "nudge_sync":
-            _finalize_nudge_to(_encoder_pos_steps(raw))
-        elif label == "home_seed":
-            _home_begin_drive(raw)
-        elif label == "home_contact_read":
-            _on_home_contact_read(raw)
-        elif label == "home_backoff_read":
-            _home_verify_backoff(raw)
-        elif label == "home_zero_seed":
-            _on_home_zero_seed(raw)
-        elif label == "breath_read":
-            _on_breath_read(raw)
+        # Trace polls only go out while no _ENC_LABELS read is pending, so an
+        # outstanding trace poll is always OLDER than a labeled read: replies come
+        # back in request order, the trace one first.
+        if _trace_inflight_ms:
+            _trace_inflight_ms = 0
+            _on_trace_read(raw)
+            return
+        if _pending_cmd in _ENC_LABELS:
+            label = _pending_cmd
+            _pending_cmd = None
+            if label == "sync_read":
+                _on_sync_read(raw)
+            elif label == "move_sync":
+                pos = _encoder_pos_steps(raw)
+                _emit_moved(pos, 0)
+                _finalize_move_to(pos)
+            elif label == "nudge_sync":
+                pos = _encoder_pos_steps(raw)
+                _emit_moved(pos, 0)
+                _finalize_nudge_to(pos)
+            elif label == "stall_sync":
+                _on_stall_sync(raw)
+            elif label == "stream_end_read":
+                _on_stream_end_read(raw)
+            elif label == "home_seed":
+                _home_begin_drive(raw)
+            elif label == "home_contact_read":
+                _on_home_contact_read(raw)
+            elif label == "home_backoff_read":
+                _home_verify_backoff(raw)
+            elif label == "home_zero_seed":
+                _on_home_zero_seed(raw)
+            elif label == "breath_read":
+                _on_breath_read(raw)
+        elif _trace_interval_ms:
+            _on_trace_read(raw)
         return
     status = payload[0] if payload else 0
     if func == CMD_MOVE_POS:
@@ -724,6 +869,7 @@ def _dispatch(func, payload):
 def _on_move_reply(status):
     """0xFD reply. status: 1 starting, 2 complete, 3 limit-stop, 0 fail/stall."""
     global _pending_cmd, _motion_ctx, state, last_error, move_in_flight_delta, _breath_enabled
+    global _nudge_delta
     ctx = _motion_ctx
     if status == 1:
         _cmd_started()
@@ -755,22 +901,29 @@ def _on_move_reply(status):
         if status == 2:
             _pending_cmd = None
             _motion_ctx = None
+            _move_meta_done()
             _send_and_expect(bytes([CMD_READ_ENCODER]), "nudge_sync")
         elif status == 0:
             _pending_cmd = None
             _motion_ctx = None
+            _move_meta_done()
+            _nudge_delta = 0
+            _send(bytes([CMD_RELEASE_PROT]))    # clear the lockrotor latch
             _send(bytes([CMD_ENABLE, 0x00]))
             state = "idle"
             print("Valve: nudge stalled -- hit a stop, de-energized")
+            _send_and_expect(bytes([CMD_READ_ENCODER]), "stall_sync")
         return
     # normal move
     if status == 2:
         _pending_cmd = None
         _motion_ctx = None
+        _move_meta_done()
         _send_and_expect(bytes([CMD_READ_ENCODER]), "move_sync")
     elif status == 0:
         _pending_cmd = None
         _motion_ctx = None
+        _move_meta_done()
         state = "stalled"
         last_error = "move_stalled"
         move_in_flight_delta = 0
@@ -779,6 +932,7 @@ def _on_move_reply(status):
         _send(bytes([CMD_RELEASE_PROT]))
         _send(bytes([CMD_ENABLE, 0x00]))
         print("Valve: move stalled (status=0) -- motor disabled")
+        _send_and_expect(bytes([CMD_READ_ENCODER]), "stall_sync")
 
 
 def _cmd_started():
@@ -788,15 +942,19 @@ def _cmd_started():
 
 
 def _on_prot_read(status):
-    """0x3E backstop read fired by the homing timeout: 1 = latched stall = contact."""
+    """0x3E reply: the homing-timeout backstop check, or the stream/breath stall watch."""
     global _pending_cmd
-    _pending_cmd = None
-    if state == "homing" and status == 1:
-        _home_on_contact()
-    elif state == "homing":
-        print("Valve: home timeout, no stall latched -- aborting")
-        _send(bytes([CMD_ENABLE, 0x00]))
-        _set_error("home_timeout")
+    if _pending_cmd == "home_prot_check":
+        _pending_cmd = None
+        if state == "homing" and status == 1:
+            _home_on_contact()
+        elif state == "homing":
+            print("Valve: home timeout, no stall latched -- aborting")
+            _send(bytes([CMD_ENABLE, 0x00]))
+            _set_error("home_timeout")
+        return
+    if status == 1 and state in ("streaming", "breathing"):
+        _follow_stalled()
 
 
 def _set_error(err):
@@ -829,9 +987,7 @@ def _check_timeout():
         return
     label = _pending_cmd
     if label == "move_done":
-        # the homing stall-seek runs much longer than a normal move; its primary
-        # completion is the status=0 stall reply, so give it the full home budget.
-        timeout = HOME_TIMEOUT_MS if _motion_ctx == "home_drive" else MOVE_TIMEOUT_MS
+        timeout = _move_timeout_ms          # rpm-aware, set when the move was staged
     else:
         timeout = CMD_TIMEOUT_MS
     if _ticks_diff(supervisor.ticks_ms(), _cmd_sent_ms) < timeout:
@@ -846,11 +1002,21 @@ def _check_timeout():
         return
     if label == "move_sync":
         _pending_cmd = None
+        _emit_moved(None, 0)
         _finalize_move_to(motor_pos_steps + move_in_flight_delta)
         return
     if label == "nudge_sync":
         _pending_cmd = None
+        _emit_moved(None, 0)
         _finalize_nudge_to(motor_pos_steps + _nudge_delta)
+        return
+    if label == "stall_sync":
+        _pending_cmd = None
+        _emit_moved(None, 1)
+        return
+    if label == "stream_end_read":
+        _pending_cmd = None
+        _on_stream_end_read(None)
         return
     if label in ("home_seed", "home_contact_read", "home_backoff_read", "home_zero_seed"):
         print(f"Valve: re-reading encoder after {label} timeout")
@@ -860,11 +1026,6 @@ def _check_timeout():
         _pending_cmd = None
         _send_and_expect(bytes([CMD_READ_ENCODER]), "home_seed")
         return
-    if label == "move_done" and _motion_ctx == "home_drive":
-        # The seek may have stalled and latched silently (no status=0). Check 0x3E.
-        _pending_cmd = None
-        _send_and_expect(bytes([CMD_READ_SHAFT_PROT]), "home_prot_check")
-        return
     # generic: cut motion + de-energize
     _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))
     _send(bytes([CMD_STOP]))
@@ -872,6 +1033,7 @@ def _check_timeout():
     _breath_enabled = False
     _breath_last_rpm = None
     _motion_ctx = None
+    _emit_moved(None, 1)
     last_error = f"timeout_{label}"
     _pending_cmd = None
     if state != "stalled":
@@ -889,7 +1051,11 @@ def handle_mqtt(topic, payload):
             return
         pending_target = max(0.0, min(1.0, val))
     elif topic == TOPIC_VALVE_HOME:
-        cmd_home()
+        hp = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload or b"")
+        if hp.strip() == b"here":
+            cmd_home_here()
+        else:
+            cmd_home()
     elif topic == TOPIC_VALVE_STOP:
         cmd_stop()
     elif topic == TOPIC_VALVE_CALIBRATE:
@@ -909,6 +1075,10 @@ def handle_mqtt(topic, payload):
         _set_current(ma)
     elif topic == TOPIC_VALVE_NUDGE:
         _cmd_nudge(_parse_int(payload))
+    elif topic == TOPIC_VALVE_LIMITS:
+        _handle_limits_payload(payload)
+    elif topic == TOPIC_VALVE_TRACE:
+        _handle_trace_payload(payload)
 
 
 def _set_current(ma):
@@ -952,6 +1122,68 @@ def _handle_breath_payload(payload):
         if was and not _breath_enabled and state == "breathing":
             _exit_breath_to_idle()
     print(f"Valve: breath A={_breath_amplitude:.3f} T={_breath_period_ms}ms skew={_breath_skew:.2f} en={_breath_enabled}")
+
+
+def _handle_limits_payload(payload):
+    """Runtime motion limits (in-memory). Empty payload = query. Homing is not settable."""
+    global move_rpm, move_acc, stream_max_rpm, breath_max_rpm
+    if isinstance(payload, (bytes, bytearray)):
+        try:
+            payload = payload.decode("utf-8")
+        except UnicodeError:
+            return
+    payload = (payload or "").strip()
+    if payload:
+        try:
+            data = json.loads(payload)
+        except (ValueError, TypeError):
+            data = None
+        if not isinstance(data, dict):
+            print(f"Valve: bad limits payload: {payload}")
+            data = {}            # still ack below -- the tool waits on limits_ack
+        if "move_rpm" in data:
+            try:
+                move_rpm = max(1, min(3000, int(data["move_rpm"])))
+            except (ValueError, TypeError):
+                pass
+        if "move_acc" in data:
+            try:
+                move_acc = max(0, min(255, int(data["move_acc"])))
+            except (ValueError, TypeError):
+                pass
+        if "stream_max_rpm" in data:
+            try:
+                stream_max_rpm = max(1, min(3000, int(data["stream_max_rpm"])))
+            except (ValueError, TypeError):
+                pass
+        if "breath_max_rpm" in data:
+            try:
+                breath_max_rpm = max(1, min(3000, int(data["breath_max_rpm"])))
+            except (ValueError, TypeError):
+                pass
+        print(f"Valve: limits move={move_rpm}rpm acc={move_acc} stream<={stream_max_rpm} breath<={breath_max_rpm}")
+    # ack on a distinct topic -- echoing the inbound one would loop through the bridge
+    _queue_out((TOPIC_VALVE_LIMITS_ACK, json.dumps({
+        "move_rpm": move_rpm, "move_acc": move_acc,
+        "stream_max_rpm": stream_max_rpm, "breath_max_rpm": breath_max_rpm})))
+
+
+def _handle_trace_payload(payload):
+    global _trace_interval_ms, _trace_last_ms, _trace_inflight_ms
+    iv = _parse_int(payload)
+    if iv is None:
+        print(f"Valve: bad trace payload: {payload}")
+        return
+    _trace_interval_ms = 0 if iv <= 0 else max(20, min(1000, iv))
+    _trace_last_ms = 0
+    _trace_inflight_ms = 0
+    print(f"Valve: trace {_trace_interval_ms}ms")
+
+
+def _on_trace_read(raw):
+    # unclamped: divergence outside [0, open_steps] is signal
+    _queue_out((TOPIC_VALVE_TRACEPT,
+                "%d %d" % (supervisor.ticks_ms(), _encoder_pos_steps(raw))))
 
 
 def _parse_float(payload):
@@ -998,6 +1230,7 @@ def _cmd_nudge(deg):
     """Debug: raw relative move of `deg` degrees, no soft-limit clamp.
     +deg = toward closed, -deg = toward open."""
     global state, _nudge_delta, _motion_ctx, _pending_move, _move_settle_at
+    global _move_timeout_ms, _move_meta
     if deg is None:
         print("Valve: bad nudge payload")
         return
@@ -1009,11 +1242,15 @@ def _cmd_nudge(deg):
     if steps == 0:
         return
     direction = DIR_TOWARD_CLOSED if deg > 0 else DIR_TOWARD_OPEN
-    _nudge_delta = steps if deg > 0 else -steps
+    _nudge_delta = -steps if deg > 0 else steps   # open-positive, like every other delta
     state = "nudging"
     _motion_ctx = "nudge"
+    _cancel_stream_end_read()
     print(f"Valve: nudge {deg} deg ({steps} steps)")
-    _pending_move = _speed_body(CMD_MOVE_POS, direction, MOVE_RPM, MOVE_ACC, steps)
+    _move_meta = {"cmd": _nudge_delta, "pre": motor_pos_steps, "rpm": move_rpm,
+                  "acc": move_acc, "fired": 0, "ms": 0}   # pre may be stale unhomed
+    _move_timeout_ms = _calc_move_timeout(steps, move_rpm, move_acc)
+    _pending_move = _speed_body(CMD_MOVE_POS, direction, move_rpm, move_acc, steps)
     _send(bytes([CMD_ENABLE, 0x01]))
     _move_settle_at = (supervisor.ticks_ms() + MOVE_SETTLE_MS) & 0x3FFFFFFF
 
@@ -1162,7 +1399,7 @@ def _breath_rpm_signed(now):
     rpm = int(round(_steps_to_rpm(velocity_sps)))
     if rpm == 0:
         return None
-    rpm = min(rpm, BREATH_MAX_RPM)
+    rpm = min(rpm, breath_max_rpm)
     toward_open = velocity_sps > 0
     if toward_open and motor_pos_steps >= open_steps:
         return None
@@ -1309,18 +1546,63 @@ def _stream_add(payload):
 
 def _stream_end():
     global state, _stream_max_idx, _stream_played, _breath_last_rpm
-    _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, BREATH_ACC]))   # hold position
+    # acc=0 snap stop: a ramped hold (acc=8 = ~7 s decel from 600 rpm) would smear
+    # the streamend ground-truth read
+    _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))
     _breath_last_rpm = None
     _stream_max_idx = -1
     _stream_played = -1
     if state == "streaming":
+        _schedule_stream_end_read()
         state = "idle"
     print("Valve: stream stop")
 
 
+def _follow_stalled():
+    """Lockrotor latched mid-stream/breath (0xF6 replies are fire-and-forget, so the motor
+    stopped silently while dead-reckoning kept advancing). Cut everything, measure the drift."""
+    global state, last_error, _breath_enabled, _breath_last_rpm, _stream_max_idx, _stream_played
+    was = state
+    _send(bytes([CMD_STOP]))
+    _send(bytes([CMD_RELEASE_PROT]))
+    _send(bytes([CMD_ENABLE, 0x00]))
+    _breath_enabled = False
+    _breath_last_rpm = None
+    state = "stalled"
+    last_error = "stream_stalled" if was == "streaming" else "breath_stalled"
+    if was == "streaming":
+        _stream_max_idx = -1
+        _stream_played = -1
+        _schedule_stream_end_read()
+    print("Valve: %s -- lockrotor latched, disabled" % last_error)
+
+
+def _schedule_stream_end_read():
+    global _stream_cmd_frac, _stream_end_read_at
+    _stream_cmd_frac = _pos_fraction()
+    _stream_end_read_at = ((supervisor.ticks_ms() + STREAM_END_SETTLE_MS) & 0x3FFFFFFF) or 1
+
+
+def _on_stream_end_read(raw):
+    """Encoder ground truth after an open-loop stream: report divergence, re-ground."""
+    global motor_pos_steps, target_pos_steps
+    if raw is None:
+        _queue_out((TOPIC_VALVE_STREAMEND, json.dumps(
+            {"cmd": round(_stream_cmd_frac, 3), "enc": None, "err_steps": None})))
+        return
+    pos = _encoder_pos_steps(raw)
+    cmd_steps = int(round(_stream_cmd_frac * open_steps))
+    _queue_out((TOPIC_VALVE_STREAMEND, json.dumps({
+        "cmd": round(_stream_cmd_frac, 3),
+        "enc": round(pos / open_steps, 3) if open_steps > 0 else 0.0,
+        "err_steps": pos - cmd_steps})))
+    motor_pos_steps = max(0, min(open_steps, pos))
+    target_pos_steps = motor_pos_steps
+
+
 def _stream_pong(payload):
     token = ((payload[0] << 8) | payload[1]) if len(payload) >= 2 else 0
-    _stream_out.append((TOPIC_VALVE_PONG, "%d %d" % (token, supervisor.ticks_ms())))
+    _queue_out((TOPIC_VALVE_PONG, "%d %d" % (token, supervisor.ticks_ms())))
 
 
 def _service_stream(now):
@@ -1337,7 +1619,7 @@ def _service_stream(now):
         return
     if idx > _stream_max_idx:                       # underrun / end -> hold
         if _breath_last_rpm not in (None, 0):
-            _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, BREATH_ACC]))
+            _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))  # snap: acc-8 coasts ~revs
             _breath_last_rpm = None
         return
     oldest = _stream_max_idx - STREAM_CAP + 1        # don't reach past the ring
@@ -1351,21 +1633,28 @@ def _service_stream(now):
     dt_s = (idx - _stream_played) / _stream_rate if _stream_played >= 0 else 1.0 / _stream_rate
     delta = target_step - motor_pos_steps
     rpm = int(round(_steps_to_rpm(delta / dt_s))) if dt_s > 0 else 0
-    if rpm > STREAM_MAX_RPM:
-        rpm = STREAM_MAX_RPM
+    clamped = rpm > stream_max_rpm
+    if clamped:
+        rpm = stream_max_rpm
     if rpm == 0:
         if _breath_last_rpm not in (None, 0):
-            _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, BREATH_ACC]))
+            _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))  # snap: acc-8 coasts ~revs
             _breath_last_rpm = None
     else:
         direction = DIR_TOWARD_OPEN if delta > 0 else DIR_TOWARD_CLOSED
         _send(_speed_body(CMD_CONSTANT_SPEED, direction, rpm, 0))   # acc=0: snap
         _breath_last_rpm = rpm if delta > 0 else -rpm
-    motor_pos_steps = target_step                   # open-loop: commanded IS position
+    if clamped:
+        # bookkeep only what the clamped speed covers this tick, so later samples
+        # keep commanding catch-up; teleporting here = the 2026-06-11 seat ram
+        adv = int(rpm * STEPS_PER_REV * dt_s / 60.0)
+        motor_pos_steps += adv if delta > 0 else -adv
+    else:
+        motor_pos_steps = target_step               # open-loop: commanded IS position
     _stream_played = idx
     if _ticks_diff(now, _stream_last_telem_ms) >= STREAM_TELEM_MS:
         _stream_last_telem_ms = now
-        _stream_out.append((TOPIC_VALVE_STREAMPOS, "%d %.3f" % (cur_play, _pos_fraction())))
+        _queue_out((TOPIC_VALVE_STREAMPOS, "%d %.3f" % (cur_play, _pos_fraction())))
 
 
 # ── RGB status LED ────────────────────────────────────────────────────────────
@@ -1414,6 +1703,7 @@ def _update_led(now):
 def service():
     global pending_target, last_target_ms, state, last_error
     global target_pos_steps, _pending_move, _pending_sync_target, _pending_jump_target
+    global _trace_last_ms, _trace_inflight_ms, _prot_poll_last_ms, _stream_end_read_at
 
     now = supervisor.ticks_ms()
     _poll_can()
@@ -1426,6 +1716,31 @@ def service():
         mv = _pending_move
         _pending_move = None
         _send_and_expect(mv, "move_start")
+        if _move_meta is not None:
+            _move_meta["fired"] = now
+
+    # In-flight encoder trace: bare 0x31 polls (replies never clobber a pending wait).
+    if _trace_interval_ms:
+        if _trace_inflight_ms and _ticks_diff(now, _trace_inflight_ms) > TRACE_STALE_MS:
+            _trace_inflight_ms = 0                      # reply lost; don't wedge polling
+        if (state in ("moving", "streaming") and not _trace_inflight_ms
+                and _pending_cmd not in _ENC_LABELS
+                and _ticks_diff(now, _trace_last_ms) >= _trace_interval_ms):
+            _trace_last_ms = now
+            _trace_inflight_ms = now or 1
+            _send(bytes([CMD_READ_ENCODER]))
+
+    # Stall watch for the silent 0xF6 follow modes.
+    if (state in ("streaming", "breathing")
+            and _ticks_diff(now, _prot_poll_last_ms) >= PROT_POLL_MS):
+        _prot_poll_last_ms = now
+        _send(bytes([CMD_READ_SHAFT_PROT]))
+
+    # Post-stream ground-truth read once the snap-stop settled.
+    if (_stream_end_read_at and _pending_cmd is None
+            and _ticks_diff(now, _stream_end_read_at) < 0x1FFFFFFF):
+        _stream_end_read_at = 0
+        _send_and_expect(bytes([CMD_READ_ENCODER]), "stream_end_read")
 
     if state == "homing":
         # final backstop only -- the seek's own move_done timeout checks 0x3E first.

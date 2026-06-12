@@ -28,7 +28,8 @@ Modbus manual — those bytes differ.
 > the seat detector (`0x3E`) + jam net; `OPEN_STEPS=11200` (full travel ~3.76 rev). Homing is
 > ENABLED and GENTLE (`HOMING_DISABLED=False`) — see *Homing* below. Bus bring-up needs a 120 Ω
 > terminator or the controller can't even transmit (TXREQ stuck, TEC frozen at 0). RPM/accel
-> envelope is still untuned (the operator pushes those live).
+> envelope is still untuned — characterize it with `utils/bush-valve-sweep` via the runtime
+> `limits` topic (see the topic table below).
 
 ## CAN transport (CURRENT)
 
@@ -91,6 +92,50 @@ serial ports sharing one USB serial number; `bush_valve_serial` auto-picks the *
 higher interface), overridable with `BUSH_VALVE_SERIAL_PORT` (point it at a stable
 `/dev/serial/by-id/...-if02` on the odroid). Binary `0xF5` stream frames pass straight through;
 both sides keep I/O non-blocking so `valve.service()` deadlines hold.
+
+### Line-protocol / MQTT topics
+
+`valve.handle_mqtt` consumes, `valve.get_publish_messages()` emits — the same
+`bush/fire/valve/*` topics on every host link. Inbound:
+
+| Topic (`…/`) | Payload | Action |
+|---|---|---|
+| `target` | float `0.0–1.0` | encoder-grounded position move at the `limits` rpm/acc |
+| `home` | empty, or `here` | empty = gentle seat homing (blocking). `here` = bench zero: declare the CURRENT shaft = 0 and homed, no seat seek (worn valve / bare motor) |
+| `stop` | — | emergency stop. From `stalled` it returns to `idle`; **mid-move it un-homes** |
+| `calibrate` | int steps | set `open_steps` (in-memory) |
+| `breath` | JSON `{amplitude, period_ms, skew, enabled}` | idle oscillator config (on by default) |
+| `maxtorque` | int mA `0–3000` | run current via `0x83` (current = torque on the 42D) |
+| `nudge` | int degrees `±360` | raw relative move, works unhomed (+ = toward closed) |
+| `limits` | JSON `{move_rpm 1–3000, move_acc 0–255, stream_max_rpm, breath_max_rpm}`; empty = query | runtime motion limits (in-memory). Homing speeds/currents are NOT settable. Always acks on `limits_ack` |
+| `trace` | int ms (`0` = off; clamped 20–1000) | in-flight `0x31` encoder trace while moving/streaming |
+| `stream` (MQTT side only) | raw `0xF5` binary frames | bush-cue waveform playback (`bush_cue/wire.py`) |
+
+Outbound:
+
+| Topic | Payload | When |
+|---|---|---|
+| `status` | JSON `{state,pos,target,homed,stalled,last_error}` | 1 s idle / 200 ms while moving or homing |
+| `actual` | float position fraction | 250 ms |
+| `moved` | JSON `{ms,cmd,enc,rpm,acc,stall}` — fire→terminal-reply duration, commanded vs encoder-measured signed step deltas (`enc` null if the post-read timed out), `stall` 0/1 | every move/nudge end, incl. stalls + timeouts |
+| `tracept` | `<ticks_ms> <pos_steps>` (unclamped) | at the `trace` interval |
+| `streamend` | JSON `{cmd,enc,err_steps}` — dead-reckoned vs encoder fraction | after a stream stops or stalls |
+| `limits_ack` | JSON echo of the current limits | per `limits` message |
+| `pong` | `<token> <ticks_ms>` | per stream PING |
+| `streampos` | `<play_ms> <pos_frac>` | 200 ms while streaming |
+
+Stall handling: `0xFD` moves get a terminal reply (status 0 → state `stalled`, latch released,
+motor disabled, `moved {"stall":1}`, position re-grounded from the encoder). The `0xF6` follow
+modes (stream/breath) get **no** terminal reply, so the firmware polls `0x3E` every 400 ms
+while streaming/breathing and fails loudly (`stream_stalled`/`breath_stalled`; stream stalls
+also emit a `streamend` divergence report) instead of silently dead-reckoning past a stopped
+motor. Stream follow clamps per-sample slew to `stream_max_rpm` and dead-reckons only the
+distance the clamped speed covers, so later samples keep commanding catch-up until the level is
+truly reached; stream holds/underruns stop at acc 0, never BREATH_ACC (an acc-8 "stop" from
+600 rpm coasts ~revolutions — the 2026-06-11 seat ram). Streams never self-correct an initial
+offset: position the valve at the first sample before `0xF5` START. Move timeouts are
+rpm-aware (computed per move from distance + accel ramp), so slow `limits` settings aren't
+falsely killed at the old fixed 8 s.
 
 ## RS485 / UART framing (HISTORY — superseded by CAN above)
 

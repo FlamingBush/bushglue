@@ -1,0 +1,850 @@
+#!/usr/bin/env python3
+"""
+bush-valve-sweep -- bench characterization for the valve node over its USB data CDC.
+
+Talks straight to the board (no MQTT). Stop the bush-valve-serial bridge first;
+it holds the port.
+
+Usage:
+    bush-valve-sweep setup                           Jog + declare a bench-safe window
+    bush-valve-sweep grid --rpm 40,120 --acc 2,16    move_rpm x move_acc (x mA) sweep
+    bush-valve-sweep stream --wave sine              Stream a waveform, measure divergence
+
+Requires pyserial (only when connecting; --help works without it).
+"""
+import os, sys
+_venv = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv"))
+if os.path.isdir(_venv) and sys.prefix != _venv:
+    os.execv(os.path.join(_venv, "bin", "python"), [os.path.join(_venv, "bin", "python")] + sys.argv)
+
+import argparse
+import csv
+import json
+import math
+import queue
+import re
+import threading
+import time
+
+BAUD = 115200
+CP_VIDS = {0x2E8A, 0x239A}
+STEPS_PER_REV = 3200
+TICKS_MASK = 0x3FFFFFFF
+LOOKAHEAD_S = 1.2
+BATCH_S = 0.4
+BASELINE = {"move_rpm": 40, "move_acc": 2}
+LIMIT_KEYS = ("move_rpm", "move_acc", "stream_max_rpm", "breath_max_rpm")
+CURRENT_SOFT_MAX = 1500
+CURRENT_HARD_MAX = 3000
+
+_T = "bush/fire/valve/"
+T_TARGET, T_STOP = _T + "target", _T + "stop"
+T_HOME = _T + "home"          # ONLY ever sent with payload "here" -- bare home = real seat homing
+T_CALIBRATE, T_BREATH, T_MAXTORQUE = _T + "calibrate", _T + "breath", _T + "maxtorque"
+T_NUDGE, T_LIMITS, T_TRACE = _T + "nudge", _T + "limits", _T + "trace"
+T_STATUS, T_LIMITS_ACK, T_MOVED = _T + "status", _T + "limits_ack", _T + "moved"
+T_TRACEPT, T_STREAMEND, T_PONG = _T + "tracept", _T + "streamend", _T + "pong"
+
+
+class Abort(Exception):
+    pass
+
+
+# ── 0xF5 binary stream frames (same wire format as bush_cue/wire.py) ─────────
+SENTINEL = 0xF5
+
+
+def _frame(ftype, payload=b""):
+    body = bytes([SENTINEL, ftype]) + len(payload).to_bytes(2, "big") + payload
+    return body + bytes([sum(body) & 0xFF])
+
+
+def f_start(rate_hz, base_play_ms):
+    return _frame(0x01, rate_hz.to_bytes(2, "big") + base_play_ms.to_bytes(4, "big"))
+
+
+def f_samples(index, pos_u8):
+    p = bytes(pos_u8)
+    return _frame(0x02, index.to_bytes(4, "big") + len(p).to_bytes(2, "big") + p)
+
+
+def f_stop():
+    return _frame(0x03)
+
+
+def f_ping(token):
+    return _frame(0x05, (token & 0xFFFF).to_bytes(2, "big"))
+
+
+def tdiff(a, b):
+    # signed difference on the firmware's 30-bit ticks_ms
+    return ((a - b + (1 << 29)) & TICKS_MASK) - (1 << 29)
+
+
+# ── Transport ────────────────────────────────────────────────────────────────
+
+def _natural_tail(dev):
+    m = re.search(r"(\d+)$", dev)
+    return int(m.group(1)) if m else -1
+
+
+def find_port():
+    override = os.environ.get("BUSH_VALVE_SERIAL_PORT")
+    if override:
+        return override
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        sys.exit("pyserial required to connect: pip install pyserial")
+    want = os.environ.get("BUSH_VALVE_SERIAL_SERIAL")
+    cands = [p for p in list_ports.comports() if p.vid in CP_VIDS]
+    if want:
+        cands = [p for p in cands if p.serial_number == want]
+    if not cands:
+        sys.exit("no CircuitPython CDC found -- plug the node in, or pass --port")
+    by_serial = {}
+    for p in cands:
+        by_serial.setdefault(p.serial_number, []).append(p)
+    group = None
+    for ps in by_serial.values():
+        if len(ps) >= 2:
+            group = ps
+            break
+    if group is None:
+        group = next(iter(by_serial.values()))
+    group = sorted(group, key=lambda p: _natural_tail(p.device))
+    if len(group) < 2:
+        print(f"warning: single CDC port on {group[0].serial_number} -- boot.py data CDC missing?")
+    return group[-1].device   # data CDC = higher interface
+
+
+class Link:
+    QUEUED = (T_MOVED, T_LIMITS_ACK, T_STREAMEND)
+
+    def __init__(self, port, verbose=False):
+        try:
+            import serial   # lazy: --help must work without pyserial
+        except ImportError:
+            sys.exit("pyserial required to connect: pip install pyserial")
+        try:
+            self.ser = serial.Serial(port, BAUD, timeout=0.05, write_timeout=2.0)
+        except (OSError, serial.SerialException) as e:
+            sys.exit(f"cannot open {port}: {e}\n"
+                     "if the bush-valve-serial bridge is running it holds the port -- stop it first")
+        self.ser.reset_input_buffer()
+        self.verbose = verbose
+        self.q = {t: queue.Queue() for t in self.QUEUED}
+        self.status = None
+        self.state = None
+        self.status_n = 0
+        self.pongs = {}        # token -> (host_recv_s, fw_ticks_ms)
+        self.tracepts = []     # (fw_ticks_ms, pos_steps)
+        self.breath_armed = False
+        self.closed = False
+        self.dead = False
+        threading.Thread(target=self._reader, daemon=True).start()
+        print(f"connected: {port}")
+
+    def close(self):
+        self.closed = True
+        try:
+            self.ser.close()
+        except Exception:
+            pass
+
+    def send_line(self, topic, payload=""):
+        line = topic if payload == "" else f"{topic} {payload}"
+        if self.verbose:
+            print(f"-> {line}")
+        self.ser.write((line + "\n").encode())
+
+    def send_frame(self, frame):
+        if self.verbose:
+            print(f"-> [frame 0x{frame[1]:02X} {len(frame)}B]")
+        self.ser.write(frame)
+
+    def _reader(self):
+        buf = bytearray()
+        while not self.closed:
+            try:
+                n = self.ser.in_waiting
+                data = self.ser.read(n or 1)
+            except Exception:
+                self.dead = True
+                return
+            if not data:
+                continue
+            buf.extend(data)
+            while True:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    break
+                line = bytes(buf[:nl]).strip()
+                buf[:] = buf[nl + 1:]
+                if line:
+                    self._route(line.decode(errors="replace"))
+
+    def _route(self, line):
+        topic, _, payload = line.partition(" ")
+        if self.verbose:
+            print(f"<- {line}")
+        if topic == T_STATUS:
+            try:
+                self.status = json.loads(payload)
+                self.state = self.status.get("state")
+                self.status_n += 1
+            except ValueError:
+                pass
+        elif topic == T_TRACEPT:
+            try:
+                t, pos = payload.split()
+                self.tracepts.append((int(t), int(pos)))
+            except ValueError:
+                pass
+        elif topic == T_PONG:
+            try:
+                tok, ticks = payload.split()
+                self.pongs[int(tok)] = (time.monotonic(), int(ticks))
+            except ValueError:
+                pass
+        elif topic in self.q:
+            self.q[topic].put(payload)
+
+    def _guard(self):
+        if self.dead:
+            raise Abort("serial link lost")
+        if self.breath_armed and self.state == "breathing":
+            raise Abort("state became 'breathing' -- breath disable failed")
+
+    def poll(self, topic, timeout_s):
+        deadline = time.monotonic() + timeout_s
+        while True:
+            self._guard()
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            try:
+                return self.q[topic].get(timeout=min(left, 0.1))
+            except queue.Empty:
+                pass
+
+    def drain(self, topic):
+        try:
+            while True:
+                self.q[topic].get_nowait()
+        except queue.Empty:
+            pass
+
+    def wait_status(self, timeout_s, fresh=False):
+        n0 = self.status_n
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            self._guard()
+            if self.status is not None and (not fresh or self.status_n > n0):
+                return self.status
+            time.sleep(0.02)
+        return None
+
+    def wait_state(self, states, timeout_s):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            self._guard()
+            if self.state in states:
+                return True
+            time.sleep(0.05)
+        return False
+
+
+class Cleanup:
+    def __init__(self, link):
+        self.link = link
+        self.saved_limits = None
+        self.restore_ma = None
+        self.streaming = False
+        self.trace_on = False
+        self.stop_ok = False   # set on interrupt/abort; stop only if stalled/idle
+
+    def run(self):
+        link = self.link
+        link.breath_armed = False
+        if self.streaming:
+            try:
+                link.send_frame(f_stop())
+            except Exception:
+                pass
+        if self.stop_ok:
+            # the snapshot can lag a just-issued target; stop mid-move un-homes the rig,
+            # so decide off a status line newer than this cleanup
+            try:
+                st = link.wait_status(1.5, fresh=True) or {}
+            except Exception:
+                st = {}
+            if st.get("state") in ("stalled", "idle"):
+                try:
+                    link.send_line(T_STOP)
+                except Exception:
+                    pass
+        if self.restore_ma is not None:
+            try:
+                link.send_line(T_MAXTORQUE, str(self.restore_ma))
+                print(f"restored maxtorque {self.restore_ma} mA")
+            except Exception:
+                pass
+        if self.saved_limits:
+            try:
+                link.send_line(T_LIMITS, json.dumps(self.saved_limits))
+                link.poll(T_LIMITS_ACK, 1.0)
+                print(f"restored limits: {self.saved_limits}")
+            except Exception:
+                pass
+        if self.trace_on:
+            try:
+                link.send_line(T_TRACE, "0")
+            except Exception:
+                pass
+        time.sleep(0.1)
+        link.close()
+
+
+# ── Shared command helpers ───────────────────────────────────────────────────
+
+def disable_breath(link):
+    link.send_line(T_BREATH, '{"enabled": false}')
+    deadline = time.monotonic() + 5.0
+    while link.state == "breathing":
+        if time.monotonic() > deadline:
+            sys.exit("still 'breathing' 5s after disable")
+        time.sleep(0.1)
+    link.breath_armed = True
+
+
+def preamble(link, trace_ms):
+    st = link.wait_status(3.0)
+    if st is None:
+        sys.exit("no status within 3s -- wrong port, or the bush-valve-serial bridge "
+                 "holds it (stop the bridge)")
+    if not st.get("homed"):
+        sys.exit("node not homed -- run `bush-valve-sweep setup` first")
+    disable_breath(link)
+    link.drain(T_LIMITS_ACK)
+    link.send_line(T_LIMITS)            # empty payload = query
+    ack = link.poll(T_LIMITS_ACK, 2.0)
+    if ack is None:
+        sys.exit("no limits_ack to query -- firmware without the limits topic?")
+    saved = {k: v for k, v in json.loads(ack).items() if k in LIMIT_KEYS}
+    print(f"limits saved: {saved}")
+    if trace_ms:
+        link.send_line(T_TRACE, str(int(trace_ms)))
+    return saved
+
+
+def set_limits(link, limits):
+    link.drain(T_LIMITS_ACK)
+    link.send_line(T_LIMITS, json.dumps(limits))
+    if link.poll(T_LIMITS_ACK, 2.0) is None:
+        raise Abort(f"no limits_ack for {limits}")
+
+
+def await_moved(link, timeout_s):
+    t0 = time.monotonic()
+    deadline = t0 + timeout_s
+    hard = t0 + 2 * timeout_s
+    while True:
+        m = link.poll(T_MOVED, 0.2)
+        if m is not None:
+            try:
+                return json.loads(m)
+            except ValueError:
+                return None
+        now = time.monotonic()
+        if now >= deadline:
+            if link.state == "moving" and now < hard:
+                deadline = now + 1.0    # still moving: keep waiting in 1s steps up to 2x
+                continue
+            return None
+
+
+def issue_move(link, frac, timeout_s):
+    link.drain(T_MOVED)
+    link.send_line(T_TARGET, f"{frac:.4f}")
+    return await_moved(link, timeout_s)
+
+
+def move_timeout(rpm, acc, pulses):
+    """Mirror valve._calc_move_timeout (incl. its 8 s floor / 5 min cap) + 3 s grace,
+    so the tool never gives up before the firmware's own timeout `moved` can arrive."""
+    exp = pulses * 60000.0 / (rpm * STEPS_PER_REV)
+    if acc > 0:
+        exp += rpm * (256 - acc) * 0.05
+    fw_ms = min(max(exp * 1.5 + 2000.0, 8000.0), 300000.0)
+    return (fw_ms + 3000.0) / 1000.0
+
+
+def print_table(headers, rows):
+    rows = [["-" if c is None else str(c) for c in r] for r in rows]
+    widths = [max([len(h)] + [len(r[i]) for r in rows]) for i, h in enumerate(headers)]
+
+    def line(cells):
+        print("| " + " | ".join(c.rjust(w) for c, w in zip(cells, widths)) + " |")
+
+    line(headers)
+    print("|" + "|".join("-" * (w + 2) for w in widths) + "|")
+    for r in rows:
+        line(r)
+
+
+# ── setup ────────────────────────────────────────────────────────────────────
+
+SETUP_DOC = """\
+Bench-window setup for a valve that cannot be seat-homed.
+
+Jog the shaft to mid-travel, well clear of BOTH the closed seat and the open
+hard stop, then `h` -- declares the current shaft = position 0 ("home here")
+and calibrates --span steps as full scale, so target fractions 0..1 map onto
+that safe window.
+
+REPL commands:
+  o N   nudge N degrees toward open (1-360)
+  c N   nudge N degrees toward closed
+  s     print latest status
+  h     home here + calibrate --span, confirm via status
+  q     quit
+"""
+
+
+def cmd_setup(args, link, cl):
+    st = link.wait_status(3.0)
+    if st is None:
+        sys.exit("no status within 3s -- wrong port, or the bush-valve-serial bridge "
+                 "holds it (stop the bridge)")
+    disable_breath(link)
+    print("jog to mid-travel (clear of BOTH stops), then `h`.  o N | c N | s | h | q")
+    print(f"status: {json.dumps(st)}")
+    while True:
+        try:
+            line = input("setup> ").strip()
+        except EOFError:
+            break
+        if not line:
+            continue
+        c, _, rest = line.partition(" ")
+        if c == "q":
+            break
+        elif c == "s":
+            print(json.dumps(link.status) if link.status else "no status yet")
+        elif c in ("o", "c"):
+            try:
+                deg = int(rest)
+            except ValueError:
+                print("usage: o|c <degrees 1-360>")
+                continue
+            deg = max(1, min(360, deg))
+            link.drain(T_MOVED)
+            link.send_line(T_NUDGE, str(deg if c == "c" else -deg))   # + closed, - open
+            m = await_moved(link, 15.0)
+            print(f"moved: {m}" if m else "no moved reply in 15s")
+        elif c == "h":
+            link.send_line(T_HOME, "here")
+            time.sleep(0.3)
+            link.send_line(T_CALIBRATE, str(args.span))
+            st = link.wait_status(3.0, fresh=True)
+            if st and st.get("homed") and abs(st.get("pos") or 0.0) < 0.01:
+                print(f"homed here: pos 0, span {args.span} steps")
+            else:
+                print(f"NOT confirmed -- status: {st}")
+        else:
+            print("commands: o N | c N | s | h | q")
+
+
+# ── grid ─────────────────────────────────────────────────────────────────────
+
+GRID_DOC = """\
+Move-quality sweep over move_rpm x move_acc (x maxtorque mA). Per cell:
+target --b then --a (x --repeats), recording the firmware's moved records.
+Stalls are recorded, then recovered at gentle baseline limits (rpm 40, acc 2).
+Markdown table to stdout; --csv for the raw dump.
+"""
+
+
+def make_row(rpm, acc, ma, dirn, m):
+    if m is None:
+        return {"rpm": rpm, "acc": acc, "ma": ma, "dir": dirn, "cmd": None, "enc": None,
+                "err": None, "ms": None, "eff": None, "stall": 1}
+    cmd, enc, ms = m.get("cmd"), m.get("enc"), m.get("ms")
+    err = enc - cmd if (enc is not None and cmd is not None) else None
+    basis = enc if enc is not None else cmd
+    eff = abs(basis) / STEPS_PER_REV * 60000.0 / ms if (basis and ms) else None
+    return {"rpm": m.get("rpm", rpm), "acc": m.get("acc", acc), "ma": ma, "dir": dirn,
+            "cmd": cmd, "enc": enc, "err": err, "ms": ms, "eff": eff,
+            "stall": int(m.get("stall", 0))}
+
+
+def recover(link, frac, cell, base_tmo, ma=None, safe_ma=1000):
+    if not link.wait_state(("stalled", "idle", "error"), 10.0):
+        raise Abort(f"post-stall state stuck at {link.state}")
+    if link.state == "error":
+        raise Abort(f"node error after stall: {(link.status or {}).get('last_error')}")
+    if link.state == "stalled":
+        link.send_line(T_STOP)          # safe: stalled
+    if not link.wait_state(("idle",), 10.0):
+        raise Abort("no idle after stop")
+    if ma is not None:                  # a low test current likely caused the stall --
+        link.send_line(T_MAXTORQUE, str(safe_ma))   # recover at known-good current
+        time.sleep(0.1)
+    set_limits(link, BASELINE)
+    m = issue_move(link, frac, base_tmo)    # unrecorded recovery move
+    if m is None or m.get("stall"):
+        raise Abort("recovery move failed")
+    if ma is not None:
+        link.send_line(T_MAXTORQUE, str(ma))
+        time.sleep(0.1)
+    set_limits(link, cell)
+
+
+def cmd_grid(args, link, cl):
+    cl.saved_limits = preamble(link, args.trace)
+    cl.trace_on = bool(args.trace)
+    pulses = (args.b - args.a) * args.span
+    base_tmo = move_timeout(40, 2, args.span)   # full-travel budget at baseline
+    rows, stalls, cells = [], 0, 0
+
+    set_limits(link, BASELINE)
+    pos = (link.status or {}).get("pos")
+    if pos is None or abs(pos - args.a) > 0.002:
+        m = issue_move(link, args.a, base_tmo)  # unrecorded positioning move
+        if m is None or m.get("stall"):
+            raise Abort("initial positioning move to a failed")
+
+    for ma in (args.currents or [None]):
+        if ma is not None:
+            link.send_line(T_MAXTORQUE, str(ma))
+            cl.restore_ma = args.restore_current
+            time.sleep(0.1)
+        for rpm in args.rpms:
+            for acc in args.accs:
+                cell = {"move_rpm": rpm, "move_acc": acc}
+                set_limits(link, cell)
+                cells += 1
+                tmo = move_timeout(rpm, acc, pulses)
+                for _ in range(args.repeats):
+                    for frac, dirn in ((args.b, "open"), (args.a, "close")):
+                        m = issue_move(link, frac, tmo)
+                        r = make_row(rpm, acc, ma, dirn, m)
+                        rows.append(r)
+                        if r["stall"]:
+                            stalls += 1
+                            print(f"stall: rpm={rpm} acc={acc} ma={ma} {dirn} -- recovering")
+                            recover(link, frac, cell, base_tmo,
+                                    ma=ma, safe_ma=args.restore_current)
+                        time.sleep(args.settle)
+
+    headers = ["rpm", "acc", "mA", "dir", "cmd", "enc", "err", "ms", "eff_rpm", "stall"]
+    disp = [[r["rpm"], r["acc"], r["ma"], r["dir"], r["cmd"], r["enc"], r["err"], r["ms"],
+             None if r["eff"] is None else f"{r['eff']:.1f}", r["stall"]] for r in rows]
+    print()
+    print_table(headers, disp)
+    if args.csv:
+        with open(args.csv, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(headers)
+            for r in disp:
+                w.writerow(["" if c is None else c for c in r])
+        print(f"csv: {args.csv}")
+    clean = [abs(r["err"]) for r in rows if not r["stall"] and r["err"] is not None]
+    print(f"{cells} cells, {len(rows)} moves, {stalls} stalls, "
+          f"max |err| {max(clean) if clean else '-'} steps (clean moves)")
+
+
+# ── stream ───────────────────────────────────────────────────────────────────
+
+STREAM_DOC = """\
+Stream a synthesized waveform as 0xF5 binary frames and quantify open-loop
+divergence. sine = chirp, instantaneous frequency f0->f1 over dur;
+square = center +/- amp every period/2. Samples clamp to [0.02, 0.98].
+Pings map host time to firmware ticks; tracepts give in-flight error
+(timing-fuzzy by +/-RTT/2), streamend gives the exact end figure.
+"""
+
+
+def synth(args):
+    n = max(1, int(round(args.dur * args.rate)))
+    out = []
+    for i in range(n):
+        t = i / args.rate
+        if args.wave == "sine":
+            ph = 2 * math.pi * (args.f0 * t + (args.f1 - args.f0) * t * t / (2 * args.dur))
+            v = args.center + args.amp * math.sin(ph)
+        else:
+            v = args.center + (args.amp if int(t / (args.period / 2.0)) % 2 == 0 else -args.amp)
+        out.append(min(0.98, max(0.02, v)))
+    return [max(0, min(255, int(round(v * 255)))) for v in out]
+
+
+def median_offset(offs):
+    base = offs[0]
+    ds = sorted(tdiff(o, base) for o in offs)
+    return (base + ds[len(ds) // 2]) & TICKS_MASK
+
+
+def cmd_stream(args, link, cl):
+    cl.saved_limits = preamble(link, args.trace)
+    cl.trace_on = bool(args.trace)
+    u8 = synth(args)
+    n = len(u8)
+    end_s = n / args.rate
+
+    # dead-reckoning never corrects an initial offset: park at sample[0] first
+    set_limits(link, BASELINE)
+    start_frac = u8[0] / 255.0
+    m = issue_move(link, start_frac, move_timeout(40, 2, args.span))
+    if m is None or m.get("stall"):
+        raise Abort(f"positioning move to first sample ({start_frac:.3f}) failed")
+
+    if args.max_rpm:
+        set_limits(link, {"stream_max_rpm": args.max_rpm})
+        print(f"stream_max_rpm {args.max_rpm} for this run")
+    if args.current:
+        link.send_line(T_MAXTORQUE, str(args.current))
+        cl.restore_ma = args.restore_current
+        time.sleep(0.1)
+        print(f"maxtorque {args.current} mA for this run")
+
+    send_t = {}
+    for tok in range(1, 6):
+        send_t[tok] = time.monotonic()
+        link.send_frame(f_ping(tok))
+        deadline = time.monotonic() + 0.3
+        while tok not in link.pongs and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+    def harvest():
+        offs, rtts = [], []
+        for tok, ts in send_t.items():
+            p = link.pongs.get(tok)
+            if not p:
+                continue
+            tr, ticks = p
+            rtts.append(tr - ts)
+            offs.append((ticks - int((ts + tr) / 2 * 1000)) & TICKS_MASK)
+        return offs, sorted(rtts)
+
+    offs, rtts = harvest()
+    rtt = rtts[len(rtts) // 2] if rtts else None
+    if rtt is not None:
+        print(f"clock sync: {len(rtts)} pongs, median RTT {rtt * 1000:.1f} ms")
+    else:
+        print("warning: no pongs -- tracept divergence will be skipped")
+
+    link.tracepts.clear()
+    start_t = time.monotonic()
+    link.send_frame(f_start(args.rate, 0))
+    cl.streaming = True
+    print(f"streaming {n} samples @ {args.rate} Hz ({end_s:.1f}s, {args.wave})")
+
+    sent = frames = 0
+    batch = max(1, int(BATCH_S * args.rate))
+    next_ping = start_t + 2.0
+    tok = 6
+    stalled = False
+    while True:
+        link._guard()
+        if link.state == "stalled":
+            print(f"STREAM STALLED ({(link.status or {}).get('last_error')}) -- aborting feed")
+            stalled = True
+            break
+        ph = time.monotonic() - start_t
+        if sent < n:
+            want = min(n, int((ph + LOOKAHEAD_S) * args.rate),
+                       int(ph * args.rate) + 192)   # never outrun the 256-sample ring
+            while sent < want:
+                k = min(batch, want - sent)
+                link.send_frame(f_samples(sent, u8[sent:sent + k]))
+                sent += k
+                frames += 1
+        elif ph > end_s + 0.15:   # stop fast: the underrun hold ramps down at acc=8
+            break                  # and coasts ~revolutions if left to its own decel
+        if time.monotonic() >= next_ping:
+            send_t[tok] = time.monotonic()
+            link.send_frame(f_ping(tok))
+            tok += 1
+            next_ping += 2.0
+        time.sleep(0.02)
+
+    link.send_frame(f_stop())
+    cl.streaming = False
+    se = link.poll(T_STREAMEND, 8.0)
+
+    print(f"stream: {frames} frames, {sent}/{n} samples sent"
+          + (", 1 stall event" if stalled else ", 0 stalls"))
+    print(f"streamend: {se}" if se is not None else "no streamend within 8s")
+
+    offs, rtts = harvest()
+    if not offs:
+        print("no pongs -- skipping tracept divergence (no clock map)")
+        return
+    rtt = rtts[len(rtts) // 2]
+    off = median_offset(offs)
+    epoch = (int((start_t + rtt / 2) * 1000) + off) & TICKS_MASK   # fw ticks at START receipt
+    pts = []
+    for ticks, enc in link.tracepts:
+        play_ms = tdiff(ticks, epoch)
+        if not (0 <= play_ms <= end_s * 1000 + 500):
+            continue
+        idx = max(0, min(n - 1, int(play_ms * args.rate / 1000)))
+        cmd = u8[idx] / 255.0 * args.span
+        pts.append((play_ms, cmd, enc, enc - cmd))
+    if pts:
+        errs = [abs(p[3]) for p in pts]
+        print(f"tracept divergence (n={len(pts)}): mean |err| {sum(errs) / len(errs):.1f} steps, "
+              f"max {max(errs):.0f} steps "
+              f"(timing +/-{rtt / 2 * 1000:.0f} ms; streamend.err_steps is the exact figure)")
+    else:
+        print("no tracepts in the play window (is --trace > 0?)")
+    if args.csv:
+        with open(args.csv, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["play_ms", "cmd_steps", "enc_steps", "err_steps"])
+            for play_ms, cmd, enc, err in pts:
+                w.writerow([play_ms, f"{cmd:.1f}", enc, f"{err:.1f}"])
+        print(f"csv: {args.csv}")
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def _int_list(s):
+    try:
+        return [int(x) for x in s.split(",") if x.strip() != ""]
+    except ValueError:
+        sys.exit(f"bad int list: {s!r}")
+
+
+def _check_current(ma, allow_high):
+    if not (0 <= ma <= CURRENT_HARD_MAX):
+        sys.exit(f"{ma} mA outside 0..{CURRENT_HARD_MAX}")
+    if ma > CURRENT_SOFT_MAX and not allow_high:
+        sys.exit(f"{ma} mA > {CURRENT_SOFT_MAX} -- pass --allow-high-current if you mean it")
+
+
+def _validate_grid(args):
+    rpms = _int_list(args.rpm)
+    args.rpms = [max(1, min(3000, v)) for v in rpms]
+    accs = _int_list(args.acc)
+    args.accs = [max(0, min(255, v)) for v in accs]
+    if args.rpms != rpms or args.accs != accs:
+        print("warning: rpm/acc values clamped (rpm 1..3000, acc 0..255)")
+    args.currents = _int_list(args.current) if args.current else None
+    if args.currents:
+        for ma in args.currents + [args.restore_current]:
+            _check_current(ma, args.allow_high_current)
+    if not (0 <= args.a < args.b <= 1):
+        sys.exit("need 0 <= a < b <= 1")
+    if args.a < 0.05 or args.b > 0.95:
+        print("warning: window close to a stop (a < 0.05 or b > 0.95)")
+    if args.span < 100:
+        sys.exit("span too small")
+    args.repeats = max(1, args.repeats)
+
+
+def _validate_stream(args):
+    if args.dur <= 0 or args.rate < 1:
+        sys.exit("need dur > 0 and rate >= 1")
+    if args.wave == "square" and args.period <= 0:
+        sys.exit("need period > 0")
+    if args.span < 100:
+        sys.exit("span too small")
+    if args.max_rpm is not None and not (1 <= args.max_rpm <= 3000):
+        sys.exit("max-rpm outside 1..3000")
+    if args.current is not None:
+        for ma in (args.current, args.restore_current):
+            _check_current(ma, args.allow_high_current)
+
+
+def parse_args():
+    ap = argparse.ArgumentParser(prog="bush-valve-sweep", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--port", metavar="PATH", help="data CDC device (default: auto-detect)")
+    ap.add_argument("--verbose", action="store_true", help="echo all serial traffic")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("setup", description=SETUP_DOC,
+                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                        help="interactive bench-window setup (valve that cannot seat-home)")
+    sp.add_argument("--span", type=int, default=6400,
+                    help="calibrate steps sent by `h` (default 6400)")
+
+    gp = sub.add_parser("grid", description=GRID_DOC,
+                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                        help="move_rpm x move_acc (x mA) move-quality sweep")
+    gp.add_argument("--rpm", required=True, help="comma-separated move_rpm list")
+    gp.add_argument("--acc", required=True, help="comma-separated move_acc list")
+    gp.add_argument("--current", help="comma-separated maxtorque mA list")
+    gp.add_argument("--a", type=float, default=0.25, help="low endpoint fraction (default 0.25)")
+    gp.add_argument("--b", type=float, default=0.75, help="high endpoint fraction (default 0.75)")
+    gp.add_argument("--span", type=int, default=6400, help="open_steps assumed for timeout math")
+    gp.add_argument("--repeats", type=int, default=1, help="b/a round trips per cell")
+    gp.add_argument("--settle", type=float, default=0.5, help="seconds between moves")
+    gp.add_argument("--trace", type=int, metavar="MS",
+                    help="firmware encoder trace interval (view with --verbose)")
+    gp.add_argument("--csv", metavar="PATH", help="dump rows as CSV")
+    gp.add_argument("--allow-high-current", action="store_true",
+                    help=f"permit currents above {CURRENT_SOFT_MAX} mA")
+    gp.add_argument("--restore-current", type=int, default=1000, metavar="MA",
+                    help="maxtorque restored after a --current sweep (default 1000)")
+
+    st = sub.add_parser("stream", description=STREAM_DOC,
+                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                        help="stream a waveform, measure open-loop divergence")
+    st.add_argument("--wave", required=True, choices=("sine", "square"))
+    st.add_argument("--f0", type=float, default=0.2, help="chirp start Hz (sine)")
+    st.add_argument("--f1", type=float, default=1.5, help="chirp end Hz (sine)")
+    st.add_argument("--period", type=float, default=2.0, help="square period s")
+    st.add_argument("--amp", type=float, default=0.2)
+    st.add_argument("--center", type=float, default=0.5)
+    st.add_argument("--dur", type=float, default=20.0, help="seconds")
+    st.add_argument("--rate", type=int, default=30, help="samples/s")
+    st.add_argument("--span", type=int, default=6400, help="open_steps for err_steps math")
+    st.add_argument("--trace", type=int, default=50, metavar="MS",
+                    help="firmware encoder trace interval (default 50)")
+    st.add_argument("--csv", metavar="PATH", help="dump tracept divergence as CSV")
+    st.add_argument("--max-rpm", type=int, metavar="RPM",
+                    help="stream_max_rpm for this run (1-3000, restored after)")
+    st.add_argument("--current", type=int, metavar="MA",
+                    help="maxtorque for this run (restored after)")
+    st.add_argument("--allow-high-current", action="store_true",
+                    help=f"permit currents above {CURRENT_SOFT_MAX} mA")
+    st.add_argument("--restore-current", type=int, default=1000, metavar="MA",
+                    help="maxtorque restored after a --current run (default 1000)")
+
+    args = ap.parse_args()
+    if args.cmd == "grid":
+        _validate_grid(args)
+    elif args.cmd == "stream":
+        _validate_stream(args)
+    elif args.span < 100:
+        sys.exit("span too small")
+    return args
+
+
+def main():
+    args = parse_args()
+    port = args.port or find_port()
+    link = Link(port, args.verbose)
+    cl = Cleanup(link)
+    rc = 0
+    try:
+        {"setup": cmd_setup, "grid": cmd_grid, "stream": cmd_stream}[args.cmd](args, link, cl)
+    except KeyboardInterrupt:
+        print("\ninterrupted -- cleaning up")
+        cl.stop_ok = True
+        rc = 130
+    except Abort as e:
+        print(f"ABORT: {e}")
+        cl.stop_ok = True
+        rc = 2
+    finally:
+        cl.run()
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()
