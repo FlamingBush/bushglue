@@ -601,7 +601,7 @@ def build_valve_ctrl_panel(s: State) -> Panel:
     # Key legend lives in the title (as the other modal panels do) so it never
     # clips when the editor body is squeezed on a short terminal.
     title = ("[bold]VALVE CONTROL[/bold]  [dim]←/→ adjust  jk move  "
-             "\\[a]uto \\[h]ome \\[H]ome-here \\[s]top \\[f]ine  Esc[/dim]")
+             "\\[a]uto \\[s]top \\[f]ine  Esc[/dim]")
     return Panel(text, title=title, box=box.ROUNDED, border_style=border)
 
 
@@ -921,12 +921,8 @@ def _handle_key(key: str):
                 new_auto = not state.valve_auto_enabled
                 state.valve_auto_enabled = new_auto   # optimistic; the echo confirms
             pub = ("bush/fire/valve/auto", "on" if new_auto else "off", True)
-        elif key == "h":
-            pub = ("bush/fire/valve/home", "", False)
-        elif key == "H":
-            # bench zero: declare current shaft = 0, no seat seek (rigs that
-            # must not be seat-homed -- worn valve, bare motor)
-            pub = ("bush/fire/valve/home", "here", False)
+        # homing (seat-seek AND home-here) is deliberately NOT bound here: both
+        # re-frame the calibration on one keypress -- use `bush-valve home [here]`
         elif key == "s":
             pub = ("bush/fire/valve/stop", "", False)
         elif key in ("LEFT", "RIGHT", " ", "\r", "\n"):
