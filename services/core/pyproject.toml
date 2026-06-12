@@ -8,6 +8,7 @@ dependencies = [
     "bushutil",
     "bleak>=0.22",
     "pyserial>=3.5",
+    "rich>=13",
 ]
 
 [project.optional-dependencies]
