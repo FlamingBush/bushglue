@@ -240,7 +240,9 @@ _breath_prev_t         = 0
 _breath_at_valley      = False
 _pending_jump_target   = 0
 BREATH_UPDATE_MS       = 100
-BREATH_ACC             = 8       # VERIFY. accel byte for breath 0xF6 -- must reach each 100ms
+BREATH_ACC             = 0       # snap: acc 8 can't reach commanded speed within the 100 ms
+                                 # update at fast periods -- the lag rectifies into a walk
+                                 # (bench 2026-06-12, 1.2 s breath walked 0.3 span in 6 s)
                                   # speed target within the interval, so not too gentle.
 MKS_SILENCE_LIMIT_MS   = 2000
 _breath_last_good_read_ms = 0
@@ -1506,7 +1508,6 @@ def _integrate_breath_motion(now):
         motor_pos_steps += steps
     else:
         motor_pos_steps -= steps
-    motor_pos_steps = max(0, min(open_steps, motor_pos_steps))
 
 
 def _enter_breathing(now):
@@ -1531,18 +1532,15 @@ def _service_breath(now):
         return
     _integrate_breath_motion(now)
     _breath_last_update_ms = now
-    if _breath_at_valley:
-        _breath_at_valley = False
-        _send_and_expect(bytes([CMD_READ_ENCODER]), "breath_read")
-        return
     period_ms = max(100, _breath_period_ms)
     t = _ticks_diff(now, _breath_phase_start_ms) % period_ms
     crossed_valley = t < _breath_prev_t
     _breath_prev_t = t
     if crossed_valley:
-        _breath_at_valley = True
-        _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, BREATH_ACC]))   # halt for a clean read
-        _breath_last_rpm = None
+        # ground mid-motion (0x31 replies while moving); halting here stole rise
+        # time every cycle -- the phase clock keeps running -- and rectified into
+        # a downward walk at fast periods (bench 2026-06-12)
+        _send_and_expect(bytes([CMD_READ_ENCODER]), "breath_read")
         return
     rpm = _breath_rpm_signed(now)
     if rpm != _breath_last_rpm:
