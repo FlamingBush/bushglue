@@ -229,8 +229,8 @@ class State:
         self.valve_draft_period_ms: int = 5000
         self.valve_draft_skew: float = 0.5
         self.valve_draft_enabled: bool = True
-        self.valve_draft_calib: int = 2000        # OPEN_STEPS default
-        self.valve_draft_calib_sent: int = 2000   # last value sent; differs -> dirty
+        self.valve_draft_calib: int = 11200       # firmware OPEN_STEPS default
+        self.valve_draft_calib_sent: int = 11200  # last value sent; differs -> dirty
         self.valve_fine: bool = False
         self.log: deque[tuple[float, str, str]] = deque(maxlen=LOG_MAX)
         # Last time on_message fired for ANY topic. Watchdog uses this to
@@ -401,6 +401,8 @@ _VALVE_STATE_COLOR = {
     "breathing":        "cyan",
     "idle":             "green",
     "moving":           "yellow",
+    "nudging":          "yellow",
+    "streaming":        "magenta",
     "homing":           "yellow",
     "homing_finalize":  "yellow",
     "post_home_settle": "yellow",
@@ -599,7 +601,7 @@ def build_valve_ctrl_panel(s: State) -> Panel:
     # Key legend lives in the title (as the other modal panels do) so it never
     # clips when the editor body is squeezed on a short terminal.
     title = ("[bold]VALVE CONTROL[/bold]  [dim]←/→ adjust  jk move  "
-             "\\[a]uto \\[h]ome \\[s]top \\[f]ine  Esc[/dim]")
+             "\\[a]uto \\[h]ome \\[H]ome-here \\[s]top \\[f]ine  Esc[/dim]")
     return Panel(text, title=title, box=box.ROUNDED, border_style=border)
 
 
@@ -921,6 +923,10 @@ def _handle_key(key: str):
             pub = ("bush/fire/valve/auto", "on" if new_auto else "off", True)
         elif key == "h":
             pub = ("bush/fire/valve/home", "", False)
+        elif key == "H":
+            # bench zero: declare current shaft = 0, no seat seek (rigs that
+            # must not be seat-homed -- worn valve, bare motor)
+            pub = ("bush/fire/valve/home", "here", False)
         elif key == "s":
             pub = ("bush/fire/valve/stop", "", False)
         elif key in ("LEFT", "RIGHT", " ", "\r", "\n"):

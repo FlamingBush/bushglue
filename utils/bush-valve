@@ -4,7 +4,7 @@ bush-valve — CLI for needle valve control via MQTT
 
 Usage:
     bush-valve target 0.5       Set valve to 50% open
-    bush-valve home             Trigger homing sequence
+    bush-valve home [here]      Gentle seat homing; `here` = bench zero (no seat seek)
     bush-valve stop             Emergency stop
     bush-valve status           Print current valve status (waits for one message)
     bush-valve calibrate 16000  Set open_steps calibration
@@ -150,8 +150,12 @@ def main():
         print(f"target -> {val:.3f}")
 
     elif cmd == "home":
-        publish_and_exit(broker, TOPIC_HOME)
-        print("homing...")
+        if len(sys.argv) > 2 and sys.argv[2] == "here":
+            publish_and_exit(broker, TOPIC_HOME, "here")
+            print("homed here (bench zero, no seat seek)")
+        else:
+            publish_and_exit(broker, TOPIC_HOME)
+            print("homing...")
 
     elif cmd == "stop":
         publish_and_exit(broker, TOPIC_STOP)
