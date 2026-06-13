@@ -205,6 +205,7 @@ HOME_BACKOFF_CUR     = 400           # mA to lift off the seat
 HOME_BACKOFF_STEPS   = 300 * _USTEP  # margin off the seat = position 0
 HOME_BACKOFF_MIN_FRAC = 0.5
 HOME_TIMEOUT_MS      = 45000
+INIT_MOTOR_WAIT_MS   = 15000     # max wait for the 42D CAN to come up at boot before failing init
 _home_seed_raw       = 0
 _home_contact_raw  = 0
 _home_started_ms   = 0
@@ -267,6 +268,7 @@ STREAM_CAP      = 256              # ring capacity (~8.5 s @ 30 Hz)
 STREAM_MAX_RPM  = 600 * _USTEP     # VERIFY. cap on stream slew (42D allows up to 3000)
 stream_max_rpm  = STREAM_MAX_RPM   # runtime-tunable (bush/fire/valve/limits)
 STREAM_TELEM_MS = 200              # executed-position telemetry cadence
+STREAM_UNDERRUN_MS = 1500          # auto-stop a held stream after this long w/o new samples (dead publisher)
 
 _stream_buf      = bytearray(STREAM_CAP)
 _stream_max_idx  = -1
@@ -275,6 +277,7 @@ _stream_rate     = 30
 _stream_base_ms  = 0
 _stream_epoch    = 0
 _stream_last_telem_ms = 0
+_stream_hold_since = 0             # ticks when playback caught up to fed data; 0 = not holding
 _stream_out      = []              # queued outbound telemetry (pong/streampos/moved/...)
 
 # In-flight encoder trace (bush/fire/valve/trace) -- bare 0x31 polls while moving/streaming.
@@ -1048,6 +1051,7 @@ def _check_mks_silence(now):
 
 def _check_timeout():
     global _pending_cmd, state, last_error, _breath_enabled, _breath_last_rpm, _motion_ctx
+    global _nudge_delta, move_in_flight_delta
     if _pending_cmd is None:
         return
     label = _pending_cmd
@@ -1090,6 +1094,24 @@ def _check_timeout():
     if label == "home_release":
         _pending_cmd = None
         _send_and_expect(bytes([CMD_READ_ENCODER]), "home_seed")
+        return
+    if label == "move_done":
+        # 42D started the move (status=1) but never sent the 0/2 completion frame: a silent
+        # lockrotor latch (stall). Recover like a clean stall -- release the latch so the next
+        # move works, de-energize, re-ground from the encoder, idle -- not a stuck "error" that
+        # only `home here` clears (and that left the latch set, failing the next move too).
+        _move_meta_done()
+        _send(bytes([CMD_STOP]))
+        _send(bytes([CMD_RELEASE_PROT]))
+        _send(bytes([CMD_ENABLE, 0x00]))
+        _breath_enabled = False
+        _breath_last_rpm = None
+        _motion_ctx = None
+        _nudge_delta = 0
+        move_in_flight_delta = 0
+        state = "idle"
+        print("Valve: move timed out (silent stall) -- latch released, re-grounding, idle")
+        _send_and_expect(bytes([CMD_READ_ENCODER]), "stall_sync")   # emits moved(stall) + re-grounds
         return
     # generic: cut motion + de-energize
     _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))
@@ -1430,6 +1452,21 @@ def init():
     _led_init()
     time.sleep(0.2)
     _blocking_drain()
+    # Wait for the 42D to answer before configuring -- on a cold power-up its CAN can lag
+    # the MCU by seconds; a config handshake into a not-yet-ready bus is the init_setup_failed
+    # race (the motor then ignores all motion until a reboot). 0x31 replies in any work mode.
+    t0 = supervisor.ticks_ms()
+    while _blocking_read_encoder() is None:
+        if _ticks_diff(supervisor.ticks_ms(), t0) > INIT_MOTOR_WAIT_MS:
+            print("Valve(42D): init FAILED -- no CAN reply from motor in %ds "
+                  "(powered? CAN wiring/termination/ID/bitrate/crystal?)"
+                  % (INIT_MOTOR_WAIT_MS // 1000))
+            state = "error"
+            last_error = "init_no_motor"
+            return
+        print("Valve(42D): waiting for motor CAN...")
+        time.sleep(0.3)
+    print("Valve(42D): motor up -- configuring")
     # Ensure responses on + active (two-stage motion replies status=1->2). 42D default,
     # but assert it -- sent bare so an unexpected reply can't fail init.
     _send(bytes([CMD_SET_RESPOND, 0x01, 0x01]))
@@ -1454,8 +1491,8 @@ def init():
             return
         print("Valve(42D): init attempt", attempt, "-- setup ACK failed")
         time.sleep(0.2)
-    print("Valve(42D): init FAILED -- check CAN wiring/termination, motor CAN ID, "
-          "bitrate 500k, crystal_freq, SR_vFOC")
+    print("Valve(42D): init FAILED -- motor answers 0x31 but config not ACKed "
+          "(SR_vFOC / CAN ID / bitrate?)")
     state = "error"
     last_error = "init_setup_failed"
 
@@ -1603,7 +1640,7 @@ def handle_stream(ftype, payload):
 
 def _stream_begin(payload):
     global state, _stream_rate, _stream_base_ms, _stream_epoch
-    global _stream_max_idx, _stream_played, _breath_last_rpm, pending_target
+    global _stream_max_idx, _stream_played, _breath_last_rpm, pending_target, _stream_hold_since
     if len(payload) < 6:
         return
     _stream_rate = max(1, (payload[0] << 8) | payload[1])
@@ -1611,6 +1648,7 @@ def _stream_begin(payload):
     _stream_epoch = supervisor.ticks_ms()
     _stream_max_idx = -1
     _stream_played = -1
+    _stream_hold_since = 0
     pending_target = None
     _breath_last_rpm = None
     _send(bytes([CMD_ENABLE, 0x01]))   # energize for continuous motion
@@ -1629,9 +1667,10 @@ def _on_stream_seed(pos):
 
 
 def _stream_add(payload):
-    global _stream_max_idx
+    global _stream_max_idx, _stream_hold_since
     if len(payload) < 6:
         return
+    _stream_hold_since = 0                       # fresh feed -> reset the underrun watchdog
     start = int.from_bytes(payload[0:4], "big")
     count = (payload[4] << 8) | payload[5]
     pos = payload[6:6 + count]
@@ -1643,13 +1682,14 @@ def _stream_add(payload):
 
 
 def _stream_end():
-    global state, _stream_max_idx, _stream_played, _breath_last_rpm
+    global state, _stream_max_idx, _stream_played, _breath_last_rpm, _stream_hold_since
     # acc=0 snap stop: a ramped hold (acc=8 = ~7 s decel from 600 rpm) would smear
     # the streamend ground-truth read
     _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))
     _breath_last_rpm = None
     _stream_max_idx = -1
     _stream_played = -1
+    _stream_hold_since = 0
     if state == "streaming":
         _schedule_stream_end_read()
         state = "idle"
@@ -1707,6 +1747,7 @@ def _service_stream(now):
     """Drive the valve toward the sample due at the current playback time, on our
     own clock. Velocity-follow via bare 0xF6 (acc=0 -> snap), open-loop dead-reckon."""
     global _stream_played, _breath_last_rpm, motor_pos_steps, _stream_last_telem_ms
+    global _stream_hold_since
     if _pending_cmd is not None:
         return
     cur_play = _stream_base_ms + _ticks_diff(now, _stream_epoch)
@@ -1719,6 +1760,12 @@ def _service_stream(now):
         if _breath_last_rpm not in (None, 0):
             _send(bytes([CMD_CONSTANT_SPEED, 0x00, 0x00, 0x00]))  # snap: acc-8 coasts ~revs
             _breath_last_rpm = None
+        if _stream_hold_since == 0:                 # feed watchdog: a dead publisher sends no
+            _stream_hold_since = now                # f_stop, so it would hold here forever
+        elif _ticks_diff(now, _stream_hold_since) > STREAM_UNDERRUN_MS:
+            print("Valve: stream feed underrun -- no samples for %dms, auto-stopping"
+                  % STREAM_UNDERRUN_MS)
+            _stream_end()
         return
     oldest = _stream_max_idx - STREAM_CAP + 1        # don't reach past the ring
     if idx < oldest:

@@ -134,7 +134,19 @@ distance the clamped speed covers, so later samples keep commanding catch-up unt
 truly reached; stream holds/underruns stop at acc 0, never BREATH_ACC (an acc-8 "stop" from
 600 rpm coasts ~revolutions — the 2026-06-11 seat ram). Move timeouts are
 rpm-aware (computed per move from distance + accel ramp), so slow `limits` settings aren't
-falsely killed at the old fixed 8 s.
+falsely killed at the old fixed 8 s. A `0xFD` move that stalls **without** a terminal reply —
+the worn valve silent-latches lockrotor at the seat / a mid-travel sticky spot, sending no
+status-0 — trips the `move_done` timeout, which (2026-06-13) recovers identically to a clean
+stall: release the latch, de-energize, re-ground from the encoder, → `idle`. Before this it
+stranded the node in `error` with the latch still set (only `home here` cleared it, and the live
+latch failed the next move too — looked like a crash). Recovery still costs the full rpm-aware
+timeout (~8 s for a big nudge) before it fires.
+
+Feed-underrun watchdog (2026-06-13): a streamed playback that holds past the last fed sample for
+> `STREAM_UNDERRUN_MS` (1.5 s) with no new frames auto-stops to `idle`, so a publisher that dies
+without a stop frame (killed `bush-cue`/tool, SIGTERM) self-heals instead of holding the last
+position forever. The timer starts only when the playhead drains the buffer, so a healthy
+end-of-stream hold (~0.5 s before `f_stop`) never trips it.
 
 Positions are TRUTHFUL: `motor_pos_steps` stores the unclamped encoder-derived position, so
 `status.pos`/`actual`/`moved.enc` can legitimately report outside `[0, 1]` of span during an
@@ -209,6 +221,13 @@ Set work mode SR_vFOC:  FA 01 82 05 <crc>
 
 Modes (`0x82` data): 0 CR_OPEN, 1 CR_CLOSE, 2 CR_vFOC (default, pulse), 3 SR_OPEN,
 4 SR_CLOSE, **5 SR_vFOC** (serial, closed-loop — our analog to the 42C's CR_UART).
+
+`init()` waits for the 42D to answer `0x31` on the bus (up to `INIT_MOTOR_WAIT_MS`, 15 s) before
+sending the config handshake — on a cold power-up the motor's CAN can lag the MCU by seconds, and
+a handshake into a not-yet-ready bus used to fail outright (`init_setup_failed`, motor then
+ignoring all motion until a reboot). The failure now splits: **`init_no_motor`** (no CAN reply at
+all — power / wiring / termination / CAN ID / bitrate / crystal) vs **`init_setup_failed`** (motor
+answers `0x31` but rejects the config — work mode / ID / bitrate).
 
 ## Commands used by the firmware
 
