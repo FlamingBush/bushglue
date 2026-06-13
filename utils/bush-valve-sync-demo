@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""
+bush-valve-sync-demo -- drive the valve in a square-wave "beat" while a metronome
+plays on the same clock, to eyeball/ear the streamed-playback sync.
+
+Wraps `bush-valve-sweep stream` (square wave) for the valve and plays a generated
+click track via afplay, launched the instant the valve stream starts.
+
+WHAT IT VALIDATES: tempo-LOCK and NO-DRIFT -- i.e. the firmware clock-sync. The
+ABSOLUTE phase carries this laptop's uncalibrated audio-output latency (~tens of
+ms -- afplay/CoreAudio buffering), so a small *constant* lead/lag is the speaker,
+not the valve. If the needle pulses with the clicks and the relationship stays
+steady across the whole run, the compensation is working. Dial the constant
+offset out with --click-shift-ms if you want it to LOOK dead-on (the tuned value
+is mostly audio latency, not a real valve number).
+
+SAFETY (this chewed bench valve; seat = 0): positions are fractions of the
+calibrated window (--span, default 6400 = ~2 rev from the seat). center +/- amp is
+forced to stay in [0.04, 0.30]: clear of the seat (low end) and below the ~0.30
+sticky spot. See the project_bench_valve_bad_region memory. Runs at >=800 mA so
+the sticky spot stays invisible.
+
+Usage:
+  bush-valve-sync-demo                          # defaults: 0.08<->0.28, beat 1.0s
+  bush-valve-sync-demo --center .15 --amp .07   # smaller/lower swing
+  bush-valve-sync-demo --beat 0.5               # twice as fast
+  bush-valve-sync-demo --click-shift-ms -100    # clicks 100ms earlier (valve looked ahead)
+  bush-valve-sync-demo --no-audio               # valve only, just watch the needle
+"""
+import argparse
+import math
+import os
+import signal
+import struct
+import subprocess
+import sys
+import tempfile
+import wave
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SWEEP = os.path.join(HERE, "bush-valve-sweep")
+
+# This valve's safe band: seat = 0 (verified 2026-06-13), sticky spot ~0.30. SAFE_LO is a small
+# floor off the seat -- streaming the swing bottom to 0.0 latches lockrotor at the seat every
+# cycle (stream_stalled). Raise it if it still taps; don't widen up without re-checking
+# project_bench_valve_bad_region.
+SAFE_LO, SAFE_HI = 0.02, 0.30
+WAV = os.path.join(tempfile.gettempdir(), "bush-valve-sync-metronome.wav")
+
+
+def make_click_wav(path, dur, beat, shift_ms, chz=1500.0, cms=25, sr=44100):
+    """Mono WAV: a short tone burst every `beat` s, shifted by shift_ms."""
+    n = int(sr * dur)
+    s = [0] * n
+    t = beat + shift_ms / 1000.0
+    while t < dur:
+        if t >= 0:
+            st = int(t * sr)
+            for i in range(int(cms / 1000.0 * sr)):
+                if st + i >= n:
+                    break
+                env = math.exp(-i / (0.006 * sr))
+                s[st + i] = int(0.6 * 32767 * env * math.sin(2 * math.pi * chz * i / sr))
+        t += beat
+    with wave.open(path, "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(b"".join(struct.pack("<h", x) for x in s))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--center", type=float, default=0.18, help="window-fraction midpoint")
+    ap.add_argument("--amp", type=float, default=0.10, help="+/- swing from center")
+    ap.add_argument("--beat", type=float, default=1.0, help="snap/click interval (s)")
+    ap.add_argument("--dur", type=float, default=22.0, help="run length (s)")
+    ap.add_argument("--rate", type=int, default=30, help="stream sample rate (S/s)")
+    ap.add_argument("--current", type=int, default=1500, help="mA (>=800 crosses the sticky spot)")
+    ap.add_argument("--span", type=int, default=6400, help="open_steps the firmware is calibrated to")
+    ap.add_argument("--click-shift-ms", type=float, default=0.0,
+                    help="shift clicks; -ve = earlier (use if the valve looks ahead)")
+    ap.add_argument("--no-audio", action="store_true", help="valve only, no metronome")
+    ap.add_argument("--port", help="data CDC device (default: auto-detect)")
+    args = ap.parse_args()
+
+    lo, hi = args.center - args.amp, args.center + args.amp
+    if lo < SAFE_LO or hi > SAFE_HI:
+        sys.exit(f"refusing: band [{lo:.3f}, {hi:.3f}] leaves [{SAFE_LO}, {SAFE_HI}] "
+                 f"(seat at 0, sticky spot ~0.30). Lower --amp or recenter.")
+    if args.current < 800:
+        print(f"warning: {args.current} mA < 800 -- the sticky spot may bite if the band nears it")
+
+    cmd = [SWEEP, "stream", "--wave", "square", "--period", str(2 * args.beat),
+           "--center", str(args.center), "--amp", str(args.amp),
+           "--dur", str(args.dur), "--rate", str(args.rate),
+           "--span", str(args.span), "--current", str(args.current), "--trace", "0"]
+    if args.port:
+        cmd += ["--port", args.port]
+
+    if not args.no_audio:
+        make_click_wav(WAV, args.dur, args.beat, args.click_shift_ms)
+
+    print(f">>> valve square {lo:.3f}<->{hi:.3f} ({int(lo*args.span)}<->{int(hi*args.span)} steps), "
+          f"beat {args.beat}s, {args.current} mA")
+    print(">>> WATCH the needle" + ("" if args.no_audio else " + LISTEN")
+          + " -- pulsing together & STEADY (no drift) = sync working")
+
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    # own process group so a terminal Ctrl-C doesn't hit the tool directly -- we
+    # forward exactly one SIGINT so its cleanup (which sends the stream f_stop) runs.
+    # SIGTERM would skip that cleanup and strand the firmware mid-stream.
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            env=env, text=True, start_new_session=True)
+    played = False
+    try:
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            if not played and not args.no_audio and "streaming " in line:
+                subprocess.Popen(["afplay", WAV])
+                played = True
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.send_signal(signal.SIGINT)   # let bush-valve-sweep f_stop + restore, then exit
+        proc.wait()
+
+
+if __name__ == "__main__":
+    main()
