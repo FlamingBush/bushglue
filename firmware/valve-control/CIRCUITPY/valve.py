@@ -294,6 +294,16 @@ STREAM_GUARD_MS     = 50
 STREAM_GUARD_MARGIN = 400          # steps past [0, open_steps]; production stop is ~537 past top
 _guard_last_ms      = 0
 
+# DC re-grounding: the open-loop 0xF6 follow rectifies a slow per-cycle position drift
+# near the driveline resonance (bench 2026-06-13: a sustained in-band tone walked the
+# shaft silently into the closed seat while the bookkeeping held station). Each guard
+# poll nudges motor_pos_steps 1/DIV toward the true encoder pos -> tau ~= DIV*GUARD_MS
+# ~= 0.8 s: rejects the per-cycle swing (averages to zero), feeds back only the slow DC
+# offset, so _service_stream's next delta grows a corrective bias against the walk. Fast
+# trajectory stays feed-forward. 0 = disable. Runtime-tunable (limits stream_reground_div).
+STREAM_REGROUND_DIV  = 16
+stream_reground_div  = STREAM_REGROUND_DIV
+
 # Stall watch for the 0xF6 follow modes (stream/breath): 0xF6 replies are fire-and-forget,
 # so a lockrotor latch there is silent -- poll 0x3E and fail loudly instead.
 _prot_poll_last_ms = 0
@@ -1215,7 +1225,7 @@ def _handle_breath_payload(payload):
 
 def _handle_limits_payload(payload):
     """Runtime motion limits (in-memory). Empty payload = query. Homing is not settable."""
-    global move_rpm, move_acc, stream_max_rpm, breath_max_rpm
+    global move_rpm, move_acc, stream_max_rpm, breath_max_rpm, stream_reground_div
     if isinstance(payload, (bytes, bytearray)):
         try:
             payload = payload.decode("utf-8")
@@ -1250,11 +1260,18 @@ def _handle_limits_payload(payload):
                 breath_max_rpm = max(1, min(3000, int(data["breath_max_rpm"])))
             except (ValueError, TypeError):
                 pass
-        print(f"Valve: limits move={move_rpm}rpm acc={move_acc} stream<={stream_max_rpm} breath<={breath_max_rpm}")
+        if "stream_reground_div" in data:
+            try:
+                stream_reground_div = max(0, min(1024, int(data["stream_reground_div"])))
+            except (ValueError, TypeError):
+                pass
+        print(f"Valve: limits move={move_rpm}rpm acc={move_acc} stream<={stream_max_rpm} "
+              f"breath<={breath_max_rpm} reground/{stream_reground_div}")
     # ack on a distinct topic -- echoing the inbound one would loop through the bridge
     _queue_out((TOPIC_VALVE_LIMITS_ACK, json.dumps({
         "move_rpm": move_rpm, "move_acc": move_acc,
-        "stream_max_rpm": stream_max_rpm, "breath_max_rpm": breath_max_rpm})))
+        "stream_max_rpm": stream_max_rpm, "breath_max_rpm": breath_max_rpm,
+        "stream_reground_div": stream_reground_div})))
 
 
 def _handle_trace_payload(payload):
@@ -1270,12 +1287,17 @@ def _handle_trace_payload(payload):
 
 
 def _on_trace_read(raw):
+    global motor_pos_steps
     # unclamped: divergence outside [0, open_steps] is signal
     pos = _encoder_pos_steps(raw)
     if state == "streaming" and (pos < -STREAM_GUARD_MARGIN
                                  or pos > open_steps + STREAM_GUARD_MARGIN):
         _stream_runaway(pos)
         return
+    if state == "streaming" and homed and stream_reground_div:
+        # leaky DC pull toward encoder truth; int(/DIV) truncates toward zero (symmetric,
+        # no self-induced drift), deadband +/-(DIV-1) steps is negligible
+        motor_pos_steps += int((pos - motor_pos_steps) / stream_reground_div)
     if _trace_interval_ms:          # guard polls don't spam tracept unless asked
         _queue_out((TOPIC_VALVE_TRACEPT,
                     "%d %d" % (supervisor.ticks_ms(), pos)))
