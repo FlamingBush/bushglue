@@ -142,7 +142,7 @@ def _serve(mqttc, port, cmd_queue, stop):
     """One serial session: forward MQTT commands to the valve and republish its
     telemetry. Returns when the link drops or stop is set."""
     try:
-        ser = serial.Serial(port, SERIAL_BAUD, timeout=0, write_timeout=1.0)
+        ser = serial.Serial(port, SERIAL_BAUD, timeout=0, write_timeout=1.0, exclusive=True)
     except (OSError, serial.SerialException) as e:
         log(f"open {port} failed: {e}")
         return

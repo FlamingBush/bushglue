@@ -127,7 +127,7 @@ class Link:
         except ImportError:
             sys.exit("pyserial required to connect: pip install pyserial")
         try:
-            self.ser = serial.Serial(port, BAUD, timeout=0.05, write_timeout=2.0)
+            self.ser = serial.Serial(port, BAUD, timeout=0.05, write_timeout=2.0, exclusive=True)
         except (OSError, serial.SerialException) as e:
             sys.exit(f"cannot open {port}: {e}\n"
                      "if the bush-valve-serial bridge is running it holds the port -- stop it first")
@@ -430,30 +430,44 @@ def cmd_setup(args, link, cl):
         c, _, rest = line.partition(" ")
         if c == "q":
             break
-        elif c == "s":
-            print(json.dumps(link.status) if link.status else "no status yet")
-        elif c in ("o", "c"):
-            try:
-                deg = int(rest)
-            except ValueError:
-                print("usage: o|c <degrees 1-360>")
-                continue
-            deg = max(1, min(360, deg))
-            link.drain(T_MOVED)
-            link.send_line(T_NUDGE, str(deg if c == "c" else -deg))   # + closed, - open
-            m = await_moved(link, 15.0)
-            print(f"moved: {m}" if m else "no moved reply in 15s")
-        elif c == "h":
-            link.send_line(T_HOME, "here")
-            time.sleep(0.3)
-            link.send_line(T_CALIBRATE, str(args.span))
-            st = link.wait_status(3.0, fresh=True)
-            if st and st.get("homed") and abs(st.get("pos") or 0.0) < 0.01:
-                print(f"homed here: pos 0, span {args.span} steps")
+        try:
+            if c == "s":
+                print(json.dumps(link.status) if link.status else "no status yet")
+            elif c in ("o", "c"):
+                try:
+                    deg = int(rest)
+                except ValueError:
+                    print("usage: o|c <degrees 1-360>")
+                    continue
+                deg = max(1, min(360, deg))
+                link.drain(T_MOVED)
+                link.send_line(T_NUDGE, str(deg if c == "c" else -deg))   # + closed, - open
+                m = await_moved(link, 15.0)
+                if m and m.get("stall"):
+                    print(f"stalled (hit a stop) -- firmware recovered to idle; jog the "
+                          f"other way: {m}")
+                else:
+                    print(f"moved: {m}" if m else "no moved reply in 15s")
+            elif c == "h":
+                link.send_line(T_HOME, "here")
+                time.sleep(0.3)
+                link.send_line(T_CALIBRATE, str(args.span))
+                st = link.wait_status(3.0, fresh=True)
+                if st and st.get("homed") and abs(st.get("pos") or 0.0) < 0.01:
+                    print(f"homed here: pos 0, span {args.span} steps")
+                else:
+                    print(f"NOT confirmed -- status: {st}")
             else:
-                print(f"NOT confirmed -- status: {st}")
-        else:
-            print("commands: o N | c N | s | h | q")
+                print("commands: o N | c N | s | h | q")
+        except Abort as e:
+            print(f"link error: {e}")
+            if link.dead:
+                print("serial link lost -- exiting setup")
+                break
+        except Exception as e:
+            print(f"command failed: {type(e).__name__}: {e}")
+            if link.dead:
+                break
 
 
 # ── grid ─────────────────────────────────────────────────────────────────────
@@ -841,6 +855,10 @@ def main():
         print(f"ABORT: {e}")
         cl.stop_ok = True
         rc = 2
+    except Exception as e:
+        print(f"ERROR: {type(e).__name__}: {e}")
+        cl.stop_ok = True
+        rc = 1
     finally:
         cl.run()
     sys.exit(rc)
