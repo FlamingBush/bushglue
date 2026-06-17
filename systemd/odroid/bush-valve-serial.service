@@ -1,0 +1,22 @@
+[Unit]
+Description=Valve serial bridge — MQTT <-> Waveshare RP2350-CAN USB-serial
+After=network.target
+
+[Service]
+Type=simple
+User=odroid
+# Pin to the valve board's data CDC (if02). Auto-detect would also work today, but
+# pinning avoids grabbing another CircuitPython board's CDC. Update if the RP2350
+# board (not the needle valve) is ever replaced -- the serial number changes.
+Environment=BUSH_VALVE_SERIAL_PORT=/dev/serial/by-id/usb-Raspberry_Pi_Pico_2_E22E9FE51C2DDDBD-if02
+ExecStart=/home/odroid/bushglue/.venv/bin/bush-valve-serial
+WorkingDirectory=/home/odroid/bushglue
+# always (not on-failure): the bridge exits 0 if the broker isn't reachable at start,
+# so retry until mosquitto is up. Port drops are handled internally (it waits/reconnects).
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
