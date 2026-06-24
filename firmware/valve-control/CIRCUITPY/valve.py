@@ -201,7 +201,8 @@ HOME_RPM             = 30 * _USTEP   # free-travel approach speed
 HOME_ACC             = 2
 HOME_MAX_PULSES      = 6 * STEPS_PER_REV   # bound the seek (~6 rev); exceeds full open->seat
 HOME_SEEK_CUR        = 300           # mA -- GENTLE: enough to traverse a healthy valve, soft at seat
-HOME_BACKOFF_CUR     = 400           # mA to lift off the seat
+HOME_BACKOFF_CUR     = 800           # mA to lift off the seat -- bench-proven 2026-06-23
+                                     # on a tight-seal new valve; 400 wasn't enough.
 HOME_BACKOFF_STEPS   = 300 * _USTEP  # margin off the seat = position 0
 HOME_BACKOFF_MIN_FRAC = 0.5
 HOME_TIMEOUT_MS      = 45000
@@ -724,17 +725,38 @@ def cmd_home():
         last_error = "home_no_seat"
         print("Valve: homing FAILED -- no seat latch in time")
         return
-    _send(bytes([CMD_RELEASE_PROT]))            # clear the seat latch before backing off
+    # Backoff: bench-proven 2026-06-23 (REPL diag at open-stop lockrotor surrogate).
+    # 0xFD MOVE_POS after a lockrotor latch silently doesn't move the motor (the 42D's
+    # internal commanded-position state somehow blocks it -- not lockrotor re-arm, not
+    # current; tried 400/800/1500 mA, protect on/off, ENABLE cycles -- all 0-10 raw counts).
+    # 0xF6 CONSTANT_SPEED works cleanly from the same post-latch state, but takes ~1 s
+    # to actually start ramping the motor -- a 0.5 s window catches zero motion. So:
+    #   release + protect-off + full de-energize cycle + set HOME_BACKOFF_CUR + F6 toward
+    #   open + poll encoder until HOME_BACKOFF_STEPS reached (or HOME_BACKOFF_TIMEOUT_S).
+    _send(bytes([CMD_RELEASE_PROT]))                          # clear seat latch
+    _send(bytes([CMD_SET_PROTECT, 0x00]))                     # prot OFF during backoff (safe dir)
+    _send(bytes([CMD_ENABLE, 0x00]))                          # full power-cycle of the driver
+    time.sleep(0.2)                                            #   matches the idle->nudge path
     _set_current(HOME_BACKOFF_CUR)
     _send(bytes([CMD_ENABLE, 0x01]))
-    time.sleep(MOVE_SETTLE_MS / 1000.0)
-    _send(_speed_body(CMD_MOVE_POS, DIR_TOWARD_OPEN, HOME_RPM, HOME_ACC, HOME_BACKOFF_STEPS))
+    time.sleep(0.2)
+    _send(_speed_body(CMD_CONSTANT_SPEED, DIR_TOWARD_OPEN, HOME_RPM, HOME_ACC))
+    HOME_BACKOFF_TIMEOUT_S = 4.0
+    target_motion = HOME_BACKOFF_STEPS * ENC_PER_STEP
     tb = time.monotonic()
-    while time.monotonic() - tb < 2.5:
+    current_raw = seat_raw
+    while time.monotonic() - tb < HOME_BACKOFF_TIMEOUT_S:
         time.sleep(0.05)
-        _blocking_read_encoder(timeout_ms=100)
+        r = _blocking_read_encoder(timeout_ms=100)
+        if r is not None:
+            current_raw = r
+            if abs(current_raw - seat_raw) >= target_motion:
+                break
+    _send(_speed_body(CMD_CONSTANT_SPEED, DIR_TOWARD_OPEN, 0, HOME_ACC))   # F6 spd=0 -> stop
+    time.sleep(0.1)
     _send(bytes([CMD_STOP]))
     _send(bytes([CMD_ENABLE, 0x00]))
+    _send(bytes([CMD_SET_PROTECT, 0x01]))                     # re-arm seat detector + jam net
     zero_raw = _blocking_read_encoder()
     if zero_raw is not None and abs(zero_raw - seat_raw) < HOME_BACKOFF_STEPS * ENC_PER_STEP * HOME_BACKOFF_MIN_FRAC:
         state = "error"
