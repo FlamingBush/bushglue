@@ -293,8 +293,12 @@ the internals (that grinding is what creates sticky spots), so rough homing perp
 4. Back off `HOME_BACKOFF_STEPS` toward open, verify it moved (else error `home_stuck` — a worn
    valve that won't move gently is reported, never pushed), set `_enc_zero_raw`/`_enc_sign=-1`.
 
-So `motor_pos 0` is a margin off the seat, never resting on it. A worn valve errors instead of
-being forced. Protection stays ON afterward as the operating jam net. **The 42D's own internal
+So `motor_pos 0` is the seat itself (`HOME_BACKOFF_STEPS=0` since 2026-06-24; the brief F6 in the
+backoff path is kept solely to kick the 42D out of its post-latch state, but is halted on the first
+encoder poll before the motor ramps). A worn valve errors instead of being forced. Protection stays
+ON afterward as the operating jam net. **Caveat:** `target 0` lands at-or-just-past the seat —
+breath valleys (target − 2·amplitude) below 0 will park the needle in the lockrotor zone, so keep
+`target ≥ 2·amplitude` whenever breath is on. **The 42D's own internal
 homing** (`0x90` go-home params + `0x91` GoHome + `0x92` set-zero, monitored via `0xF1`/`0x3E`)
 is the next avenue — configure it equally gentle, and mind the NVM auto-home-rams-on-boot gotcha
 (`init` sends SET_ZERO_MODE `0x00`). The encoder-flatline ramp-to-stall "method b" is in git.
@@ -314,7 +318,7 @@ is the next avenue — configure it equally gentle, and mind the NVM auto-home-r
 ## Position & breath conventions (unchanged)
 
 ```
-motor_pos 0          = closed seat margin (zero set at homing)
+motor_pos 0          = closed seat (zero set at homing; no backoff margin)
 motor_pos open_steps = fully open
 MQTT 0.0 = closed, 1.0 = open;  step_position = target * open_steps
 ```

@@ -203,7 +203,10 @@ HOME_MAX_PULSES      = 6 * STEPS_PER_REV   # bound the seek (~6 rev); exceeds fu
 HOME_SEEK_CUR        = 300           # mA -- GENTLE: enough to traverse a healthy valve, soft at seat
 HOME_BACKOFF_CUR     = 800           # mA to lift off the seat -- bench-proven 2026-06-23
                                      # on a tight-seal new valve; 400 wasn't enough.
-HOME_BACKOFF_STEPS   = 300 * _USTEP  # margin off the seat = position 0
+HOME_BACKOFF_STEPS   = 0             # margin off the seat = position 0; 0 = seat itself
+                                     # (the brief F6 still kicks the 42D out of the post-latch
+                                     # state machine, but is halted on the first encoder poll
+                                     # before the motor ramps any meaningful distance)
 HOME_BACKOFF_MIN_FRAC = 0.5
 HOME_TIMEOUT_MS      = 45000
 INIT_MOTOR_WAIT_MS   = 15000     # how often init() re-prints "still waiting" while the 42D CAN
