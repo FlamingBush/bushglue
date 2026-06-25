@@ -222,12 +222,15 @@ Set work mode SR_vFOC:  FA 01 82 05 <crc>
 Modes (`0x82` data): 0 CR_OPEN, 1 CR_CLOSE, 2 CR_vFOC (default, pulse), 3 SR_OPEN,
 4 SR_CLOSE, **5 SR_vFOC** (serial, closed-loop — our analog to the 42C's CR_UART).
 
-`init()` waits for the 42D to answer `0x31` on the bus (up to `INIT_MOTOR_WAIT_MS`, 15 s) before
-sending the config handshake — on a cold power-up the motor's CAN can lag the MCU by seconds, and
-a handshake into a not-yet-ready bus used to fail outright (`init_setup_failed`, motor then
-ignoring all motion until a reboot). The failure now splits: **`init_no_motor`** (no CAN reply at
-all — power / wiring / termination / CAN ID / bitrate / crystal) vs **`init_setup_failed`** (motor
-answers `0x31` but rejects the config — work mode / ID / bitrate).
+`init()` waits **indefinitely** for the 42D to answer `0x31` on the bus before sending the config
+handshake — on a cold power-up the motor's CAN can lag the MCU by seconds (or longer if a slow 24 V
+ramp), and a handshake into a not-yet-ready bus used to fail outright (`init_setup_failed`, motor
+then ignoring all motion until a reboot). Init used to time out at `INIT_MOTOR_WAIT_MS` (15 s) and
+hard-error `init_no_motor`, but that gave no auto-recovery — a slow brownout-then-restart of the
+motor left the board permanently in `error` until a manual reset. The wait now retries forever,
+reprinting "still waiting for motor CAN" every `INIT_MOTOR_WAIT_MS` to the console; the board picks
+up automatically once the 42D answers. **`init_setup_failed`** remains terminal (motor answers
+`0x31` but rejects the config — work mode / ID / bitrate); no `init_no_motor` state any more.
 
 ## Commands used by the firmware
 

@@ -206,7 +206,8 @@ HOME_BACKOFF_CUR     = 800           # mA to lift off the seat -- bench-proven 2
 HOME_BACKOFF_STEPS   = 300 * _USTEP  # margin off the seat = position 0
 HOME_BACKOFF_MIN_FRAC = 0.5
 HOME_TIMEOUT_MS      = 45000
-INIT_MOTOR_WAIT_MS   = 15000     # max wait for the 42D CAN to come up at boot before failing init
+INIT_MOTOR_WAIT_MS   = 15000     # how often init() re-prints "still waiting" while the 42D CAN
+                                 # is silent at boot (it now retries forever rather than erroring)
 _home_seed_raw       = 0
 _home_contact_raw  = 0
 _home_started_ms   = 0
@@ -1499,16 +1500,22 @@ def init():
     # Wait for the 42D to answer before configuring -- on a cold power-up its CAN can lag
     # the MCU by seconds; a config handshake into a not-yet-ready bus is the init_setup_failed
     # race (the motor then ignores all motion until a reboot). 0x31 replies in any work mode.
+    # Wait indefinitely for the 42D's CAN to come up. On a cold host boot the motor's
+    # 24 V supply can take >15 s to settle (the old timeout) -- and there's nothing useful
+    # the board can do without the motor anyway, so a give-up only forced a manual reset
+    # (re-deploy or power cycle) to recover. Now we just keep polling and let the firmware
+    # auto-init when the motor finally answers. Periodic prints keep the bench diagnostic.
     t0 = supervisor.ticks_ms()
+    last_warn_ms = t0
     while _blocking_read_encoder() is None:
-        if _ticks_diff(supervisor.ticks_ms(), t0) > INIT_MOTOR_WAIT_MS:
-            print("Valve(42D): init FAILED -- no CAN reply from motor in %ds "
+        now = supervisor.ticks_ms()
+        if _ticks_diff(now, last_warn_ms) > INIT_MOTOR_WAIT_MS:
+            print("Valve(42D): still waiting for motor CAN after %ds "
                   "(powered? CAN wiring/termination/ID/bitrate/crystal?)"
-                  % (INIT_MOTOR_WAIT_MS // 1000))
-            state = "error"
-            last_error = "init_no_motor"
-            return
-        print("Valve(42D): waiting for motor CAN...")
+                  % (_ticks_diff(now, t0) // 1000))
+            last_warn_ms = now
+        else:
+            print("Valve(42D): waiting for motor CAN...")
         time.sleep(0.3)
     print("Valve(42D): motor up -- configuring")
     # Ensure responses on + active (two-stage motion replies status=1->2). 42D default,
