@@ -200,7 +200,22 @@ HOMING_DISABLED = False
 HOME_RPM             = 30 * _USTEP   # free-travel approach speed
 HOME_ACC             = 2
 HOME_MAX_PULSES      = 6 * STEPS_PER_REV   # bound the seek (~6 rev); exceeds full open->seat
-HOME_SEEK_CUR        = 300           # mA -- GENTLE: enough to traverse a healthy valve, soft at seat
+HOME_SEEK_CUR        = 300           # mA -- GENTLE first-stage seek (often latches at a sticky
+                                     # zone short of the real seat on a new valve; see below).
+HOME_ESCALATE_CURS   = (500, 700)    # mA -- after the first latch, nudge-march at these higher
+                                     # currents (F6 bursts with rest between, mimics how small
+                                     # nudges with idle gaps push past sticky zones that
+                                     # continuous F6 trips lockrotor on). 700 caps below the
+                                     # 800-1000 mA seat-shred range.
+HOME_STAGE_MIN_RAW   = 200           # raw counts (~40 us) of new travel past previous latch
+                                     # below which we declare "real seat" and stop escalating
+HOME_MARCH_RPM       = 5             # slow F6 -- motor's stiction-limited creep keeps up with
+                                     # commanded speed, no divergence -> no premature lockrotor
+HOME_MARCH_ACC       = 2
+HOME_MARCH_MIN_RAW   = 30            # raw counts of progress per poll = "moving"
+HOME_MARCH_STILL_S   = 1.0           # no-progress duration that declares real stop
+HOME_MARCH_GRACE_S   = 1.5           # startup grace -- F6 takes ~1 s to actually ramp up
+HOME_MARCH_TIMEOUT_S = 20.0          # per-stage hard timeout
 HOME_BACKOFF_CUR     = 800           # mA to lift off the seat -- bench-proven 2026-06-23
                                      # on a tight-seal new valve; 400 wasn't enough.
 HOME_BACKOFF_STEPS   = 0             # margin off the seat = position 0; 0 = seat itself
@@ -729,6 +744,57 @@ def cmd_home():
         last_error = "home_no_seat"
         print("Valve: homing FAILED -- no seat latch in time")
         return
+    # Multi-stage escalation: on a new valve the gentle 300 mA seek often latches at a
+    # sticky zone short of the real seat (bench 2026-06-24: 1426 us of further travel
+    # possible past the 300 mA latch). Escalate current to push past the stiction. Cap
+    # at HOME_SEEK_CUR_CAP to stay well below the 800-1000 mA seat-shred range. Stop
+    # when a higher-current seek doesn't push past the previous latch by more than
+    # HOME_STAGE_MIN_RAW -- that's the real seat.
+    for esc_cur in HOME_ESCALATE_CURS:
+        # Slow F6 toward closed: at HOME_MARCH_RPM (5 RPM) the motor's slow stiction-limited
+        # creep can keep up with the commanded velocity, so commanded-vs-actual divergence
+        # stays small and lockrotor doesn't fire prematurely from sticky-spot slips. When
+        # the encoder genuinely stops progressing for HOME_MARCH_STILL_S the motor is pinned
+        # at a hard stop.
+        _send(bytes([CMD_STOP]))
+        _send(bytes([CMD_ENABLE, 0x00]))
+        time.sleep(0.15)
+        _send(bytes([CMD_RELEASE_PROT]))
+        _set_current(esc_cur)
+        _send(bytes([CMD_ENABLE, 0x01]))
+        time.sleep(0.2)
+        _send(_speed_body(CMD_CONSTANT_SPEED, DIR_TOWARD_CLOSED, HOME_MARCH_RPM, HOME_MARCH_ACC))
+        march_start_raw = seat_raw
+        last_raw = seat_raw
+        last_motion_raw = seat_raw
+        t0 = time.monotonic()
+        last_motion_t = t0 + HOME_MARCH_GRACE_S    # don't start the no-progress timer until
+                                                     # after the F6 ramp-up grace period
+        while time.monotonic() - t0 < HOME_MARCH_TIMEOUT_S:
+            time.sleep(0.15)
+            # If lockrotor did fire (motor genuinely pinned), release + re-issue F6
+            if _blocking_read_status(CMD_READ_SHAFT_PROT) == 1:
+                _send(bytes([CMD_RELEASE_PROT]))
+                time.sleep(0.02)
+                _send(_speed_body(CMD_CONSTANT_SPEED, DIR_TOWARD_CLOSED, HOME_MARCH_RPM, HOME_MARCH_ACC))
+            cur_raw = _blocking_read_encoder()
+            if cur_raw is None:
+                cur_raw = last_raw
+            if abs(cur_raw - last_motion_raw) > HOME_MARCH_MIN_RAW:
+                last_motion_raw = cur_raw
+                last_motion_t = time.monotonic()
+            elif time.monotonic() - last_motion_t > HOME_MARCH_STILL_S:
+                break   # motor pinned -- real stop reached
+            last_raw = cur_raw
+        _send(_speed_body(CMD_CONSTANT_SPEED, DIR_TOWARD_CLOSED, 0, HOME_MARCH_ACC))
+        _send(bytes([CMD_STOP]))
+        travel = abs(last_raw - march_start_raw)
+        seat_raw = last_raw
+        print("Valve: march @ %d mA: +%d raw past prev (~%d us)"
+              % (esc_cur, travel, int(travel / ENC_PER_STEP)))
+        if travel < HOME_STAGE_MIN_RAW:
+            print("Valve: stage didn't push past prev -- real seat reached")
+            break
     # Backoff: bench-proven 2026-06-23 (REPL diag at open-stop lockrotor surrogate).
     # 0xFD MOVE_POS after a lockrotor latch silently doesn't move the motor (the 42D's
     # internal commanded-position state somehow blocks it -- not lockrotor re-arm, not

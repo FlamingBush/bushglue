@@ -289,9 +289,18 @@ the internals (that grinding is what creates sticky spots), so rough homing perp
 
 1. Protection ON (`0x88 01`), release any latch (`0x3D`), enable, set `HOME_SEEK_CUR` (300 mA — gentle).
 2. One `0xFD` toward the closed seat (`DIR_TOWARD_CLOSED=0x80`) for `HOME_MAX_PULSES` at `HOME_RPM`.
-3. **Seat = the 42D's locked-rotor latch fires**, read via `0x3E`==1 (polled with `_blocking_read_status`).
-4. Back off `HOME_BACKOFF_STEPS` toward open, verify it moved (else error `home_stuck` — a worn
-   valve that won't move gently is reported, never pushed), set `_enc_zero_raw`/`_enc_sign=-1`.
+3. **First latch = the 42D's locked-rotor fires** at the first sticky-zone slip, read via `0x3E`==1.
+   On a new valve this is usually short of the real seat.
+4. **Escalate to `HOME_ESCALATE_CURS` (500, 700 mA cap)**: full enable cycle, set higher current,
+   slow F6 (`HOME_MARCH_RPM`=5 RPM, gentle acc) toward closed with `HOME_MARCH_GRACE_S` (1.5 s)
+   startup grace + `HOME_MARCH_STILL_S` (1 s) no-progress watchdog. The slow F6 keeps the motor's
+   stiction-limited creep matched to commanded velocity, so divergence stays small and lockrotor
+   doesn't fire prematurely from sticky-spot slips. Stop a stage when the encoder hasn't moved past
+   `HOME_MARCH_MIN_RAW` (~6 µsteps) for the watchdog window — motor pinned at hard stop. Bail the
+   whole escalation if a stage didn't push more than `HOME_STAGE_MIN_RAW` (~40 µsteps) past the
+   previous latch (real seat reached). 700 mA caps below the 800–1000 mA seat-shred range.
+5. Back off `HOME_BACKOFF_STEPS` toward open (now 0 — see below), verify it moved (else error
+   `home_stuck`), set `_enc_zero_raw`/`_enc_sign=-1`.
 
 So `motor_pos 0` is the seat itself (`HOME_BACKOFF_STEPS=0` since 2026-06-24; the brief F6 in the
 backoff path is kept solely to kick the 42D out of its post-latch state, but is halted on the first
