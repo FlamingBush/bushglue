@@ -8,6 +8,7 @@ dependencies = [
     "rich>=13.0",
     "paho-mqtt>=2.0",
     "bushutil",
+    "mcp>=1.28.1",
 ]
 
 [tool.uv.sources]

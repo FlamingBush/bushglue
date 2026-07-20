@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""
+bush-valve-mcp — MCP stdio server for the needle valve (bush/fire/valve/* over MQTT).
+
+Registered in .mcp.json so Claude Code can drive the valve directly. Same broker
+resolution as bush-valve: BUSH_MQTT_BROKER env, else bushutil.get_mqtt_broker()
+(localhost on the Mac — the odroid broker arrives via the odroid-local SSH tunnel).
+"""
+import os, sys
+_venv = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, ".venv"))
+if os.path.isdir(_venv) and sys.prefix != _venv:
+    os.execv(os.path.join(_venv, "bin", "python"), [os.path.join(_venv, "bin", "python")] + sys.argv)
+
+import json
+import threading
+import time
+
+import paho.mqtt.client as mqtt
+from mcp.server.fastmcp import FastMCP
+
+MQTT_PORT = 1883
+T = "bush/fire/valve/"
+
+server = FastMCP("bush-valve")
+
+
+def _broker():
+    b = os.environ.get("BUSH_MQTT_BROKER")
+    if b:
+        return b
+    try:
+        from bushutil import get_mqtt_broker
+        return get_mqtt_broker()
+    except Exception:
+        return "localhost"
+
+
+def _publish(topic, payload="", retain=False):
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.connect(_broker(), MQTT_PORT, 10)
+    c.loop_start()
+    info = c.publish(topic, payload, retain=retain)
+    try:
+        info.wait_for_publish(timeout=5)
+    except (ValueError, RuntimeError):
+        pass
+    c.loop_stop()
+    c.disconnect()
+
+
+def _subscribe_one(topic, timeout=3.0):
+    result = [None]
+    got = threading.Event()
+
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe(topic)
+
+    def on_message(client, userdata, msg):
+        result[0] = msg.payload.decode(errors="replace")
+        got.set()
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(_broker(), MQTT_PORT, 10)
+    c.loop_start()
+    got.wait(timeout=timeout)
+    c.loop_stop()
+    c.disconnect()
+    return result[0]
+
+
+def _publish_then_wait(pub_topic, payload, sub_topic, timeout=5.0):
+    result = [None]
+    got = threading.Event()
+
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe(sub_topic)
+        client.publish(pub_topic, payload)
+
+    def on_message(client, userdata, msg):
+        result[0] = msg.payload.decode(errors="replace")
+        got.set()
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(_broker(), MQTT_PORT, 10)
+    c.loop_start()
+    got.wait(timeout=timeout)
+    c.loop_stop()
+    c.disconnect()
+    return result[0]
+
+
+def _json_or_raw(payload):
+    if payload is None:
+        return None
+    try:
+        return json.loads(payload)
+    except ValueError:
+        return payload
+
+
+def _status_snapshot(timeout=3.0):
+    s = _json_or_raw(_subscribe_one(T + "status", timeout=timeout))
+    return s if s is not None else {"error": "no status received (valve offline?)"}
+
+
+@server.tool()
+def status() -> dict:
+    """Current valve status: {state, pos, target, homed, stalled, last_error}.
+    pos/target are fractions: 0.0 = closed (seat margin), 1.0 = fully open."""
+    return _status_snapshot()
+
+
+@server.tool()
+def target(position: float) -> dict:
+    """Move the valve to a position, 0.0 = closed, 1.0 = fully open. Requires a homed
+    valve. Returns the firmware's moved telemetry {ms, cmd, enc, rpm, acc, stall}
+    (commanded vs encoder-measured step deltas); falls back to a status snapshot if
+    no move happens (deadband) or the valve is offline."""
+    position = max(0.0, min(1.0, position))
+    moved = _publish_then_wait(T + "target", f"{position:.4f}", T + "moved", timeout=15.0)
+    if moved is None:
+        return {"sent": position, "moved": None, "status": _status_snapshot()}
+    return {"sent": position, "moved": _json_or_raw(moved)}
+
+
+@server.tool()
+def nudge(degrees: int) -> dict:
+    """Raw relative move in degrees (±360), works unhomed. Positive = toward CLOSED.
+    The closed seat is the hazard: never grind toward it repeatedly or at high
+    maxtorque — forcing shreds the valve internals. The open stop just jams the
+    motor harmlessly (recoverable). Returns moved telemetry."""
+    degrees = max(-360, min(360, int(degrees)))
+    moved = _publish_then_wait(T + "nudge", str(degrees), T + "moved", timeout=20.0)
+    if moved is None:
+        return {"sent": degrees, "moved": None, "status": _status_snapshot()}
+    return {"sent": degrees, "moved": _json_or_raw(moved)}
+
+
+@server.tool()
+def home(here: bool = False) -> dict:
+    """Home the valve. Default: gentle seat-seek at low current (blocking on the
+    firmware; a worn valve errors home_stuck rather than being forced — never
+    compensate by raising current). here=True declares the CURRENT shaft position
+    as zero without touching the seat (bench zero / worn valve). Returns the final
+    status."""
+    if here:
+        _publish(T + "home", "here")
+        time.sleep(0.5)
+        return _status_snapshot()
+
+    last = [None]
+    done = threading.Event()
+
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe(T + "status")
+        client.publish(T + "home", "")
+
+    def on_message(client, userdata, msg):
+        s = _json_or_raw(msg.payload.decode(errors="replace"))
+        if isinstance(s, dict):
+            last[0] = s
+            if s.get("state") == "error" or (s.get("homed") and s.get("state") == "idle"):
+                done.set()
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(_broker(), MQTT_PORT, 10)
+    c.loop_start()
+    done.wait(timeout=90.0)
+    c.loop_stop()
+    c.disconnect()
+    if last[0] is None:
+        return {"error": "no status received (valve offline?)"}
+    if not done.is_set():
+        last[0]["note"] = "homing did not finish within 90s"
+    return last[0]
+
+
+@server.tool()
+def stop() -> dict:
+    """Emergency stop. From stalled it returns to idle; mid-move it un-homes."""
+    _publish(T + "stop")
+    time.sleep(0.5)
+    return _status_snapshot()
+
+
+@server.tool()
+def limits(move_rpm: int | None = None, move_acc: int | None = None,
+           stream_max_rpm: int | None = None, breath_max_rpm: int | None = None) -> dict:
+    """Query (no args) or set runtime motion limits (in-memory, reset on board
+    reboot). move_rpm 1-3000, move_acc 0-255. Returns the limits_ack echo."""
+    sets = {k: v for k, v in {"move_rpm": move_rpm, "move_acc": move_acc,
+                              "stream_max_rpm": stream_max_rpm,
+                              "breath_max_rpm": breath_max_rpm}.items() if v is not None}
+    payload = json.dumps(sets) if sets else ""
+    ack = _publish_then_wait(T + "limits", payload, T + "limits_ack", timeout=5.0)
+    if ack is None:
+        return {"error": "no limits_ack received (valve offline?)"}
+    return _json_or_raw(ack)
+
+
+@server.tool()
+def breath(enabled: bool | None = None, amplitude: float | None = None,
+           period_ms: int | None = None, skew: float | None = None) -> dict:
+    """Configure the idle breath oscillator (swings BELOW the set point). amplitude =
+    fraction of span 0-0.5, period 100-60000 ms, skew = rise fraction 0.05-0.95.
+    After re-enabling, re-send the current target to re-engage. Returns a status
+    snapshot."""
+    cfg = {k: v for k, v in {"enabled": enabled, "amplitude": amplitude,
+                             "period_ms": period_ms, "skew": skew}.items() if v is not None}
+    _publish(T + "breath", json.dumps(cfg))
+    time.sleep(0.5)
+    return _status_snapshot()
+
+
+@server.tool()
+def calibrate(steps: int) -> dict:
+    """Set open_steps (in-memory; board reboot resets it to 11200 AND un-homes —
+    re-home + re-calibrate after any reboot). The current chewed-valve bench value
+    is 6400."""
+    _publish(T + "calibrate", str(int(steps)))
+    time.sleep(0.5)
+    return _status_snapshot()
+
+
+@server.tool()
+def maxtorque(ma: int) -> dict:
+    """Set run current in mA (0-3000; current = torque on the 42D). Operating point
+    is 1500 at 24 V. Do NOT raise current to force a valve past resistance."""
+    _publish(T + "maxtorque", str(max(0, min(3000, int(ma)))))
+    time.sleep(0.5)
+    return _status_snapshot()
+
+
+@server.tool()
+def auto(enabled: bool) -> dict:
+    """Pause (False) or resume (True) the sentiment auto-driver (retained). Pause it
+    before manual target moves so bush-variable-valves doesn't fight you."""
+    _publish(T + "auto", "on" if enabled else "off", retain=True)
+    return {"auto": "on" if enabled else "off"}
+
+
+if __name__ == "__main__":
+    server.run()
