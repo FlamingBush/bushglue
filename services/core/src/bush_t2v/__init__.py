@@ -46,14 +46,25 @@ TOPIC_VERSE       = "bush/pipeline/t2v/verse"
 VERSE_MAX_WORDS = int(os.environ.get("VERSE_MAX_WORDS", "40"))
 
 # Chunks punctuate with ':' as often as '.', so treat it as a break too.
-_SENTENCE_END = re.compile(r"(?<=[.!?:])\s+")
+# "St." is an abbreviation, not a sentence end — without the guard a cap could
+# land mid-citation and TTS would say "...we shall find nothing (saith St."
+_SENTENCE_END = re.compile(r"(?<=[.!?:])(?<!\bSt\.)(?<!\bchap\.)(?<!\bver\.)\s+")
 
 # Douay-Rheims annotation that rides along in the long tail of the corpus.
 # Measured over the 819 chunks longer than 40 words: 8% carry an "etc.."
 # lemma marker (the note restates a fragment of the verse, marks it "etc..",
 # then explains it) and 7% carry a chapter heading followed by a whole-chapter
 # summary. Neither is scripture and neither should be spoken aloud.
-_LEMMA_MARKER = re.compile(r"\betc\.\.")
+# Two spellings of the same annotation. The note restates a fragment of the
+# verse and trails it with an ellipsis before explaining it — sometimes with
+# an "etc", more often without. Measured over the 2772 corpus chunks longer
+# than 25 words: 66 use "etc..", 159 use the bare form, so handling only the
+# first left the larger half in place.
+#   "Secret things, etc... As much as to say..."
+#   "Spoken inconsiderately... If we discuss all Job's words (saith St. ..."
+# A trailing ellipsis with nothing after it is just an ellipsis, hence the
+# required capitalised word.
+_LEMMA_MARKER = re.compile(r"\betc\.\.|\w\.\.\.\s+[A-Z]")
 _CHAPTER_HEADING = re.compile(r"(?:\b[1-4]\s)?\b[A-Z][a-z]+ Chapter \d+")
 
 # Keep at least this many words, or the strip is treated as over-eager and

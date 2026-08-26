@@ -144,3 +144,50 @@ def test_prepare_verse_strips_then_caps(t2v):
 def test_prepare_verse_caps_when_stripping_is_not_enough(t2v):
     text = " ".join(f"word{i}" for i in range(90)) + "."
     assert len(t2v.prepare_verse(text).split()) <= 40
+
+
+# ── bare "..." lemma, and abbreviations that fake a sentence end ────────────
+# Measured over the 2772 corpus chunks longer than 25 words: 66 carry the
+# "etc.." spelling, 159 the bare "...". Handling only the first left the
+# larger half unstripped — observed live, the bush published a verse trailing
+# "Spoken inconsiderately... If we discuss all Job's words (saith St."
+
+DOTS_CHUNK = (
+    "What can I answer, who hath spoken inconsiderately? I will lay my hand"
+    " upon my mouth. Spoken inconsiderately... If we discuss all Job's words"
+    " (saith St. Gregory), we shall find nothing impiously spoken."
+)
+
+
+def test_bare_dots_lemma_is_stripped(t2v):
+    out = t2v.strip_commentary(DOTS_CHUNK)
+    assert out == (
+        "What can I answer, who hath spoken inconsiderately? I will lay my"
+        " hand upon my mouth."
+    )
+
+
+def test_bare_dots_commentary_never_reaches_tts(t2v):
+    out = t2v.prepare_verse(DOTS_CHUNK)
+    assert "saith St." not in out
+    assert "If we discuss" not in out
+
+
+def test_trailing_ellipsis_is_not_a_lemma(t2v):
+    # An ellipsis with nothing after it is just an ellipsis.
+    text = "His body lay on the road, and the lion stood beside it..."
+    assert t2v.strip_commentary(text) == text
+
+
+def test_saint_abbreviation_is_not_a_sentence_end(t2v):
+    # Without the guard the cap lands mid-citation and TTS reads "saith St."
+    text = ("A reading attributed to saith St. Gregory and to many other"
+            " fathers of the early church, recorded at length in the"
+            " commentaries that follow this passage closely.")
+    out = t2v.cap_verse(text, max_words=12)
+    assert not out.rstrip().endswith("St.")
+
+
+def test_lemma_stripping_survives_the_etc_form_too(t2v):
+    # The original spelling must keep working alongside the new one.
+    assert "As much as to say" not in t2v.strip_commentary(LONG_CHUNK)
