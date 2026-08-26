@@ -63,6 +63,7 @@ The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s timeout.
 | `bush/pipeline/sentiment/result` | bush-sentiment | bush-variable-valves, (monitor/discord) |
 | `bush/pipeline/stt/force-finalize` | (external) | bush-stt |
 | `bush/pipeline/stt/ptt` | bush-ptt | bush-stt |
+| `bush/pipeline/stt/listening` | bush-stt | bush-ptt |
 
 #### Fire control
 

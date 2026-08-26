@@ -100,6 +100,7 @@ TOPIC_SET_DEVICE      = "bush/audio/stt/set-device"
 TOPIC_DEVICE_STATUS   = "bush/audio/stt/device"
 TOPIC_FORCE_FINALIZE  = "bush/pipeline/stt/force-finalize"
 TOPIC_PTT             = "bush/pipeline/stt/ptt"
+TOPIC_LISTENING       = "bush/pipeline/stt/listening"
 TOPIC_PIPELINE_PING   = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG   = "bush/pipeline/pong"
 TOPIC_TTS_DEVICE      = "bush/audio/tts/device"
@@ -253,6 +254,35 @@ def main():
     # Used by on_tts_speaking / on_tts_done to coordinate with VAD state.
     endpointer_ref: list = [None]
 
+    # ── listening state (drives the button LED via bush-ptt) ───────────────
+    # True only when audio is actually reaching the engine: an utterance is
+    # open AND we are not muted for TTS. Retained, so a bush-ptt that starts
+    # late lights its LED correctly instead of guessing.
+    _listening = [False]
+
+    def _publish_listening(client=None, force=False):
+        ep = endpointer_ref[0]
+        if STT_ENDPOINT == "ptt":
+            # Listening only while the button holds an utterance open. Keyed
+            # off STT_ENDPOINT rather than the endpointer object, so the state
+            # is correct during startup too — MQTT connects before the
+            # pipeline is built, and a bare `not muted` would light the LED
+            # at boot with nothing recording.
+            state = bool(ep is not None and ep.recording) and not muted.is_set()
+        else:
+            # VAD picks its own boundaries, so "listening" is just unmuted.
+            state = not muted.is_set()
+        if state == _listening[0] and not force:
+            return
+        _listening[0] = state
+        c = client or mqttc
+        try:
+            c.publish(TOPIC_LISTENING,
+                      json.dumps({"listening": state, "ts": time.time()}),
+                      retain=True)
+        except Exception as e:
+            log(f"listening publish error: {e}")
+
     def on_tts_done():
         if _mute_timer[0] is not None:
             _mute_timer[0].cancel()
@@ -266,6 +296,7 @@ def main():
                 endpointer_ref[0].reset()
             except Exception as e:
                 log(f"endpointer.reset() error: {e}")
+        _publish_listening()
         log("Unmuting STT (TTS done)")
 
     def on_tts_speaking():
@@ -283,6 +314,7 @@ def main():
                 endpointer_ref[0].drop_in_flight()
             except Exception as e:
                 log(f"endpointer.drop_in_flight() error: {e}")
+        _publish_listening()
         stt_card = _alsa_card(current_device)
         tts_card = _alsa_card(tts_device[0]) if tts_device[0] else None
         if stt_card and stt_card == tts_card:
@@ -313,6 +345,7 @@ def main():
                 else:
                     log("PTT up")
                     ep.release()
+                _publish_listening(client)
             except Exception as e:
                 log(f"ptt error: {e}")
         elif msg.topic == TOPIC_PIPELINE_PING:
@@ -345,6 +378,9 @@ def main():
         client.subscribe(TOPIC_PTT)
         client.subscribe(TOPIC_PIPELINE_PING)
         client.subscribe(TOPIC_TTS_DEVICE)
+        # Re-assert listening state on reconnect (retained), so the LED can
+        # never latch on after a broker blip.
+        _publish_listening(client, force=True)
         # Publish current device on reconnect
         client.publish(TOPIC_DEVICE_STATUS,
                        json.dumps({"device": next_device[0]}), retain=True)

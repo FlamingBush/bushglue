@@ -29,4 +29,9 @@ To install:
 The unit sets `SupplementaryGroups=gpio` so the service picks the group up
 without waiting for a re-login. Default wiring on the Orange Pi 5 Ultra is
 header pin 18 (`GPIO1_A4` = `/dev/gpiochip1` line 4) with pin 20 as its GND;
-the button shorts the line to ground against the internal pull-up.
+the button shorts the line to ground against the internal pull-up. The
+indicator LED is header pin 16 (`GPIO1_A3` = `/dev/gpiochip1` line 3) with
+pin 14 as its GND, through a series resistor — roughly 330 Ω for a red/green
+LED at 3.3 V, 100 Ω for blue/white. An LED whose internal resistor is sized
+for 5 V or 12 V needs its own rail and a transistor; put the GPIO on the gate
+and set `PTT_LED_ACTIVE_LOW=1` for a low-side driver.

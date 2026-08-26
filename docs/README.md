@@ -25,6 +25,7 @@ See the [root README](../README.md) for setup and deploy instructions.
 | `bush/pipeline/sentiment/result` | → | bush-sentiment | (monitor/discord) |
 | `bush/pipeline/stt/force-finalize` | → | (external) | bush-stt |
 | `bush/pipeline/stt/ptt` | → | bush-ptt | bush-stt |
+| `bush/pipeline/stt/listening` | ← | bush-stt | bush-ptt |
 
 ### Fire Control Topics
 
@@ -80,6 +81,16 @@ Push-to-talk button edges. `pressed: true` opens an utterance, `false` closes
 it and hands the buffered audio to the STT engine. Only acted on when bush-stt
 runs with `STT_ENDPOINT=ptt`; the Silero endpointer ignores the topic and
 decides boundaries from the audio itself.
+
+### `bush/pipeline/stt/listening`
+```json
+{ "listening": true, "ts": 1711234567.89 }
+```
+Retained. True only while audio is actually reaching the STT engine — under
+PTT that means an utterance is open **and** the service is not muted for TTS.
+`bush-ptt` drives the button's indicator LED from this, so the light means
+"you are being heard" rather than "the switch is closed": pressing while the
+bush is speaking does nothing, and the LED correctly stays dark.
 
 ### `bush/pipeline/t2v/processing`
 ```json

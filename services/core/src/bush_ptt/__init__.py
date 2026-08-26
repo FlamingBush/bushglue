@@ -4,6 +4,11 @@ Push-to-talk button watcher.
 
 Reads a GPIO line and publishes press/release on bush/pipeline/stt/ptt.
 
+Also drives the button's indicator LED from bush/pipeline/stt/listening, so
+the light means "you are being heard" rather than "the switch is closed".
+Those differ: while the bush is speaking, bush-stt is muted and a press does
+nothing, and an LED wired across the switch contacts would light anyway.
+
 Runs as its own service rather than inside bush-stt for two reasons: the
 button can then live on any host that can reach the broker, and bush-stt
 stays testable without hardware — publishing the same two MQTT messages by
@@ -12,7 +17,14 @@ hand drives the identical code path.
 Default wiring is the Orange Pi 5 Ultra 40-pin header:
 
     header pin 18  =  GPIO1_A4  =  kernel gpio 36  =  /dev/gpiochip1 line 4
-    header pin 20  =  GND
+    header pin 20  =  GND         (button)
+    header pin 16  =  GPIO1_A3  =  kernel gpio 35  =  /dev/gpiochip1 line 3
+    header pin 14  =  GND         (LED, through a series resistor)
+
+The LED pin sources at most a few mA. Anything brighter than a bare indicator
+LED — or an LED whose internal resistor is sized for 5 V or 12 V — needs a
+transistor and its own rail; set PTT_LED_ACTIVE_LOW=1 for a low-side driver
+that sinks rather than sources.
 
 Button shorts the line to ground, internal pull-up holds it high when open,
 so the line is active-low. /dev/gpiochip* is root-only by default; see
@@ -20,6 +32,7 @@ udev/95-gpio.rules for the group grant.
 """
 import json
 import os
+import threading
 import time
 
 from bushutil import make_logger, run_mqtt_service
@@ -30,11 +43,17 @@ PTT_GPIO_LINE = int(os.environ.get("PTT_GPIO_LINE", "4"))
 PTT_ACTIVE_LOW = os.environ.get("PTT_ACTIVE_LOW", "1") not in ("0", "false", "False", "")
 PTT_BIAS = os.environ.get("PTT_BIAS", "pull_up")
 
+# Indicator LED. Set PTT_LED_LINE to an empty string to run without one.
+PTT_LED_CHIP = os.environ.get("PTT_LED_CHIP", "/dev/gpiochip1")
+PTT_LED_LINE = os.environ.get("PTT_LED_LINE", "3")
+PTT_LED_ACTIVE_LOW = os.environ.get("PTT_LED_ACTIVE_LOW", "0") not in ("0", "false", "False", "")
+
 # Contact bounce on a cheap momentary switch settles well inside this.
 PTT_DEBOUNCE_MS = int(os.environ.get("PTT_DEBOUNCE_MS", "25"))
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_PTT = "bush/pipeline/stt/ptt"
+TOPIC_LISTENING = "bush/pipeline/stt/listening"
 
 log = make_logger("ptt")
 
@@ -56,6 +75,54 @@ def _open_line():
 def _is_pressed(level: bool) -> bool:
     """Map a raw line level to button state."""
     return (not level) if PTT_ACTIVE_LOW else level
+
+
+# ── indicator LED ──────────────────────────────────────────────────────────
+# Written from the MQTT callback thread; the button line is read from the
+# watch thread. Separate GPIO objects, but the handle is shared, so guard it.
+_led = [None]
+_led_lock = threading.Lock()
+
+
+def _open_led():
+    """Open the LED line, or return None if not configured / unavailable."""
+    if not PTT_LED_LINE.strip():
+        log("no LED configured (PTT_LED_LINE empty)")
+        return None
+    from periphery import GPIO
+
+    try:
+        led = GPIO(PTT_LED_CHIP, int(PTT_LED_LINE), "out", label="bush-ptt-led")
+    except Exception as e:
+        # A missing LED must never take the button down with it.
+        log(f"WARNING: cannot open LED on {PTT_LED_CHIP} line {PTT_LED_LINE}: {e}")
+        return None
+    log(f"LED on {PTT_LED_CHIP} line {PTT_LED_LINE} "
+        f"(active_low={PTT_LED_ACTIVE_LOW})")
+    return led
+
+
+def _set_led(on: bool) -> None:
+    with _led_lock:
+        led = _led[0]
+        if led is None:
+            return
+        try:
+            led.write((not on) if PTT_LED_ACTIVE_LOW else on)
+        except Exception as e:
+            log(f"LED write error: {e}")
+
+
+def on_message(client, userdata, msg):
+    """Drive the LED from bush-stt's listening state."""
+    if msg.topic != TOPIC_LISTENING:
+        return
+    try:
+        listening = bool(json.loads(msg.payload).get("listening"))
+    except Exception as e:
+        log(f"listening parse error: {e}")
+        return
+    _set_led(listening)
 
 
 def watch(client, stop):
@@ -113,8 +180,24 @@ def _publish(client, pressed: bool) -> None:
     client.publish(TOPIC_PTT, json.dumps({"pressed": pressed, "ts": time.time()}))
 
 
+def _shutdown():
+    """Dark LED on the way out — a latched-on light reads as 'still listening'."""
+    _set_led(False)
+    with _led_lock:
+        if _led[0] is not None:
+            try:
+                _led[0].close()
+            except Exception:
+                pass
+            _led[0] = None
+
+
 def main():
-    run_mqtt_service("ptt", [], lambda *a: None, background_loop=watch)
+    with _led_lock:
+        _led[0] = _open_led()
+    _set_led(False)
+    run_mqtt_service("ptt", [TOPIC_LISTENING], on_message,
+                     background_loop=watch, on_shutdown=_shutdown)
 
 
 if __name__ == "__main__":

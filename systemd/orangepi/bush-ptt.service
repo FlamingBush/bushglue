@@ -12,6 +12,12 @@ SupplementaryGroups=gpio
 Environment=PTT_GPIO_CHIP=/dev/gpiochip1
 Environment=PTT_GPIO_LINE=4
 Environment=PTT_ACTIVE_LOW=1
+# Indicator LED: header pin 16 = GPIO1_A3 = /dev/gpiochip1 line 3, pin 14 GND.
+# Lit while bush-stt reports it is actually hearing you. Set PTT_LED_LINE=""
+# to run without one, or PTT_LED_ACTIVE_LOW=1 for a low-side transistor.
+Environment=PTT_LED_CHIP=/dev/gpiochip1
+Environment=PTT_LED_LINE=3
+Environment=PTT_LED_ACTIVE_LOW=0
 ExecStart=/home/orangepi/bushglue/.venv/bin/bush-ptt
 Restart=always
 RestartSec=5
