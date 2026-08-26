@@ -15,6 +15,7 @@ bush-sentiment = "bush_sentiment:main"
 
 [tool.uv.sources]
 bushutil = { workspace = true }
+torch = { index = "pytorch-cpu" }
 
 [build-system]
 requires = ["hatchling"]

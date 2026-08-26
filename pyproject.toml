@@ -11,13 +11,30 @@ dependencies = [
     "mcp>=1.28.1",
 ]
 
+[tool.uv]
+# torchaudio's newest CPU-index build is 2.11; its compiled extension links
+# against libtorch of the same minor. Hold torch there so the pair stays ABI
+# compatible (silero-vad imports torchaudio).
+constraint-dependencies = ["torch==2.11.0"]
+
 [tool.uv.sources]
 bushutil = { workspace = true }
+# This fleet is aarch64 (RK3588). PyPI's linux torch wheel drags in the whole
+# NVIDIA CUDA runtime (~6 GB of cublas/cudnn/nccl) that no board here can use;
+# NPU work goes through RKNN, not CUDA. Pin torch to the CPU-only index.
+torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.uv.workspace]
 members = [
     "packages/*",
     "services/*",
+    "mqtt-pixelblaze-bridge",
 ]
 exclude = [
     "t2v",
