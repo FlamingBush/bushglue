@@ -8,6 +8,7 @@ and publishes results to bush/pipeline/t2v/verse.
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -31,10 +32,59 @@ TOPIC_TRANSCRIPT  = "bush/pipeline/stt/transcript"
 TOPIC_PROCESSING  = "bush/pipeline/t2v/processing"
 TOPIC_VERSE       = "bush/pipeline/t2v/verse"
 
+# ── verse length cap ───────────────────────────────────────────────────────
+# Retrieved chunks are not always just the verse: some carry study-bible
+# commentary and a chapter heading trailing the scripture. bush-tts speaks
+# whatever arrives at roughly 0.55 s/word and kills sox at its own
+# TTS_TIMEOUT_S=60 failsafe, so a measured 88-word chunk took 54 s and came
+# within six seconds of being cut off mid-sentence.
+#
+# Cap here rather than in bush-tts so the same text reaches every consumer:
+# bush-sentiment classifies what is actually spoken, and the Pixelblaze
+# bridge's verse-hash match (t2v/verse vs sentiment/result) still agrees.
+# 0 disables the cap.
+VERSE_MAX_WORDS = int(os.environ.get("VERSE_MAX_WORDS", "40"))
+
+# Chunks punctuate with ':' as often as '.', so treat it as a break too.
+_SENTENCE_END = re.compile(r"(?<=[.!?:])\s+")
+
 
 from bushutil import make_logger, run_mqtt_service
 
 log = make_logger("t2v-service")
+
+
+def cap_verse(text: str, max_words: int | None = None) -> str:
+    """Trim *text* to at most *max_words*, preferring a sentence boundary.
+
+    Whitespace is collapsed first: chunks arrive with hard line breaks mid
+    sentence ("manifest, to\\n us"), which throw off both the word count and
+    the sentence split. Text that already fits comes back with only that
+    normalisation applied.
+    """
+    if max_words is None:
+        max_words = VERSE_MAX_WORDS
+    text = " ".join(text.split())
+    if max_words <= 0 or len(text.split()) <= max_words:
+        return text
+
+    kept: list[str] = []
+    count = 0
+    for sentence in _SENTENCE_END.split(text):
+        words = len(sentence.split())
+        if kept and count + words > max_words:
+            break
+        kept.append(sentence)
+        count += words
+        if count >= max_words:
+            break
+    capped = " ".join(kept)
+
+    # One opening sentence can already blow the budget; cut it at the word
+    # limit rather than speaking the whole thing.
+    if len(capped.split()) > max_words:
+        capped = " ".join(capped.split()[:max_words]).rstrip(",;:") + "."
+    return capped
 
 
 def wait_for_http(url: str, name: str, timeout: int = 120, proc: subprocess.Popen = None):
@@ -116,7 +166,12 @@ def main():
             client.publish(TOPIC_PROCESSING, json.dumps({"text": text, "ts": time.time()}))
             try:
                 result = query_t2v(text)
-                verse_text = result.get("text", "")
+                raw_text = result.get("text", "")
+                verse_text = cap_verse(raw_text)
+                raw_words = len(raw_text.split())
+                if len(verse_text.split()) < raw_words:
+                    log(f"Verse capped: {raw_words} -> {len(verse_text.split())} words "
+                        f"(VERSE_MAX_WORDS={VERSE_MAX_WORDS})")
                 log(f"Verse: {verse_text!r}")
                 payload = json.dumps({"query": text, "text": verse_text, "ts": time.time()})
                 client.publish(TOPIC_VERSE, payload)
