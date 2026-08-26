@@ -1,0 +1,22 @@
+[Unit]
+Description=Push-to-talk button watcher
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+# /dev/gpiochip* is root:gpio 0660 via udev/95-gpio.rules
+SupplementaryGroups=gpio
+# Header pin 18 = GPIO1_A4 = /dev/gpiochip1 line 4; pin 20 is its GND.
+Environment=PTT_GPIO_CHIP=/dev/gpiochip1
+Environment=PTT_GPIO_LINE=4
+Environment=PTT_ACTIVE_LOW=1
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-ptt
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

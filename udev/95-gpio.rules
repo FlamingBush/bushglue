@@ -1,0 +1,4 @@
+# Give the gpio group access to the GPIO character devices.
+# The push-to-talk button (bush-ptt) reads /dev/gpiochip1 line 4 = GPIO1_A4 =
+# header pin 18 on the Orange Pi 5 Ultra. Default is root-only crw-------.
+SUBSYSTEM=="gpio", KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"

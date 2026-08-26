@@ -46,6 +46,10 @@ SAMPLE_RATE = 16000  # legacy path uses this; SpeechToText still imports it
 STT_USE_VAD = os.environ.get("STT_USE_VAD", "0") not in ("0", "false", "False", "")
 STT_USE_RNNOISE = os.environ.get("STT_USE_RNNOISE", "0") not in ("0", "false", "False", "")
 STT_ENGINE_NAME = os.environ.get("STT_ENGINE", "vosk").lower()
+# Where utterance boundaries come from on the STT_USE_VAD=1 path:
+#   "vad" — Silero decides, from the audio (default)
+#   "ptt" — a physical button decides, via bush/pipeline/stt/ptt
+STT_ENDPOINT = os.environ.get("STT_ENDPOINT", "vad").lower()
 # Drop transcripts whose mean word-level confidence falls below this floor.
 # Default 0.6 matches the threshold used in the prior STT-accuracy work
 # (middog/bushglue commit ff29f2c, Apr 2026).
@@ -95,6 +99,7 @@ TOPIC_TTS_DONE        = "bush/pipeline/tts/done"
 TOPIC_SET_DEVICE      = "bush/audio/stt/set-device"
 TOPIC_DEVICE_STATUS   = "bush/audio/stt/device"
 TOPIC_FORCE_FINALIZE  = "bush/pipeline/stt/force-finalize"
+TOPIC_PTT             = "bush/pipeline/stt/ptt"
 TOPIC_PIPELINE_PING   = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG   = "bush/pipeline/pong"
 TOPIC_TTS_DEVICE      = "bush/audio/tts/device"
@@ -190,21 +195,33 @@ def _build_engine():
         )
 
 
-def _build_pipeline():
-    """Build VAD pipeline components.
-
-    Returns (vad, denoise_or_none, resampler_or_none).
-    """
+def _build_endpointer():
+    """Construct the endpointer selected by STT_ENDPOINT."""
+    if STT_ENDPOINT == "ptt":
+        from bush_stt.ptt import PttEndpointer
+        log("endpointer: ptt (button-driven)")
+        return PttEndpointer()
+    if STT_ENDPOINT != "vad":
+        raise RuntimeError(f"Unknown STT_ENDPOINT={STT_ENDPOINT!r}; must be vad|ptt")
     from bush_stt.vad import VadEndpointer
-    vad = VadEndpointer()
+    log("endpointer: vad (silero)")
+    return VadEndpointer()
+
+
+def _build_pipeline():
+    """Build endpointer + optional denoise/resample stages.
+
+    Returns (endpointer, denoise_or_none, resampler_or_none).
+    """
+    endpointer = _build_endpointer()
     if STT_USE_RNNOISE:
         from bush_stt.denoise import RnnoiseFilter
         denoise = RnnoiseFilter()
         # Stateful streaming resampler (48k -> 16k); arbitrary input length OK.
         import soxr
         resampler = soxr.ResampleStream(48000, 16000, 1, dtype="int16")
-        return vad, denoise, resampler
-    return vad, None, None
+        return endpointer, denoise, resampler
+    return endpointer, None, None
 
 
 def main():
@@ -212,7 +229,8 @@ def main():
     log(f"MQTT broker: {broker}:{MQTT_PORT}")
     log(
         f"flags: STT_USE_VAD={STT_USE_VAD} STT_USE_RNNOISE={STT_USE_RNNOISE} "
-        f"STT_ENGINE={STT_ENGINE_NAME} CAPTURE_SAMPLE_RATE={CAPTURE_SAMPLE_RATE}"
+        f"STT_ENGINE={STT_ENGINE_NAME} STT_ENDPOINT={STT_ENDPOINT} "
+        f"CAPTURE_SAMPLE_RATE={CAPTURE_SAMPLE_RATE}"
     )
 
     # ── mute gate ──────────────────────────────────────────────────────────
@@ -233,7 +251,7 @@ def main():
 
     # ── VAD object slot (set on new-pipeline branch; legacy path leaves None) ─
     # Used by on_tts_speaking / on_tts_done to coordinate with VAD state.
-    vad_ref: list = [None]
+    endpointer_ref: list = [None]
 
     def on_tts_done():
         if _mute_timer[0] is not None:
@@ -243,11 +261,11 @@ def main():
         reset_recognizer.set()
         tts_pause.clear()
         tts_resume.set()
-        if vad_ref[0] is not None:
+        if endpointer_ref[0] is not None:
             try:
-                vad_ref[0].reset()
+                endpointer_ref[0].reset()
             except Exception as e:
-                log(f"vad.reset() error: {e}")
+                log(f"endpointer.reset() error: {e}")
         log("Unmuting STT (TTS done)")
 
     def on_tts_speaking():
@@ -260,11 +278,11 @@ def main():
         t.daemon = True
         t.start()
         _mute_timer[0] = t
-        if vad_ref[0] is not None:
+        if endpointer_ref[0] is not None:
             try:
-                vad_ref[0].drop_in_flight()
+                endpointer_ref[0].drop_in_flight()
             except Exception as e:
-                log(f"vad.drop_in_flight() error: {e}")
+                log(f"endpointer.drop_in_flight() error: {e}")
         stt_card = _alsa_card(current_device)
         tts_card = _alsa_card(tts_device[0]) if tts_device[0] else None
         if stt_card and stt_card == tts_card:
@@ -282,6 +300,21 @@ def main():
         elif msg.topic == TOPIC_FORCE_FINALIZE:
             log("Force-finalize requested.")
             force_finalize.set()
+        elif msg.topic == TOPIC_PTT:
+            # Ignored unless STT_ENDPOINT=ptt built a PttEndpointer; the VAD
+            # endpointer has no press/release and decides for itself.
+            ep = endpointer_ref[0]
+            if ep is None or not hasattr(ep, "press"):
+                return
+            try:
+                if json.loads(msg.payload).get("pressed"):
+                    log("PTT down")
+                    ep.press()
+                else:
+                    log("PTT up")
+                    ep.release()
+            except Exception as e:
+                log(f"ptt error: {e}")
         elif msg.topic == TOPIC_PIPELINE_PING:
             client.publish(TOPIC_PIPELINE_PONG, "")
         elif msg.topic == TOPIC_TTS_DEVICE:
@@ -309,6 +342,7 @@ def main():
         client.subscribe(TOPIC_TTS_DONE)
         client.subscribe(TOPIC_SET_DEVICE)
         client.subscribe(TOPIC_FORCE_FINALIZE)
+        client.subscribe(TOPIC_PTT)
         client.subscribe(TOPIC_PIPELINE_PING)
         client.subscribe(TOPIC_TTS_DEVICE)
         # Publish current device on reconnect
@@ -366,9 +400,9 @@ def main():
         # rknnlite/librknnrt.so first leaves Python's logging module in a
         # state that breaks silero-vad's transitive torch.fx import. Loading
         # silero first sidesteps the issue.
-        vad, denoise, resampler = _build_pipeline()
+        endpointer, denoise, resampler = _build_pipeline()
         engine = _build_engine()
-        vad_ref[0] = vad
+        endpointer_ref[0] = endpointer
     else:
         log("starting LEGACY pipeline (Vosk streaming)")
         # Warn loudly if non-default knobs were set on the legacy path so
@@ -384,7 +418,7 @@ def main():
         from vosk import KaldiRecognizer
         stt = SpeechToText(model_path=MODEL_PATH, sample_rate=SAMPLE_RATE)
         engine = None
-        vad = None
+        endpointer = None
         denoise = None
         resampler = None
 
@@ -467,14 +501,14 @@ def main():
                 log(f"Force-final (canned): {text!r}")
                 mqttc.publish(TOPIC_TRANSCRIPT,
                               json.dumps({"text": text, "ts": time.time()}))
-                vad.drop_in_flight()
+                endpointer.drop_in_flight()
                 if denoise is not None:
                     denoise.reset()
                 continue
 
             if reset_recognizer.is_set():
                 reset_recognizer.clear()
-                vad.reset()
+                endpointer.reset()
                 if denoise is not None:
                     denoise.reset()
                 log("Recognizer/VAD reset.")
@@ -499,7 +533,7 @@ def main():
                 pcm_16k = data
 
             # Stage 3: VAD endpoint -> zero or more complete utterances
-            utterances = vad.feed(pcm_16k)
+            utterances = endpointer.feed(pcm_16k)
             for utt in utterances:
                 ms = (len(utt) // 2) * 1000 // RECOGNIZER_SAMPLE_RATE
                 log(f"VAD emitted utterance: {len(utt)} bytes ({ms} ms)")
@@ -585,8 +619,8 @@ def main():
     finally:
         # New-pipeline resource cleanup (best-effort — never raise during shutdown)
         if STT_USE_VAD:
-            if vad is not None:
-                try: vad.close()
+            if endpointer is not None:
+                try: endpointer.close()
                 except Exception: pass
             if denoise is not None:
                 try: denoise.close()

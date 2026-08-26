@@ -11,6 +11,8 @@ Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
 Environment=STT_USE_VAD=1
 Environment=STT_USE_RNNOISE=1
 Environment=STT_ENGINE=whisper-rknn
+# Utterance boundaries come from the button (bush-ptt), not Silero.
+Environment=STT_ENDPOINT=ptt
 ExecStart=/home/orangepi/bushglue/.venv/bin/bush-stt
 Restart=on-failure
 RestartSec=5

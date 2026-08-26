@@ -24,6 +24,7 @@ See the [root README](../README.md) for setup and deploy instructions.
 | `bush/pipeline/tts/done` | → | bush-tts | bush-stt, bush-sentiment |
 | `bush/pipeline/sentiment/result` | → | bush-sentiment | (monitor/discord) |
 | `bush/pipeline/stt/force-finalize` | → | (external) | bush-stt |
+| `bush/pipeline/stt/ptt` | → | bush-ptt | bush-stt |
 
 ### Fire Control Topics
 
@@ -70,6 +71,15 @@ See the [root README](../README.md) for setup and deploy instructions.
 ```json
 { "text": "interim recognition in progress" }
 ```
+
+### `bush/pipeline/stt/ptt`
+```json
+{ "pressed": true, "ts": 1711234567.89 }
+```
+Push-to-talk button edges. `pressed: true` opens an utterance, `false` closes
+it and hands the buffered audio to the STT engine. Only acted on when bush-stt
+runs with `STT_ENDPOINT=ptt`; the Silero endpointer ignores the topic and
+decides boundaries from the audio itself.
 
 ### `bush/pipeline/t2v/processing`
 ```json
