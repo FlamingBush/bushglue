@@ -1,0 +1,17 @@
+[Unit]
+Description=MQTT to Pixelblaze bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bridge
+Group=bridge
+WorkingDirectory=/opt/mqtt-pixelblaze-bridge
+ExecStart=/opt/mqtt-pixelblaze-bridge/.venv/bin/mqtt-pixelblaze-bridge --config /etc/mqtt-pixelblaze-bridge/bridge.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+{
+  "mqtt": {
+    "host": "192.168.0.200",
+    "port": 1883,
+    "client_id": "pixelblaze-sidecar"
+  },
+  "pixelblaze": {
+    "host": "192.168.0.205"
+  },
+  "bindings": [
+    {
+      "topic": "installation/pattern",
+      "command": "set_pattern"
+    },
+    {
+      "topic": "installation/brightness",
+      "command": "set_brightness"
+    },
+    {
+      "topic": "installation/speed",
+      "command": "set_variable",
+      "variable": "speed"
+    }
+  ]
+}

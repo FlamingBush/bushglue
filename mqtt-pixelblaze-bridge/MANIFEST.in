@@ -1,0 +1,7 @@
+include README.md
+include constraints.txt
+recursive-include docs *.md *.service
+recursive-include examples *.json *.md *.py
+recursive-include pixelblaze *.js
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod] .DS_Store

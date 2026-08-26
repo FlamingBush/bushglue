@@ -1,0 +1,181 @@
+{
+  "mqtt": {
+    "host": "127.0.0.1",
+    "port": 1883,
+    "client_id": "emotional-fire-local"
+  },
+  "pixelblaze": {
+    "host": "192.168.1.142"
+  },
+  "bindings": [
+    {
+      "topic": "bush/lights/layout",
+      "command": "set_pattern",
+      "value_map": {
+        "spiral": "bush-scene-spiral",
+        "unordered": "bush-scene-unordered"
+      }
+    },
+    {
+      "topic": "bush/lights/brightness",
+      "command": "set_brightness"
+    },
+    {
+      "topic": "bush/lights/speaking-timeout-seconds",
+      "command": "set_variable",
+      "variable": "speakingTimeoutSeconds"
+    },
+    {
+      "topic": "bush/lights/anticipation-timeout-seconds",
+      "command": "set_variable",
+      "variable": "anticipationTimeoutSeconds"
+    },
+    {
+      "topic": "bush/lights/decay-seconds",
+      "command": "set_variable",
+      "variable": "decaySeconds"
+    },
+    {
+      "topic": "bush/lights/spiral-center-at-zero",
+      "command": "set_variable",
+      "variable": "centerAtPixelZero"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["classification"],
+      "array_lookup": {
+        "match_key": "label",
+        "match_value": "anger",
+        "value_key": "score"
+      },
+      "variable": "inputAnger"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["classification"],
+      "array_lookup": {
+        "match_key": "label",
+        "match_value": "joy",
+        "value_key": "score"
+      },
+      "variable": "inputJoy"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["classification"],
+      "array_lookup": {
+        "match_key": "label",
+        "match_value": "love",
+        "value_key": "score"
+      },
+      "variable": "inputLove"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["classification"],
+      "array_lookup": {
+        "match_key": "label",
+        "match_value": "surprise",
+        "value_key": "score"
+      },
+      "variable": "inputSurprise"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["classification"],
+      "array_lookup": {
+        "match_key": "label",
+        "match_value": "fear",
+        "value_key": "score"
+      },
+      "variable": "inputFear"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["classification"],
+      "array_lookup": {
+        "match_key": "label",
+        "match_value": "sadness",
+        "value_key": "score"
+      },
+      "variable": "inputSadness"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["verse"],
+      "transform": "text_hash",
+      "variable": "inputSentimentVerseHash"
+    },
+    {
+      "topic": "bush/pipeline/sentiment/result",
+      "command": "trigger",
+      "payload_format": "json",
+      "variable": "sentimentTrigger"
+    },
+    {
+      "topic": "bush/pipeline/t2v/verse",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["text"],
+      "transform": "text_hash",
+      "variable": "inputVerseHash"
+    },
+    {
+      "topic": "bush/pipeline/t2v/verse",
+      "command": "trigger",
+      "payload_format": "json",
+      "variable": "verseTrigger"
+    },
+    {
+      "topic": "bush/pipeline/tts/speaking",
+      "command": "trigger",
+      "payload_format": "json",
+      "variable": "speakingTrigger"
+    },
+    {
+      "topic": "bush/pipeline/tts/done",
+      "command": "trigger",
+      "payload_format": "json",
+      "variable": "doneTrigger"
+    },
+    {
+      "topic": "bush/flame/pulse",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["ms"],
+      "variable": "inputFlamePulseMs"
+    },
+    {
+      "topic": "bush/flame/pulse",
+      "command": "set_variable",
+      "payload_format": "json",
+      "value_path": ["valve"],
+      "value_map": {
+        "flare": 1,
+        "bigjet": 2,
+        "poof": 3
+      },
+      "variable": "inputFlameValve"
+    },
+    {
+      "topic": "bush/flame/pulse",
+      "command": "trigger",
+      "payload_format": "json",
+      "variable": "flamePulseTrigger"
+    }
+  ]
+}
