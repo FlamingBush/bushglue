@@ -63,7 +63,7 @@ PTT_LED_LINE = os.environ.get("PTT_LED_LINE", "3")
 PTT_LED_ACTIVE_LOW = os.environ.get("PTT_LED_ACTIVE_LOW", "0") not in ("0", "false", "False", "")
 
 # Contact bounce on a cheap momentary switch settles well inside this.
-PTT_DEBOUNCE_MS = int(os.environ.get("PTT_DEBOUNCE_MS", "25"))
+PTT_DEBOUNCE_MS = int(os.environ.get("PTT_DEBOUNCE_MS", "50"))
 
 # ── MQTT ───────────────────────────────────────────────────────────────────
 TOPIC_PTT = "bush/pipeline/stt/ptt"
@@ -173,29 +173,31 @@ def watch(client, stop):
         f"button is {'DOWN' if pressed else 'up'} at startup")
     _publish(client, pressed)
 
-    # Timestamp of the last accepted edge, for debounce.
-    last_change = 0.0
     press_started = time.time() if pressed else None
 
     try:
         while not stop.is_set():
-            # Short poll timeout so stop.set() is noticed promptly.
-            if not line.poll(timeout=0.5):
-                continue
-            line.read_event()
+            # Poll is only a hint that something moved. The level is the truth,
+            # and it is re-read on every iteration — including the timeout path
+            # — so a missed or discarded edge self-heals within one tick rather
+            # than latching forever. Dropping an edge to debounce was the
+            # original bug: a release landing inside the bounce window was
+            # thrown away, the line then sat still with no further edges, and
+            # the service believed the button was held indefinitely.
+            if line.poll(timeout=0.2):
+                line.read_event()
+                # Let the contacts settle, then discard whatever bounced in
+                # the meantime; the post-settle level decides the state.
+                stop.wait(PTT_DEBOUNCE_MS / 1000.0)
+                while line.poll(timeout=0):
+                    line.read_event()
 
-            now = time.time()
-            if (now - last_change) * 1000 < PTT_DEBOUNCE_MS:
-                continue
-
-            # Read the settled level rather than trusting the edge direction;
-            # a burst of bounce can leave the two out of step.
             level_pressed = _is_pressed(line.read())
             if level_pressed == pressed:
                 continue
 
+            now = time.time()
             pressed = level_pressed
-            last_change = now
 
             if pressed:
                 press_started = now
