@@ -13,6 +13,9 @@ Usage:
 Environment:
     WAVS_DIR        where to save generated WAVs  (default: ~/wavs)
     LOOPBACK_DEVICE ALSA playback device to write into  (default: hw:3,0)
+    SETTLE_S        seconds to wait after playback before restoring the STT
+                    device, so the tail of the utterance is not cut off
+                    (default: 2.0)
 """
 import argparse
 import json
@@ -27,8 +30,18 @@ WAVS_DIR = Path(os.environ.get("WAVS_DIR", Path.home() / "wavs"))
 LOOPBACK_DEVICE = os.environ.get("LOOPBACK_DEVICE", "loopback-inject")
 LOOPBACK_SOURCE = "loopback-inject.monitor"
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
+
+# sox exiting means the audio reached the null sink, NOT that bush-stt has
+# consumed it: capture is still draining a 0.5 s chunk at 48 kHz through
+# RNNoise and the 48->16 resampler, and the VAD needs its min_silence window
+# (600 ms) of quiet before it will emit. Restoring the device immediately
+# tears the capture stream down mid-utterance — the VAD flushes a truncated
+# buffer and Whisper returns empty text. Short phrases lose proportionally
+# more, which is why this showed up as an intermittent transcript failure.
+SETTLE_S = float(os.environ.get("SETTLE_S", "2.0"))
 TOPIC_STT_DEVICE = "bush/audio/stt/device"
 TOPIC_SET_STT_DEVICE = "bush/audio/stt/set-device"
+TOPIC_PTT = "bush/pipeline/stt/ptt"
 
 
 def phrase_to_filename(phrase: str) -> str:
@@ -77,6 +90,20 @@ def get_stt_device() -> str | None:
     return None
 
 
+def set_ptt(pressed: bool) -> None:
+    """Bracket the injection with a synthetic button press.
+
+    Harmless when bush-stt is VAD-endpointed — it ignores this topic unless
+    STT_ENDPOINT=ptt built a PttEndpointer — and required when it is not,
+    since otherwise nothing ever opens an utterance.
+    """
+    subprocess.run(
+        ["mosquitto_pub", "-h", MQTT_BROKER, "-t", TOPIC_PTT,
+         "-m", json.dumps({"pressed": pressed, "ts": time.time()})],
+        timeout=5,
+    )
+
+
 def set_stt_device(device: str) -> None:
     """Tell the STT service to switch input device."""
     payload = json.dumps({"device": device})
@@ -121,12 +148,20 @@ def main():
         time.sleep(0.3)  # let STT service reopen the source
 
     try:
+        print("[bush-pray] PTT down")
+        set_ptt(True)
         print(f"[bush-pray] Playing into {LOOPBACK_DEVICE}")
         subprocess.run(
             ["sox", str(wav), "-t", "pulseaudio", LOOPBACK_DEVICE],
             check=True,
         )
+        # Settle before releasing, so the capture chain has drained the tail
+        # of the phrase into the endpointer's buffer.
+        print(f"[bush-pray] Settling {SETTLE_S:g}s")
+        time.sleep(SETTLE_S)
     finally:
+        print("[bush-pray] PTT up")
+        set_ptt(False)
         if switched:
             print(f"[bush-pray] Restoring STT device → {previous_device}")
             set_stt_device(previous_device)
