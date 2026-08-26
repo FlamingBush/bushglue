@@ -15,7 +15,12 @@ classifier = None
 def _load_model():
     global classifier
     print("[sentiment] Loading DistilBERT model...", flush=True)
-    classifier = hf_pipeline("text-classification", model='bhadresh-savani/distilbert-base-uncased-emotion', return_all_scores=True)
+    # top_k=None, not return_all_scores=True: transformers 5.x silently
+    # ignores the latter and hands back only the winning label, which left the
+    # other five emotions stale on every subscriber (the Pixelblaze scene held
+    # a previous verse's anger while "idle"). top_k=None nests its result one
+    # level deeper — see _classify_and_fire.
+    classifier = hf_pipeline("text-classification", model='bhadresh-savani/distilbert-base-uncased-emotion', top_k=None)
     classifier("Weeeeee!")  # warmup
     print("[sentiment] Model ready.", flush=True)
 
@@ -117,7 +122,8 @@ def _start_fire(pattern: dict, score: float, mqttc: mqtt.Client):
 
 def _classify_and_fire(verse_text: str, mqttc: mqtt.Client):
     """Classify verse_text, start sustained fire pattern, return (scores, label, score)."""
-    scores = classifier(verse_text)  # list of {label, score} dicts
+    # top_k=None returns one list of {label, score} per input; we pass one.
+    scores = classifier(verse_text)[0]
     top = sorted(scores, key=lambda x: x["score"], reverse=True)[0]
     label = top["label"]
     score = top["score"]
@@ -219,7 +225,7 @@ class Server(BaseHTTPRequestHandler):
             self.resp(400, {'error': "Post must contain json object with affected_text or text key"})
             return
 
-        self.resp(200, {'message': message, 'classification': classifier(message)})
+        self.resp(200, {'message': message, 'classification': classifier(message)[0]})
 
 def main():
     _start_mqtt_thread()   # subscribe first — messages queue while model loads
