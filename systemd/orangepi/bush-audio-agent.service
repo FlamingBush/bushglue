@@ -1,0 +1,17 @@
+[Unit]
+Description=Audio device discovery agent
+After=network-online.target user@1000.service
+
+[Service]
+Type=simple
+User=orangepi
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-audio-agent
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

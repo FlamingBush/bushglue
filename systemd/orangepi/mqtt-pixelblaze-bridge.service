@@ -1,0 +1,18 @@
+[Unit]
+Description=MQTT to Pixelblaze bridge (Emotional Fire)
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+WorkingDirectory=/home/orangepi/bushglue/mqtt-pixelblaze-bridge
+ExecStart=/home/orangepi/bushglue/.venv/bin/mqtt-pixelblaze-bridge --config /home/orangepi/bushglue/mqtt-pixelblaze-bridge/examples/emotional-fire/bridge.local.json
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

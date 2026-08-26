@@ -1,0 +1,21 @@
+[Unit]
+Description=text-to-verse with MQTT
+After=chromadb.service ollama.service
+Requires=chromadb.service ollama.service
+
+[Service]
+Type=simple
+User=orangepi
+Environment=T2V_BIN=/home/orangepi/bushglue/t2v/target/release/text-to-verse
+Environment=AFFECTS_DIR=/home/orangepi/bushglue/t2v/templates/affects
+ExecStartPre=/bin/sh -c 'until curl -sf http://localhost:8000/api/v2/heartbeat >/dev/null 2>&1; do sleep 1; done'
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-t2v
+MemoryMax=3G
+MemoryHigh=2500M
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

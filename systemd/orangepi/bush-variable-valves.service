@@ -1,0 +1,16 @@
+[Unit]
+Description=Variable Valves — sentiment-driven needle valve control
+After=network.target
+
+[Service]
+Type=simple
+User=orangepi
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-variable-valves
+WorkingDirectory=/home/orangepi/bushglue
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

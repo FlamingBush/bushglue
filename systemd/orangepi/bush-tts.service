@@ -1,0 +1,15 @@
+[Unit]
+Description=Text-to-Speech verse reader
+After=network-online.target user@1000.service
+
+[Service]
+Type=simple
+User=orangepi
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-tts
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

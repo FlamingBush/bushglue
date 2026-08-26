@@ -1,0 +1,23 @@
+[Unit]
+Description=Sentiment Analysis with MQTT Fire Control
+After=network.target
+
+[Service]
+Type=simple
+User=orangepi
+Environment=OMP_NUM_THREADS=4
+Environment=OPENBLAS_NUM_THREADS=4
+Environment=MKL_NUM_THREADS=4
+Environment=NUMEXPR_NUM_THREADS=4
+MemoryMax=4G
+MemoryHigh=3G
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-sentiment
+WorkingDirectory=/home/orangepi/bushglue
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

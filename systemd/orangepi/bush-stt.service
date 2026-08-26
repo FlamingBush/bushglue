@@ -1,0 +1,21 @@
+[Unit]
+Description=Speech-to-Text MQTT Publisher
+After=network-online.target user@1000.service
+
+[Service]
+Type=simple
+User=orangepi
+SupplementaryGroups=render
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+Environment=STT_USE_VAD=1
+Environment=STT_USE_RNNOISE=1
+Environment=STT_ENGINE=whisper-rknn
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-stt
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
