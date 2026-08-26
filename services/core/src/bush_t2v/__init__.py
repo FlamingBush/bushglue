@@ -48,10 +48,62 @@ VERSE_MAX_WORDS = int(os.environ.get("VERSE_MAX_WORDS", "40"))
 # Chunks punctuate with ':' as often as '.', so treat it as a break too.
 _SENTENCE_END = re.compile(r"(?<=[.!?:])\s+")
 
+# Douay-Rheims annotation that rides along in the long tail of the corpus.
+# Measured over the 819 chunks longer than 40 words: 8% carry an "etc.."
+# lemma marker (the note restates a fragment of the verse, marks it "etc..",
+# then explains it) and 7% carry a chapter heading followed by a whole-chapter
+# summary. Neither is scripture and neither should be spoken aloud.
+_LEMMA_MARKER = re.compile(r"\betc\.\.")
+_CHAPTER_HEADING = re.compile(r"(?:\b[1-4]\s)?\b[A-Z][a-z]+ Chapter \d+")
+
+# Keep at least this many words, or the strip is treated as over-eager and
+# the original text is handed to the word cap instead.
+_MIN_KEPT_WORDS = 3
+
 
 from bushutil import make_logger, run_mqtt_service
 
 log = make_logger("t2v-service")
+
+
+def _sentence_start_before(text: str, idx: int) -> int:
+    """Index of the sentence that contains *idx*, or 0 if it is the first."""
+    boundary = max(text.rfind(". ", 0, idx),
+                   text.rfind("! ", 0, idx),
+                   text.rfind("? ", 0, idx))
+    return boundary + 2 if boundary != -1 else 0
+
+
+def strip_commentary(text: str) -> str:
+    """Drop trailing study-bible annotation, keeping the scripture.
+
+    Cuts at whichever comes first: the chapter heading, or the start of the
+    sentence that opens the "etc.." lemma restatement. A chunk that begins
+    with a heading has no verse to keep, so it comes back unchanged and the
+    word cap deals with it.
+    """
+    text = " ".join(text.split())
+    cut = len(text)
+
+    heading = _CHAPTER_HEADING.search(text)
+    if heading and heading.start() > 0:
+        cut = min(cut, heading.start())
+
+    lemma = _LEMMA_MARKER.search(text)
+    if lemma:
+        start = _sentence_start_before(text, lemma.start())
+        if start > 0:
+            cut = min(cut, start)
+
+    stripped = text[:cut].strip()
+    if len(stripped.split()) < _MIN_KEPT_WORDS:
+        return text
+    return stripped
+
+
+def prepare_verse(text: str, max_words: int | None = None) -> str:
+    """What actually goes on the wire: annotation stripped, then length capped."""
+    return cap_verse(strip_commentary(text), max_words)
 
 
 def cap_verse(text: str, max_words: int | None = None) -> str:
@@ -167,7 +219,7 @@ def main():
             try:
                 result = query_t2v(text)
                 raw_text = result.get("text", "")
-                verse_text = cap_verse(raw_text)
+                verse_text = prepare_verse(raw_text)
                 raw_words = len(raw_text.split())
                 if len(verse_text.split()) < raw_words:
                     log(f"Verse capped: {raw_words} -> {len(verse_text.split())} words "

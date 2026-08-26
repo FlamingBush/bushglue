@@ -90,3 +90,57 @@ def test_env_var_sets_the_default(monkeypatch):
     mod = _reload_bush_t2v()
     assert mod.VERSE_MAX_WORDS == 5
     assert len(mod.cap_verse(LONG_CHUNK).split()) <= 5
+
+
+# ── commentary stripping ────────────────────────────────────────────────────
+# Measured over the 819 corpus chunks longer than 40 words: 8% carry an
+# "etc.." lemma marker, 7% a "<Book> Chapter <N>" heading.
+
+HEADING_CHUNK = (
+    "In his days Hiel, of Bethel, built Jericho: in Abiram, his firstborn, he"
+    " laid its foundations. 3 Kings Chapter 17 Elias shutteth up the heaven"
+    " from raining. He is fed by ravens."
+)
+
+
+def test_strip_drops_the_lemma_commentary(t2v):
+    out = t2v.strip_commentary(LONG_CHUNK)
+    assert out.endswith("all the words of this law.")
+    assert "etc..." not in out
+    assert "As much as to say" not in out
+
+
+def test_strip_drops_the_chapter_heading_and_summary(t2v):
+    out = t2v.strip_commentary(HEADING_CHUNK)
+    assert out == (
+        "In his days Hiel, of Bethel, built Jericho: in Abiram, his firstborn,"
+        " he laid its foundations."
+    )
+
+
+def test_strip_handles_a_numbered_book_name(t2v):
+    assert "3 Kings Chapter 17" not in t2v.strip_commentary(HEADING_CHUNK)
+
+
+def test_strip_leaves_clean_scripture_alone(t2v):
+    text = "And the bush burned with fire and was not consumed."
+    assert t2v.strip_commentary(text) == text
+
+
+def test_strip_keeps_the_original_when_it_would_empty_the_verse(t2v):
+    # A chunk that opens with the heading has no scripture to keep; leave it
+    # to the word cap rather than publishing nothing.
+    text = "Job Chapter 42 Job submits himself. God pronounces in his favour."
+    assert t2v.strip_commentary(text) == text
+
+
+def test_prepare_verse_strips_then_caps(t2v):
+    out = t2v.prepare_verse(LONG_CHUNK)
+    assert "Deuteronomy Chapter 30" not in out
+    assert "etc..." not in out
+    assert len(out.split()) <= 40
+
+
+def test_prepare_verse_caps_when_stripping_is_not_enough(t2v):
+    text = " ".join(f"word{i}" for i in range(90)) + "."
+    assert len(t2v.prepare_verse(text).split()) <= 40
