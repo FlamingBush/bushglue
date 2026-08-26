@@ -19,6 +19,7 @@ Two pipelines:
 """
 import json
 import os
+import re
 import pathlib
 import queue
 import random
@@ -101,6 +102,20 @@ TOPIC_DEVICE_STATUS   = "bush/audio/stt/device"
 TOPIC_FORCE_FINALIZE  = "bush/pipeline/stt/force-finalize"
 TOPIC_PTT             = "bush/pipeline/stt/ptt"
 TOPIC_LISTENING       = "bush/pipeline/stt/listening"
+
+# Whisper narrates non-speech instead of returning nothing: a silent utterance
+# comes back as "[no audio]" or "[BLANK_AUDIO]", background noise as
+# "(upbeat music)" — all at confidence 1.00, so the confidence gate does not
+# catch them. Left alone they are published as real transcripts and the bush
+# answers a question nobody asked, with fire and lights. Matches only when the
+# WHOLE transcript is one bracketed token, so speech containing an aside
+# survives.
+_NON_SPEECH = re.compile(r"^[\[\(][^\[\]\(\)]*[\]\)]$")
+
+
+def is_non_speech(text: str) -> bool:
+    """True if *text* is a Whisper non-speech marker rather than an utterance."""
+    return bool(_NON_SPEECH.match(text.strip()))
 TOPIC_PIPELINE_PING   = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG   = "bush/pipeline/pong"
 TOPIC_TTS_DEVICE      = "bush/audio/tts/device"
@@ -579,6 +594,9 @@ def main():
                     conf = float(result.get("confidence", 0.0))
                     if not text:
                         log("Engine returned empty text; not publishing")
+                        continue
+                    if is_non_speech(text):
+                        log(f"Non-speech marker {text!r}; not publishing")
                         continue
                     if conf < STT_MIN_CONFIDENCE:
                         log(f"Dropping low-confidence transcript "

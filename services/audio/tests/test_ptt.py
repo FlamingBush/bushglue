@@ -167,3 +167,28 @@ def test_odd_length_chunks_never_split_a_sample(ep):
     out = ep.feed(b"")
     if out:
         assert len(out[0]) % 2 == 0 or len(out[0]) == 401
+
+
+# ── Whisper non-speech markers ──────────────────────────────────────────────
+# Whisper narrates silence instead of returning nothing, at confidence 1.00,
+# so the confidence gate does not catch it. Observed live: a silent PTT press
+# published "[no audio]" and the bush answered it with a verse and fire.
+
+@pytest.mark.parametrize("text", [
+    "[no audio]", "[BLANK_AUDIO]", "[ Silence ]", "(upbeat music)",
+    "[MUSIC]", "  [no audio]  ",
+])
+def test_non_speech_markers_are_detected(text):
+    from bush_stt import is_non_speech
+    assert is_non_speech(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Tell me why the fire does not consume you",
+    "I said [pause] and then left",
+    "speak to me of mercy",
+    "",
+])
+def test_real_speech_is_not_flagged(text):
+    from bush_stt import is_non_speech
+    assert not is_non_speech(text)

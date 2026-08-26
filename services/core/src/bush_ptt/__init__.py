@@ -29,9 +29,17 @@ that sinks rather than sources.
 Button shorts the line to ground, internal pull-up holds it high when open,
 so the line is active-low. /dev/gpiochip* is root-only by default; see
 udev/95-gpio.rules for the group grant.
+
+The rk3588 pinctrl driver silently ignores the gpiochip character device's
+BIAS flag: requesting bias="pull_up" is accepted and does nothing, so the
+line floats and reads as a permanently-held button. The pad pull-up has to be
+set through the SoC's own registers instead, which is what PTT_PULLUP_CMD
+does before the line is opened. Pad config is lost on power-down, so this has
+to run on every start, not once at install.
 """
 import json
 import os
+import subprocess
 import threading
 import time
 
@@ -42,6 +50,12 @@ PTT_GPIO_CHIP = os.environ.get("PTT_GPIO_CHIP", "/dev/gpiochip1")
 PTT_GPIO_LINE = int(os.environ.get("PTT_GPIO_LINE", "4"))
 PTT_ACTIVE_LOW = os.environ.get("PTT_ACTIVE_LOW", "1") not in ("0", "false", "False", "")
 PTT_BIAS = os.environ.get("PTT_BIAS", "pull_up")
+
+# Applied before opening the line; see the note above on the ignored BIAS
+# flag. wiringOP's -1 means physical header numbering, so 18 is the pin you
+# wired. Set empty to skip (e.g. if you fitted an external pull-up resistor,
+# which is the more robust option and makes this unnecessary).
+PTT_PULLUP_CMD = os.environ.get("PTT_PULLUP_CMD", "gpio -1 mode 18 up")
 
 # Indicator LED. Set PTT_LED_LINE to an empty string to run without one.
 PTT_LED_CHIP = os.environ.get("PTT_LED_CHIP", "/dev/gpiochip1")
@@ -58,10 +72,29 @@ TOPIC_LISTENING = "bush/pipeline/stt/listening"
 log = make_logger("ptt")
 
 
+def _apply_pad_pullup() -> None:
+    """Set the pad pull-up via the SoC registers, since BIAS is a no-op here."""
+    cmd = PTT_PULLUP_CMD.strip()
+    if not cmd:
+        return
+    try:
+        r = subprocess.run(cmd.split(), capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        log(f"WARNING: pull-up command {cmd!r} failed to run: {e}")
+        return
+    if r.returncode != 0:
+        log(f"WARNING: pull-up command {cmd!r} exited {r.returncode}: "
+            f"{(r.stderr or '').strip()}")
+        log("Without a pull-up the button line floats and reads permanently DOWN.")
+    else:
+        log(f"pad pull-up applied ({cmd})")
+
+
 def _open_line():
     """Open the button line for both-edge events. Raises on failure."""
     from periphery import GPIO
 
+    _apply_pad_pullup()
     return GPIO(
         PTT_GPIO_CHIP,
         PTT_GPIO_LINE,

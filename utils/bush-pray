@@ -16,9 +16,8 @@ Environment:
     SETTLE_S        seconds to wait after playback before restoring the STT
                     device, so the tail of the utterance is not cut off
                     (default: 2.0)
-    SWITCH_S        seconds to wait after switching the STT device before
-                    pressing PTT, so the front of the phrase is not lost
-                    (default: 3.0)
+    SWITCH_S        extra settle after bush-stt reports the new device is
+                    open, before pressing PTT (default: 1.5)
 """
 import argparse
 import json
@@ -44,15 +43,17 @@ MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
 SETTLE_S = float(os.environ.get("SETTLE_S", "2.0"))
 
 # Switching the STT device makes bush-stt tear down its capture process and
-# spawn a new one; a PulseAudio source takes seconds to actually start
-# delivering samples. Under VAD endpointing that was invisible — the VAD has
-# no fixed window, so it simply endpointed whenever speech showed up. PTT
-# does have a fixed window, so pressing 0.3 s after the switch opened the
-# utterance before capture was live: the phrase landed in the dead zone and
-# only the trailing settle-silence got buffered, so the engine returned empty
-# text and stt/transcript never fired. Measured: 0.3 s -> 2.78 s captured of
-# a 6 s press, empty transcript; 4 s -> 4.1 s captured, transcribed fine.
-SWITCH_S = float(os.environ.get("SWITCH_S", "3.0"))
+# spawn a new one. Under VAD endpointing the delay was invisible — the VAD has
+# no fixed window, so it endpointed whenever speech showed up. PTT does have a
+# fixed window, so pressing before capture is live puts the phrase in a dead
+# zone: only trailing silence gets buffered and the engine returns empty text.
+#
+# A fixed sleep guessed at this and was flaky at 3 s. bush-stt already
+# publishes {"status": "ok"} on its device topic at the moment it opens the
+# new capture, so wait for that instead and keep only a short settle for the
+# source to ramp.
+SWITCH_S = float(os.environ.get("SWITCH_S", "1.5"))
+DEVICE_READY_TIMEOUT_S = float(os.environ.get("DEVICE_READY_TIMEOUT_S", "20"))
 TOPIC_STT_DEVICE = "bush/audio/stt/device"
 TOPIC_SET_STT_DEVICE = "bush/audio/stt/set-device"
 TOPIC_PTT = "bush/pipeline/stt/ptt"
@@ -102,6 +103,26 @@ def get_stt_device() -> str | None:
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
         print(f"[bush-pray] Failed to query STT device: {e}", flush=True)
     return None
+
+
+def wait_for_stt_device(device: str, timeout: float = DEVICE_READY_TIMEOUT_S) -> bool:
+    """Block until bush-stt reports *device* open, or timeout. True if ready."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = subprocess.run(
+                ["mosquitto_sub", "-h", MQTT_BROKER, "-t", TOPIC_STT_DEVICE,
+                 "-C", "1", "-W", "2"],
+                capture_output=True, text=True, timeout=4,
+            )
+            d = json.loads(r.stdout.strip() or "{}")
+            if d.get("device") == device and d.get("status") == "ok":
+                return True
+        except Exception:
+            pass
+        time.sleep(0.25)
+    print(f"[bush-pray] WARNING: {device} not ready after {timeout:g}s", flush=True)
+    return False
 
 
 def set_ptt(pressed: bool) -> None:
@@ -159,7 +180,8 @@ def main():
     if switched:
         print(f"[bush-pray] Switching STT device {previous_device} → {LOOPBACK_SOURCE}")
         set_stt_device(LOOPBACK_SOURCE)
-        print(f"[bush-pray] Waiting {SWITCH_S:g}s for capture to come up")
+        print("[bush-pray] Waiting for capture to come up")
+        wait_for_stt_device(LOOPBACK_SOURCE)
         time.sleep(SWITCH_S)
 
     try:
