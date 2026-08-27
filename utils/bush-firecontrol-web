@@ -249,7 +249,7 @@ def _service_rows():
     )
 
 
-HTML = """\
+SHELL = """\
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -284,9 +284,9 @@ h1{{font-size:.9rem;font-weight:700;letter-spacing:.02em;white-space:nowrap}}
 #stop:active{{background:#ff2444}}
 #stop.hit{{background:#fff;color:var(--stop)}}
 nav{{display:flex;flex:0 0 auto;background:var(--panel);border-bottom:1px solid var(--line)}}
-nav button{{flex:1;background:none;border:none;color:var(--dim);padding:11px 0;
+nav a{{flex:1;text-align:center;text-decoration:none;color:var(--dim);padding:11px 0;
   font-size:.78rem;font-weight:700;letter-spacing:.06em;border-bottom:2px solid transparent}}
-nav button.on{{color:var(--text);border-bottom-color:var(--text)}}
+nav a.on{{color:var(--text);border-bottom-color:var(--text)}}
 main{{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch}}
 .page{{display:none;padding:8px}}
 .page.on{{display:block}}
@@ -350,47 +350,18 @@ footer.err{{color:#ff7a8a}}
 </header>
 <button id="stop" onpointerdown="allStop()">■ ALL STOP</button>
 <nav>
-  <button class="on" data-p="fire" onclick="tab('fire')">FIRE</button>
-  <button data-p="setup" onclick="tab('setup')">SETUP</button>
+  <a class="{fire_on}" href="/">FIRE</a>
+  <a class="{setup_on}" href="/setup">SETUP</a>
 </nav>
 <main>
-  <section class="page on" id="page-fire">
-{rows}
-  </section>
-  <section class="page" id="page-setup">
-    <div class="card">
-      <h2>MODE</h2>
-      <div class="modes">
-        <button data-m="manual" onclick="setMode('manual')">MANUAL</button>
-        <button data-m="interactive" onclick="setMode('interactive')">INTERACTIVE</button>
-        <button data-m="midi" onclick="setMode('midi')">MIDI</button>
-      </div>
-      <div class="note" id="modenote"></div>
-    </div>
-    <div class="card">
-      <h2>SERVICES</h2>
-      <div class="grid2">{services}</div>
-    </div>
-    <div class="card">
-      <h2>IDENTIFY — RAW RELAY CHANNELS</h2>
-      <div class="idrow">{ident}</div>
-      <div class="note">
-        Fires the channel directly, ignoring the valve map. Commission with the
-        gas <b>OFF</b>: listen for the click, note which solenoid each channel
-        drives, then run <b>bush-valve-id</b> to record and publish the map.
-      </div>
-    </div>
+  <section class="page on">
+{body}
   </section>
 </main>
 <footer id="log">ready</footer>
 <script>
 const VALVES = {valves_json};
 let es = null, esFails = 0, pollTimer = null;
-
-function tab(name){{
-  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on', p.id==='page-'+name));
-  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.p===name));
-}}
 
 let logTimer = null;
 function say(msg, cls){{
@@ -476,7 +447,10 @@ function paint(d){{
 
   document.querySelectorAll('.modes button').forEach(b=>
     b.classList.toggle('on', b.dataset.m === d.mode));
-  document.getElementById('modenote').textContent =
+  /* setup-only node: absent on the fire page, and paint() must not throw
+     there or the service and map updates below never run */
+  const note = document.getElementById('modenote');
+  if(note) note.textContent =
     d.mode==='manual'      ? 'Only this UI fires. The pipeline classifies but never opens a valve.' :
     d.mode==='interactive' ? 'The verse pipeline drives the fire. Push-to-talk is live.' :
     d.mode==='midi'        ? 'The MIDI keyboard plays the solenoids. Pipeline fire is off.' : '';
@@ -527,13 +501,52 @@ document.addEventListener('visibilitychange', ()=>{{
 </script>
 </body>
 </html>
-""".format(
-    rows=_valve_rows(),
-    services=_service_rows(),
-    ident=_ident_buttons(),
-    ident_ms=IDENTIFY_MS,
-    valves_json=json.dumps([v for v, _ in VALVES]),
-)
+"""
+
+SETUP_BODY = """\
+    <div class="card">
+      <h2>MODE</h2>
+      <div class="modes">
+        <button data-m="manual" onclick="setMode('manual')">MANUAL</button>
+        <button data-m="interactive" onclick="setMode('interactive')">INTERACTIVE</button>
+        <button data-m="midi" onclick="setMode('midi')">MIDI</button>
+      </div>
+      <div class="note" id="modenote"></div>
+    </div>
+    <div class="card">
+      <h2>SERVICES</h2>
+      <div class="grid2">%s</div>
+    </div>
+    <div class="card">
+      <h2>IDENTIFY — RAW RELAY CHANNELS</h2>
+      <div class="idrow">%s</div>
+      <div class="note">
+        Fires the channel directly, ignoring the valve map. Commission with the
+        gas <b>OFF</b>: listen for the click, note which solenoid each channel
+        drives, then run <b>bush-valve-id</b> to record and publish the map.
+      </div>
+    </div>
+""" % (_service_rows(), _ident_buttons())
+
+
+def _page(body, active):
+    """Render one document from the shared shell.
+
+    Two documents rather than two tabs: the fire page then carries none of the
+    commissioning markup, and SETUP is a URL you can bookmark or hand to
+    someone without them landing on the fire buttons first.
+    """
+    return SHELL.format(
+        body=body,
+        fire_on="on" if active == "fire" else "",
+        setup_on="on" if active == "setup" else "",
+        ident_ms=IDENTIFY_MS,
+        valves_json=json.dumps([v for v, _ in VALVES]),
+    )
+
+
+FIRE_HTML = _page(_valve_rows(), "fire")
+SETUP_HTML = _page(SETUP_BODY, "setup")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -555,7 +568,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
-            self._send(200, "text/html; charset=utf-8", HTML)
+            self._send(200, "text/html; charset=utf-8", FIRE_HTML)
+        elif self.path in ("/setup", "/setup/"):
+            self._send(200, "text/html; charset=utf-8", SETUP_HTML)
         elif self.path == "/status":
             self._send(200, "application/json", json.dumps(_snapshot()))
         elif self.path == "/events":

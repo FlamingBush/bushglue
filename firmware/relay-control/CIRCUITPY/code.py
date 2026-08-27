@@ -144,6 +144,13 @@ KEEP_ALIVE    = 15          # seconds
 PING_INTERVAL = 10_000      # ms between PINGREQs
 STATUS_INTERVAL_MS = 5_000  # ms between bush/flame/status beacons
 
+# A purely periodic beacon cannot describe a pulse shorter than its own
+# interval: a 100 ms flare opens and closes entirely between two 5 s beacons,
+# so anything watching the beacon never sees it. Publish on state change too,
+# rate-limited so a fast fire pattern (sentiment drives flares every ~260 ms)
+# cannot flood the socket or stall the pin servicing.
+STATUS_CHANGE_MIN_MS = 120
+
 sock          = None
 pool          = None
 rx_buf        = bytearray()  # persistent receive buffer
@@ -554,6 +561,21 @@ def subscribe_all():
     print("Subscribed (flame, identify, map, stop).")
 
 
+_last_reported = None      # tuple of output states at the last publish
+
+
+def publish_status_on_change():
+    """Publish immediately when an output changes, at a bounded rate."""
+    global _last_reported, last_status_ms
+    now = tuple(o.value for o in outputs)
+    if now == _last_reported:
+        return
+    if ticks_diff(supervisor.ticks_ms(), last_status_ms) < STATUS_CHANGE_MIN_MS:
+        return                      # too soon; the periodic beacon still covers it
+    _last_reported = now
+    publish_flame_status(force=True)
+
+
 def publish_flame_status(force=False):
     """Liveness beacon — deploy verification subscribes to this."""
     global last_status_ms
@@ -570,6 +592,7 @@ def publish_flame_status(force=False):
                           "valves": named, "map": valve_map})
     try:
         sock.send(mqtt_publish_packet(TOPIC_FLAME_STATUS, payload))
+        globals()["_last_reported"] = tuple(o.value for o in outputs)
     except OSError:
         pass
 
@@ -596,6 +619,9 @@ while True:
     if conn_state == ST_CONNECTED:
         mqtt_loop()
         if connected and sock is not None:
+            # Change-driven first so a short pulse is actually reported, then
+            # the periodic beacon as the liveness heartbeat.
+            publish_status_on_change()
             publish_flame_status()
         if not connected:
             print("Connection lost, retrying configured broker…")
