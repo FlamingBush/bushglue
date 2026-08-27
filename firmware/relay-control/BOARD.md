@@ -10,18 +10,36 @@
 
 ## Pin Assignments
 
-| Pin | Function |
-|---|---|
-| GP2 | Flare relay output |
-| GP3 | Big jet relay output |
-| GP9 | Poof relay output |
+| Pin | Channel | Default valve |
+|---|---|---|
+| GP6  | 0 | flare1 |
+| GP7  | 1 | flare2 |
+| GP8  | 2 | flare3 |
+| GP9  | 3 | bigjet1 | *(pre-existing poof channel, reused)* |
+| GP10 | 4 | bigjet2 |
+| GP11 | 5 | bigjet3 |
+| GP12 | 6 | poof1 |
+
+Six of these are new drivers; GP9 already carried the original poof relay.
+GP2 and GP3 (the old flare/bigjet channels) are no longer used.
+
+**Channel index is the position in `OUTPUT_PINS`, not the GPIO number** —
+channel 0 is GP6. `bush/flame/identify` and `bush-valve-id` both address
+channels by that index.
+
+The "default valve" column is only what the firmware assumes when no map has
+been published. The loom is assembled before anyone knows which solenoid
+landed on which channel, so the real mapping is discovered after the fact with
+`bush-valve-id` and published retained on `bush/flame/map`.
 
 ## MQTT Topics
 
 | Topic | Direction | Payload | Cadence / Effect |
 |---|---|---|---|
-| `bush/flame/pulse` | sub | `{"valve":"flare","ms":350}` | Fire named valve for N ms. Valid valves: `flare`, `bigjet`, `poof` |
-| `bush/flame/status` | pub | JSON: `{ticks_ms, flare, bigjet, poof}` | Liveness beacon, **every 5 s** (`STATUS_INTERVAL_MS`); also published immediately on (re)connect. Deploy verification waits on this |
+| `bush/flame/pulse` | sub | `{"valve":"bigjet2","ms":350}` | Fire one named valve for N ms. Valves are individually addressed: `flare1..3`, `bigjet1..3`, `poof1`. A bare type name (`bigjet`) is **not** a valve and is rejected — the firmware never guesses which of three to fire. Pulses are capped at `MAX_PULSE_MS` (10 s) |
+| `bush/flame/identify` | sub | `{"out":3,"ms":250}` | Fire a **raw channel**, ignoring the map. Used to discover the wiring after assembly |
+| `bush/flame/map` | sub | `{"flare1":0,"bigjet2":4,...}` | **Retained.** Replaces the name→channel map wholesale. Rejected as a unit if malformed, so a half-applied map can never fire the wrong valve. All outputs are forced off before a remap takes effect |
+| `bush/flame/status` | pub | JSON: `{ticks_ms, outputs[], valves{}, map{}}` | Liveness beacon, **every 5 s** (`STATUS_INTERVAL_MS`); also published immediately on (re)connect. Carries the live map so commissioning tools can read back what the board actually believes. Deploy verification waits on this |
 
 The needle valve is NOT on this board — it's the CAN-based fleet in `firmware/valve-control/` (`bush/fire/valve/*` topics).
 

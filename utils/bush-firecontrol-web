@@ -2,6 +2,15 @@
 """
 bush-firecontrol-web: touch-friendly web UI for phone-based flame control.
 Serves on port 8080. Publishes to MQTT on button tap.
+
+Seven solenoids, each individually addressed: flare1-3, bigjet1-3, poof1.
+Each column has a selector for which valve of that type to fire, so the
+duration buttons keep the same positions they always had.
+
+The IDENTIFY panel fires a RAW relay channel, bypassing the name->channel
+map entirely. That is how you find out which physical valve a channel drives
+after the loom is assembled; see utils/bush-valve-id for the guided version
+that also publishes the resulting map.
 """
 import argparse
 import json
@@ -11,6 +20,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import paho.mqtt.client as mqtt
 
 TOPIC_FLAME         = "bush/flame/pulse"
+TOPIC_IDENTIFY      = "bush/flame/identify"
+TOPIC_MAP           = "bush/flame/map"
+TOPIC_STATUS        = "bush/flame/status"
 TOPIC_PIPELINE_PING = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG = "bush/pipeline/pong"
 
@@ -18,7 +30,11 @@ BIGJET_DURATIONS = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000, 8
 FLARE_DURATIONS  = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000, 8000]
 POOF_DURATIONS   = [20, 30, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450]
 
-_state = {"connected": False, "last": None}
+# Must match OUTPUT_PINS in firmware/relay-control/CIRCUITPY/code.py
+NUM_OUTPUTS = 7
+IDENTIFY_MS = 250
+
+_state = {"connected": False, "last": None, "board": None, "board_ts": 0.0}
 _state_lock = threading.Lock()
 _mqttc = None
 
@@ -32,17 +48,44 @@ def _fire(valve, ms):
     return False
 
 
+def _identify(out, ms):
+    if _mqttc and _state["connected"]:
+        _mqttc.publish(TOPIC_IDENTIFY, json.dumps({"out": int(out), "ms": int(ms)}), qos=0)
+        return True
+    return False
+
+
 def _fmt(ms):
     return f"{ms/1000:.1g}s" if ms >= 1000 else f"{ms}ms"
 
 
-def _buttons(durations, valve, css_class):
+def _buttons(durations, css_class):
+    # The valve is chosen at tap time from the column's selector, so the
+    # button only carries the duration.
     return "\n".join(
         f'<button class="btn {css_class}" '
-        f'ontouchstart="fire(\'{valve}\',{ms})" '
-        f'onclick="fire(\'{valve}\',{ms})">'
+        f'ontouchstart="fire(\'{css_class}\',{ms})" '
+        f'onclick="fire(\'{css_class}\',{ms})">'
         f'{_fmt(ms)}</button>'
         for ms in durations
+    )
+
+
+def _selector(kind, n):
+    if n < 2:
+        return ""
+    opts = "\n".join(
+        f'<button class="sel{" on" if i == 1 else ""}" data-kind="{kind}" '
+        f'data-n="{i}" onclick="pick(\'{kind}\',{i})">{i}</button>'
+        for i in range(1, n + 1)
+    )
+    return f'<div class="selrow" id="sel-{kind}">{opts}</div>'
+
+
+def _ident_buttons():
+    return "\n".join(
+        f'<button class="idbtn" onclick="ident({i})">ch{i}</button>'
+        for i in range(NUM_OUTPUTS)
     )
 
 
@@ -69,6 +112,10 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
 .col{{flex:1;display:flex;flex-direction:column;gap:5px}}
 .col-hdr{{text-align:center;font-size:.85rem;font-weight:700;
          padding:5px 2px;border-radius:6px;flex-shrink:0}}
+.selrow{{display:flex;gap:4px;flex-shrink:0}}
+.sel{{flex:1;border:1px solid #444;background:#222;color:#888;
+     border-radius:6px;padding:6px 0;font-size:.95rem;font-weight:700}}
+.sel.on{{background:#fff;color:#000;border-color:#fff}}
 .bigjet .col-hdr{{background:#0d2d4a;color:#6cf}}
 .flare  .col-hdr{{background:#3a0d00;color:#fa6}}
 .poof   .col-hdr{{background:#0a3a1a;color:#6f6}}
@@ -78,7 +125,16 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
 .bigjet .btn{{background:#1a4a80}}
 .flare  .btn{{background:#80280a}}
 .poof   .btn{{background:#1a6030}}
-.btn.flash{{filter:brightness(2.5)}}
+#idwrap{{flex-shrink:0;background:#151515;border-top:1px solid #333}}
+#idhdr{{padding:6px 12px;font-size:.8rem;color:#888;cursor:pointer;
+       display:flex;justify-content:space-between}}
+#idpanel{{display:none;padding:0 6px 6px 6px}}
+#idpanel.open{{display:block}}
+#idrow{{display:flex;gap:4px;flex-wrap:wrap}}
+.idbtn{{flex:1 1 13%;background:#3a2a00;color:#fc6;border:1px solid #553;
+       border-radius:6px;padding:10px 0;font-size:.9rem;font-weight:700}}
+.idbtn:active{{filter:brightness(2)}}
+#idnote{{font-size:.7rem;color:#777;padding:6px 2px 0 2px;line-height:1.35}}
 #log{{text-align:center;font-size:.75rem;padding:5px;
      background:#1a1a1a;color:#888;flex-shrink:0}}
 </style>
@@ -91,10 +147,12 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
 <div id="grid">
   <div class="col bigjet">
     <div class="col-hdr">BIGJET</div>
+    {bigjet_sel}
     {bigjet}
   </div>
   <div class="col flare">
     <div class="col-hdr">FLARE</div>
+    {flare_sel}
     {flare}
   </div>
   <div class="col poof">
@@ -102,15 +160,51 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
     {poof}
   </div>
 </div>
+<div id="idwrap">
+  <div id="idhdr" onclick="toggleId()">
+    <span>▸ IDENTIFY — fire a raw relay channel</span><span id="idstate"></span>
+  </div>
+  <div id="idpanel">
+    <div id="idrow">{ident}</div>
+    <div id="idnote">
+      Fires the channel directly, ignoring the valve map. Use with the gas OFF
+      and listen for the click to learn which valve is on which channel, then
+      run <b>bush-valve-id</b> to record and publish the map.
+    </div>
+  </div>
+</div>
 <div id="log">tap a button to fire</div>
 <script>
-function fire(valve,ms){{
-  const label=(valve==='flare'?'FLARE':valve==='poof'?'POOF':'BIGJET')+' '+fmtMs(ms);
+const pickN={{bigjet:1,flare:1}};
+function pick(kind,n){{
+  pickN[kind]=n;
+  document.querySelectorAll('.sel[data-kind="'+kind+'"]').forEach(b=>{{
+    b.classList.toggle('on', parseInt(b.dataset.n)===n);
+  }});
+}}
+function valveFor(kind){{ return kind==='poof' ? 'poof1' : kind+pickN[kind]; }}
+function fire(kind,ms){{
+  const valve=valveFor(kind);
   fetch('/fire',{{method:'POST',headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{valve,ms}})}})
   .then(r=>r.json()).then(d=>{{
-    document.getElementById('log').textContent=d.ok?'fired: '+label:'not connected';
+    document.getElementById('log').textContent=
+      d.ok?('fired: '+valve+' '+fmtMs(ms)):'not connected';
   }}).catch(()=>document.getElementById('log').textContent='error');
+}}
+function ident(ch){{
+  fetch('/identify',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{out:ch,ms:{ident_ms}}})}})
+  .then(r=>r.json()).then(d=>{{
+    document.getElementById('log').textContent=
+      d.ok?('identify: channel '+ch):'not connected';
+  }}).catch(()=>document.getElementById('log').textContent='error');
+}}
+function toggleId(){{
+  const p=document.getElementById('idpanel');
+  p.classList.toggle('open');
+  document.querySelector('#idhdr span').textContent=
+    (p.classList.contains('open')?'▾':'▸')+' IDENTIFY — fire a raw relay channel';
 }}
 function fmtMs(ms){{return ms>=1000?(ms/1000).toFixed(ms%1000?1:0)+'s':ms+'ms'}}
 function poll(){{
@@ -118,6 +212,8 @@ function poll(){{
     const el=document.getElementById('conn');
     el.className=d.connected?'ok':'err';
     el.textContent=d.connected?'● connected':'● disconnected';
+    document.getElementById('idstate').textContent=
+      d.board?('board ok'+(d.mapped?'':' · no map')):'board silent';
   }}).catch(()=>{{}});
   setTimeout(poll,3000);
 }}
@@ -126,9 +222,13 @@ poll();
 </body>
 </html>
 """.format(
-    bigjet=_buttons(BIGJET_DURATIONS, "bigjet", "bigjet"),
-    flare=_buttons(FLARE_DURATIONS,  "flare",  "flare"),
-    poof=_buttons(POOF_DURATIONS,    "poof",   "poof"),
+    bigjet=_buttons(BIGJET_DURATIONS, "bigjet"),
+    flare=_buttons(FLARE_DURATIONS,  "flare"),
+    poof=_buttons(POOF_DURATIONS,    "poof"),
+    bigjet_sel=_selector("bigjet", 3),
+    flare_sel=_selector("flare", 3),
+    ident=_ident_buttons(),
+    ident_ms=IDENTIFY_MS,
 )
 
 
@@ -149,22 +249,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", HTML)
         elif self.path == "/status":
             with _state_lock:
-                self._send(200, "application/json",
-                           json.dumps({"connected": _state["connected"]}))
+                board = _state["board"]
+                fresh = board is not None and (time.time() - _state["board_ts"]) < 15
+                self._send(200, "application/json", json.dumps({
+                    "connected": _state["connected"],
+                    "board": fresh,
+                    "mapped": bool(fresh and board.get("map")),
+                }))
         else:
             self._send(404, "text/plain", "not found")
 
+    def _post_json(self):
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length))
+
     def do_POST(self):
-        if self.path == "/fire":
-            length = int(self.headers.get("Content-Length", 0))
-            try:
-                data = json.loads(self.rfile.read(length))
+        try:
+            if self.path == "/fire":
+                data = self._post_json()
                 ok = _fire(data["valve"], int(data["ms"]))
-                self._send(200, "application/json", json.dumps({"ok": ok}))
-            except Exception as e:
-                self._send(400, "application/json", json.dumps({"ok": False, "err": str(e)}))
-        else:
-            self._send(404, "text/plain", "not found")
+            elif self.path == "/identify":
+                data = self._post_json()
+                ok = _identify(data["out"], int(data["ms"]))
+            else:
+                self._send(404, "text/plain", "not found")
+                return
+            self._send(200, "application/json", json.dumps({"ok": ok}))
+        except Exception as e:
+            self._send(400, "application/json", json.dumps({"ok": False, "err": str(e)}))
 
 
 def main():
@@ -182,6 +294,7 @@ def main():
         with _state_lock:
             _state["connected"] = (str(rc) == "Success" or rc == 0)
         c.subscribe(TOPIC_PIPELINE_PING)
+        c.subscribe(TOPIC_STATUS)
 
     def on_disconnect(c, u, f, rc, p=None, *a):
         with _state_lock:
@@ -190,6 +303,13 @@ def main():
     def on_message(c, u, msg):
         if msg.topic == TOPIC_PIPELINE_PING:
             c.publish(TOPIC_PIPELINE_PONG, "")
+        elif msg.topic == TOPIC_STATUS:
+            try:
+                with _state_lock:
+                    _state["board"] = json.loads(msg.payload)
+                    _state["board_ts"] = time.time()
+            except ValueError:
+                pass
 
     _mqttc.on_connect    = on_connect
     _mqttc.on_disconnect = on_disconnect

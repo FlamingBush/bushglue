@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""
+bush-valve-id: work out which physical solenoid each relay channel drives,
+then publish the name->channel map.
+
+The loom gets built before anyone knows which valve landed on which driver
+channel, so the map is discovered after assembly rather than designed up
+front. This walks the channels one at a time, fires each briefly, and asks
+you what you saw. Nothing is published until the very end, so you can bail
+out at any point and the rig keeps its current mapping.
+
+    bush-valve-id                 # interactive walk, then publish
+    bush-valve-id --dry-run       # walk without publishing
+    bush-valve-id --show          # print the current map and exit
+    bush-valve-id --clear         # remove the map (board falls back to default)
+    bush-valve-id --ms 500        # longer pulses if they are hard to see
+    bush-valve-id --gas-off       # pulse with the gas off, just to hear clicks
+
+Safety: pulses are short and one channel fires at a time. Do the first pass
+with the gas OFF and listen for the solenoid click — only turn gas on once
+you trust the wiring.
+"""
+import argparse
+import json
+import sys
+import time
+
+import paho.mqtt.client as mqtt
+
+TOPIC_IDENTIFY = "bush/flame/identify"
+TOPIC_MAP      = "bush/flame/map"
+TOPIC_STATUS   = "bush/flame/status"
+MQTT_PORT      = 1883
+
+# Must match OUTPUT_PINS in firmware/relay-control/CIRCUITPY/code.py
+NUM_OUTPUTS = 7
+
+VALVE_NAMES = ["flare1", "flare2", "flare3",
+               "bigjet1", "bigjet2", "bigjet3",
+               "poof1"]
+
+DEFAULT_MS = 250
+GAS_OFF_MS = 120     # just enough to hear the click
+
+
+def connect(broker):
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    try:
+        c.connect(broker, MQTT_PORT, 60)
+    except Exception as e:
+        sys.exit(f"cannot reach broker {broker}:{MQTT_PORT}: {e}")
+    c.loop_start()
+    return c
+
+
+def read_status(broker, timeout=8.0):
+    """Return the board's last status beacon, or None if it is silent."""
+    got = {}
+    done = False
+
+    def on_connect(client, userdata, flags, rc, properties=None):
+        client.subscribe(TOPIC_STATUS)
+
+    def on_message(client, userdata, msg):
+        nonlocal done
+        try:
+            got.update(json.loads(msg.payload))
+            done = True
+        except ValueError:
+            pass
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    c.on_connect, c.on_message = on_connect, on_message
+    try:
+        c.connect(broker, MQTT_PORT, 60)
+    except Exception:
+        return None
+    c.loop_start()
+    deadline = time.time() + timeout
+    while time.time() < deadline and not done:
+        time.sleep(0.2)
+    c.loop_stop()
+    c.disconnect()
+    return got or None
+
+
+def show(broker):
+    st = read_status(broker)
+    if st is None:
+        print("No bush/flame/status beacon — is the relay board powered and "
+              "on the network? It beacons every 5 s.")
+        return 1
+    print("Relay board is alive.\n")
+    m = st.get("map") or {}
+    if not m:
+        print("  no map set — board is using its built-in default")
+    else:
+        for name in sorted(m, key=lambda n: m[n]):
+            print(f"  channel {m[name]}  ->  {name}")
+    outs = st.get("outputs")
+    if outs:
+        live = [i for i, v in enumerate(outs) if v]
+        print(f"\n  channels currently energised: {live or 'none'}")
+    return 0
+
+
+def walk(client, pulse_ms, dry_run):
+    """Fire each channel in turn and record what the operator reports."""
+    print(f"\nWalking {NUM_OUTPUTS} channels, {pulse_ms} ms each.")
+    print("After each pulse, type the valve it fired, or:")
+    print("  <enter> = nothing happened     r = repeat     q = quit\n")
+    print("Valve names: " + ", ".join(VALVE_NAMES) + "\n")
+
+    mapping = {}
+    taken = {}
+    for idx in range(NUM_OUTPUTS):
+        while True:
+            client.publish(TOPIC_IDENTIFY,
+                           json.dumps({"out": idx, "ms": pulse_ms}))
+            try:
+                ans = input(f"  channel {idx} fired -> which valve? ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\naborted; nothing published")
+                return None
+            if ans == "":
+                print("    (recorded as unused)")
+                break
+            if ans.lower() == "r":
+                continue
+            if ans.lower() == "q":
+                print("aborted; nothing published")
+                return None
+            if ans not in VALVE_NAMES:
+                print(f"    '{ans}' is not one of: {', '.join(VALVE_NAMES)}")
+                continue
+            if ans in taken:
+                print(f"    {ans} is already channel {taken[ans]} — "
+                      f"one of the two readings is wrong. 'r' to re-fire.")
+                continue
+            mapping[ans] = idx
+            taken[ans] = idx
+            break
+    return mapping
+
+
+def publish_map(client, mapping):
+    # Retained: the broker is the persistence layer, so a rebooted relay board
+    # re-learns its wiring on reconnect without anyone rerunning this tool.
+    client.publish(TOPIC_MAP, json.dumps(mapping), retain=True)
+    time.sleep(0.5)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--broker", default="localhost")
+    ap.add_argument("--ms", type=int, default=None, help="pulse length per channel")
+    ap.add_argument("--dry-run", action="store_true", help="walk but do not publish")
+    ap.add_argument("--show", action="store_true", help="print the current map and exit")
+    ap.add_argument("--clear", action="store_true", help="delete the retained map")
+    ap.add_argument("--gas-off", action="store_true",
+                    help="short pulses for a click-only pass with the gas off")
+    args = ap.parse_args()
+
+    if args.show:
+        return show(args.broker)
+
+    if args.clear:
+        c = connect(args.broker)
+        c.publish(TOPIC_MAP, "", retain=True)   # empty payload clears retention
+        time.sleep(0.5)
+        c.loop_stop(); c.disconnect()
+        print("Retained map cleared — the board falls back to its built-in "
+              "default on next reconnect.")
+        return 0
+
+    pulse_ms = args.ms if args.ms else (GAS_OFF_MS if args.gas_off else DEFAULT_MS)
+
+    st = read_status(args.broker)
+    if st is None:
+        print("WARNING: no bush/flame/status beacon. The relay board may be "
+              "offline — pulses will go nowhere.")
+        try:
+            if input("continue anyway? [y/N] ").strip().lower() != "y":
+                return 1
+        except (EOFError, KeyboardInterrupt):
+            return 1
+
+    if not args.gas_off:
+        print("\n*** Gas should be OFF for the first pass. ***")
+        print("Listen for solenoid clicks, confirm the wiring, and only then "
+              "run again with gas on to confirm visually.")
+
+    client = connect(args.broker)
+    try:
+        mapping = walk(client, pulse_ms, args.dry_run)
+        if mapping is None:
+            return 1
+
+        print("\nDiscovered map:")
+        for name in sorted(mapping, key=lambda n: mapping[n]):
+            print(f"  channel {mapping[name]}  ->  {name}")
+        missing = [v for v in VALVE_NAMES if v not in mapping]
+        if missing:
+            print(f"\n  not found on any channel: {', '.join(missing)}")
+
+        if args.dry_run:
+            print("\n--dry-run: not published.")
+            return 0
+        try:
+            if input("\npublish this map? [y/N] ").strip().lower() != "y":
+                print("not published")
+                return 1
+        except (EOFError, KeyboardInterrupt):
+            print("\nnot published")
+            return 1
+        publish_map(client, mapping)
+        print("Published (retained). The board applies it immediately and "
+              "re-reads it on every reconnect.")
+        return 0
+    finally:
+        client.loop_stop()
+        client.disconnect()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -28,6 +28,7 @@ def _load_model():
 # For the HTTP server
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import os
 import random
 import threading
 import time
@@ -42,6 +43,18 @@ TOPIC_SENTIMENT = "bush/pipeline/sentiment/result"
 TOPIC_FLAME    = "bush/flame/pulse"
 TOPIC_TTS_DONE = "bush/pipeline/tts/done"
 MQTT_PORT = 1883
+
+# ── valve groups ───────────────────────────────────────────────────────────
+# Every valve is addressed individually — the relay firmware rejects a bare
+# type name like "bigjet" rather than guess which of three to fire. The fire
+# loop rotates through each group so wear is spread across the array and the
+# effect reads as movement rather than one jet doing all the work.
+# Override to fewer valves (e.g. FLARE_VALVES=flare1) if part of the array is
+# out of service.
+FLARE_VALVES = [v for v in os.environ.get(
+    "FLARE_VALVES", "flare1,flare2,flare3").split(",") if v.strip()]
+BIGJET_VALVES = [v for v in os.environ.get(
+    "BIGJET_VALVES", "bigjet1,bigjet2,bigjet3").split(",") if v.strip()]
 
 # ── emotion fire patterns ──────────────────────────────────────────────────
 # Each emotion drives a different pulse rhythm for the duration of TTS speech.
@@ -76,19 +89,29 @@ def _fire_loop(pattern: dict, score: float, mqttc: mqtt.Client, stop: threading.
     jitter       = pattern["jitter"]
     last_bigjet  = 0.0
     deadline     = time.monotonic() + FIRE_MAX_SECONDS
+    flare_i      = 0
+    bigjet_i     = 0
 
     while not stop.is_set() and time.monotonic() < deadline:
         # flare pulse
         if flare_ms > 0:
             v = flare_ms * (1 + jitter * (random.random() * 2 - 1))
-            mqttc.publish(TOPIC_FLAME, json.dumps({"valve": "flare", "ms": max(50, int(v))}))
+            if FLARE_VALVES:
+                valve = FLARE_VALVES[flare_i % len(FLARE_VALVES)]
+                flare_i += 1
+                mqttc.publish(TOPIC_FLAME,
+                              json.dumps({"valve": valve, "ms": max(50, int(v))}))
 
         # bigjet pulse on its own slower clock
         if bigjet_ms > 0 and bigjet_period > 0:
             now = time.monotonic()
             if (now - last_bigjet) * 1000 >= bigjet_period:
                 v = bigjet_ms * (1 + jitter * (random.random() * 2 - 1))
-                mqttc.publish(TOPIC_FLAME, json.dumps({"valve": "bigjet", "ms": max(100, int(v))}))
+                if BIGJET_VALVES:
+                    valve = BIGJET_VALVES[bigjet_i % len(BIGJET_VALVES)]
+                    bigjet_i += 1
+                    mqttc.publish(TOPIC_FLAME,
+                                  json.dumps({"valve": valve, "ms": max(100, int(v))}))
                 last_bigjet = now
 
         # wait for next flare period (with jitter), or until stopped

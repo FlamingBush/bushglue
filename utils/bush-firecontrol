@@ -98,12 +98,29 @@ def on_disconnect(client, userdata, rc, props=None, *args):
     mqtt_status["msg"] = "Disconnected — reconnecting…"
 
 
+# Valves are addressed individually — the relay firmware rejects a bare type
+# name rather than guess which of three to fire. The KEY_MAP still uses group
+# names so the curses grid and its active-state display are unchanged; the
+# group is resolved to a real valve at publish time. 1/2/3 picks the member.
+_group_index = {"bigjet": 1, "flare": 1}
+
+
+def _resolve(valve):
+    """Group name -> the individually-addressed valve currently selected."""
+    if valve in _group_index:
+        return "%s%d" % (valve, _group_index[valve])
+    if valve == "poof":
+        return "poof1"
+    return valve
+
+
 def fire(mq, valve, duration_ms, key_label):
     if not mqtt_status["connected"]:
         with log_lock:
             log_entries.appendleft((time.time(), key_label, valve, duration_ms, False))
         return
-    mq.publish(TOPIC_FLAME, json.dumps({"valve": valve, "ms": duration_ms}), qos=0)
+    mq.publish(TOPIC_FLAME,
+               json.dumps({"valve": _resolve(valve), "ms": duration_ms}), qos=0)
     now = time.time()
     with active_lock:
         active[valve]["until"]    = now + duration_ms / 1000.0
@@ -243,7 +260,9 @@ def tui(stdscr, mq):
                          C_FLARE if is_flare else C_BIGJET)
 
         # Footer
-        footer = " Q/W/E/R/T  A/S/D/F/G  Z/X/C/V/B → BIGJET   Y/U/I/O/P  H/J/K/L/;  N/M/,./  → FLARE    ESC quit "
+        footer = (f" Q..B → BIGJET{_group_index['bigjet']}   "
+                  f"Y../ → FLARE{_group_index['flare']}   "
+                  f"1/2/3 pick valve   ESC quit ")
         safe_addstr(stdscr, h - 1, 0, "─" * w, C_DIM)
         safe_addstr(stdscr, h - 1, max(0, (w - len(footer)) // 2), footer, C_DIM)
 
@@ -252,6 +271,11 @@ def tui(stdscr, mq):
         ch = stdscr.getch()
         if ch == 27:
             break
+        if ch in (ord("1"), ord("2"), ord("3")):
+            n = ch - ord("0")
+            _group_index["bigjet"] = n
+            _group_index["flare"]  = n
+            continue
         if ch in KEY_MAP:
             valve, dur, key_lbl, *_ = KEY_MAP[ch]
             fire(mq, valve, dur, key_lbl)

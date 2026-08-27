@@ -39,27 +39,49 @@ try:
 except ImportError:
     raise RuntimeError("Create secrets.py — see secrets.example.py")
 
-# ── Pin setup ────────────────────────────────────────────────────────────────
-pin_flare = digitalio.DigitalInOut(board.GP2)
-pin_flare.direction = digitalio.Direction.OUTPUT
-pin_flare.value = False
+# ── Outputs ──────────────────────────────────────────────────────────────────
+# Seven solenoids, addressed by INDEX here and by NAME over MQTT. The
+# name->index map is runtime state (see VALVE_MAP), because the loom is built
+# before anyone knows which physical valve landed on which driver channel.
+# Wired GP6..GP12 in header order: six new drivers plus GP9, which already
+# carried the original poof relay. Channel index == position in this list, so
+# channel 0 is GP6 and channel 6 is GP12 — that indexing is what
+# bush/flame/identify addresses and what bush-valve-id reports.
+# GP2/GP3 (the old flare and bigjet channels) are deliberately NOT outputs any
+# more; everything moved to the contiguous block.
+OUTPUT_PINS = [board.GP6, board.GP7, board.GP8, board.GP9,
+               board.GP10, board.GP11, board.GP12]
+NUM_OUTPUTS = len(OUTPUT_PINS)
 
-pin_bigjet = digitalio.DigitalInOut(board.GP3)
-pin_bigjet.direction = digitalio.Direction.OUTPUT
-pin_bigjet.value = False
+outputs = []
+for _p in OUTPUT_PINS:
+    _io = digitalio.DigitalInOut(_p)
+    _io.direction = digitalio.Direction.OUTPUT
+    _io.value = False
+    outputs.append(_io)
 
-pin_poof = digitalio.DigitalInOut(board.GP9)
-pin_poof.direction = digitalio.Direction.OUTPUT
-pin_poof.value = False
+# Scheduled off-time per output in ms (supervisor.ticks_ms); None = not firing.
+off_ms = [None] * NUM_OUTPUTS
 
-# ── Scheduled off-times in ms (supervisor.ticks_ms) ─────────────────────────
-# None = not scheduled
-off_ms_flare  = None
-off_ms_bigjet = None
-off_ms_poof   = None
+# name -> output index. Identity-ish default so a board with no map published
+# is still usable and, more importantly, predictable. Replaced wholesale by a
+# retained bush/flame/map message; the broker is the persistence layer, which
+# avoids remounting CIRCUITPY read-write just to store a dict.
+DEFAULT_VALVE_MAP = {
+    "flare1": 0, "flare2": 1, "flare3": 2,
+    "bigjet1": 3, "bigjet2": 4, "bigjet3": 5,
+    "poof1": 6,
+}
+valve_map = dict(DEFAULT_VALVE_MAP)
+
+# Hard ceiling for one pulse. A typo'd or hostile "ms" must not be able to
+# hold a solenoid open indefinitely — this is gas, not an LED.
+MAX_PULSE_MS = 10_000
 
 TOPIC_FLAME        = b"bush/flame/pulse"
 TOPIC_FLAME_STATUS = b"bush/flame/status"
+TOPIC_FLAME_IDENT  = b"bush/flame/identify"
+TOPIC_FLAME_MAP    = b"bush/flame/map"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -74,32 +96,32 @@ def ticks_expired(deadline):
 
 # ── Pin update — call as often as possible ───────────────────────────────────
 def service_pins():
-    global off_ms_flare, off_ms_bigjet, off_ms_poof
-    if off_ms_flare is not None and ticks_expired(off_ms_flare):
-        pin_flare.value = False
-        off_ms_flare = None
-        print("Flare OFF")
-    if off_ms_bigjet is not None and ticks_expired(off_ms_bigjet):
-        pin_bigjet.value = False
-        off_ms_bigjet = None
-        print("Bigjet OFF")
-    if off_ms_poof is not None and ticks_expired(off_ms_poof):
-        pin_poof.value = False
-        off_ms_poof = None
-        print("Poof OFF")
+    for i in range(NUM_OUTPUTS):
+        if off_ms[i] is not None and ticks_expired(off_ms[i]):
+            outputs[i].value = False
+            off_ms[i] = None
+            print("out%d OFF" % i)
 
 
 def force_pins_off():
     # Drop solenoids and clear schedules before any blocking Wi-Fi
     # recovery — toggling the radio or sleeping between retries can
     # outlast a pulse's OFF deadline.
-    global off_ms_flare, off_ms_bigjet, off_ms_poof
-    pin_flare.value = False
-    pin_bigjet.value = False
-    pin_poof.value = False
-    off_ms_flare = None
-    off_ms_bigjet = None
-    off_ms_poof = None
+    for i in range(NUM_OUTPUTS):
+        outputs[i].value = False
+        off_ms[i] = None
+
+
+def fire_output(index, duration_ms, label):
+    """Energise one output for duration_ms. Never shortens an active pulse."""
+    if index < 0 or index >= NUM_OUTPUTS:
+        print("Bad output index:", index)
+        return
+    deadline = (supervisor.ticks_ms() + duration_ms) & 0x3FFFFFFF
+    outputs[index].value = True
+    if off_ms[index] is None or ticks_diff(deadline, off_ms[index]) < 0x1FFFFFFF:
+        off_ms[index] = deadline
+    print("%s (out%d) ON %dms" % (label, index, duration_ms))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Minimal hand-rolled MQTT client over a non-blocking raw socket.
@@ -336,7 +358,7 @@ def decode_remaining(buf, pos):
 
 def process_packets():
     """Parse and dispatch all complete MQTT packets sitting in rx_buf."""
-    global off_ms_flare, off_ms_bigjet, off_ms_poof, rx_buf, pipeline_verified
+    global rx_buf, pipeline_verified, valve_map
     pos = 0
     while pos < len(rx_buf):
         if pos + 2 > len(rx_buf):
@@ -366,6 +388,47 @@ def process_packets():
                 pos = pkt_end
                 continue
 
+            if topic == TOPIC_FLAME_MAP:
+                # Retained: {"flare1": 0, "bigjet2": 4, ...}. Replaces the map
+                # wholesale so a stale name can never linger. Rejected as a
+                # unit if anything is malformed — a half-applied map would
+                # fire the wrong valve, which is worse than an outdated one.
+                try:
+                    incoming = json.loads(payload)
+                    newmap = {}
+                    for k in incoming:
+                        idx = int(incoming[k])
+                        if idx < 0 or idx >= NUM_OUTPUTS:
+                            raise ValueError(k)
+                        newmap[str(k)] = idx
+                except (ValueError, KeyError, TypeError):
+                    print("Bad valve map, keeping current:", payload)
+                    pos = pkt_end
+                    continue
+                if newmap:
+                    force_pins_off()   # never remap while something is lit
+                    valve_map = newmap
+                    print("Valve map updated:", valve_map)
+                pos = pkt_end
+                continue
+
+            if topic == TOPIC_FLAME_IDENT:
+                # {"out": 3, "ms": 400} — fires a RAW output index, ignoring
+                # the map. This is how you find out which physical solenoid a
+                # channel drives before any map exists.
+                try:
+                    data = json.loads(payload)
+                    out_idx = int(data["out"])
+                    duration_ms = int(data["ms"])
+                except (ValueError, KeyError):
+                    print("Bad identify payload:", payload)
+                    pos = pkt_end
+                    continue
+                if 0 < duration_ms <= MAX_PULSE_MS:
+                    fire_output(out_idx, duration_ms, "identify")
+                pos = pkt_end
+                continue
+
             if topic != TOPIC_FLAME:
                 pos = pkt_end
                 continue
@@ -380,33 +443,16 @@ def process_packets():
                 continue
 
             if duration_ms > 0:
-                deadline = (supervisor.ticks_ms() + duration_ms) & 0x3FFFFFFF
-                if flame_valve == "flare":
-                    pin_flare.value = True
-                    # Extend deadline; never shorten an active pulse
-                    if off_ms_flare is None:
-                        off_ms_flare = deadline
-                    else:
-                        # pick whichever deadline is further in the future
-                        if ticks_diff(deadline, off_ms_flare) < 0x1FFFFFFF:
-                            off_ms_flare = deadline
-                    print(f"Flare ON {duration_ms}ms")
-                elif flame_valve == "bigjet":
-                    pin_bigjet.value = True
-                    if off_ms_bigjet is None:
-                        off_ms_bigjet = deadline
-                    else:
-                        if ticks_diff(deadline, off_ms_bigjet) < 0x1FFFFFFF:
-                            off_ms_bigjet = deadline
-                    print(f"Bigjet ON {duration_ms}ms")
-                elif flame_valve == "poof":
-                    pin_poof.value = True
-                    if off_ms_poof is None:
-                        off_ms_poof = deadline
-                    else:
-                        if ticks_diff(deadline, off_ms_poof) < 0x1FFFFFFF:
-                            off_ms_poof = deadline
-                    print(f"Poof ON {duration_ms}ms")
+                if duration_ms > MAX_PULSE_MS:
+                    print("Pulse %dms exceeds cap, clamping" % duration_ms)
+                    duration_ms = MAX_PULSE_MS
+                idx = valve_map.get(flame_valve)
+                if idx is None:
+                    # Every valve is individually addressed; a bare type name
+                    # like "bigjet" is not a valve and must not guess.
+                    print("Unknown valve:", flame_valve)
+                else:
+                    fire_output(idx, duration_ms, flame_valve)
 
         elif pkt_type == 0xD0:  # PINGRESP — nothing to do
             pass
@@ -458,7 +504,11 @@ def mqtt_loop():
 def subscribe_all():
     """Subscribe to flame topics."""
     sock.send(mqtt_subscribe_packet(TOPIC_FLAME, packet_id=1))
-    print("Subscribed (flame).")
+    sock.send(mqtt_subscribe_packet(TOPIC_FLAME_IDENT, packet_id=2))
+    # Retained, so the broker replays the current map on every (re)connect —
+    # a rebooted board re-learns its wiring without anyone republishing.
+    sock.send(mqtt_subscribe_packet(TOPIC_FLAME_MAP, packet_id=3))
+    print("Subscribed (flame, identify, map).")
 
 
 def publish_flame_status(force=False):
@@ -468,8 +518,13 @@ def publish_flame_status(force=False):
     if not force and ticks_diff(now, last_status_ms) < STATUS_INTERVAL_MS:
         return
     last_status_ms = now
-    payload = json.dumps({"ticks_ms": now, "flare": pin_flare.value,
-                          "bigjet": pin_bigjet.value, "poof": pin_poof.value})
+    # Report by name so a reader does not need the map to interpret it, plus
+    # the raw channel states and the map itself for commissioning.
+    named = {}
+    for _n in valve_map:
+        named[_n] = outputs[valve_map[_n]].value
+    payload = json.dumps({"ticks_ms": now, "outputs": [o.value for o in outputs],
+                          "valves": named, "map": valve_map})
     try:
         sock.send(mqtt_publish_packet(TOPIC_FLAME_STATUS, payload))
     except OSError:

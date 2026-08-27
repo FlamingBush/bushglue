@@ -1,0 +1,16 @@
+[Unit]
+Description=Bush fire control web UI
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+ExecStart=/home/orangepi/bushglue/.venv/bin/python /home/orangepi/bushglue/utils/bush-firecontrol-web --broker localhost
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -32,7 +32,9 @@ See the [root README](../README.md) for setup and deploy instructions.
 | Topic | Direction | Publisher | Subscribers |
 |-------|-----------|-----------|-------------|
 | `bush/flame/pulse` | → | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control |
-| `bush/flame/status` | ← | relay-control | (monitor) |
+| `bush/flame/identify` | → | bush-valve-id, bush-firecontrol-web | relay-control |
+| `bush/flame/map` | → | bush-valve-id | relay-control |
+| `bush/flame/status` | ← | relay-control | bush-firecontrol-web, bush-valve-id, (monitor) |
 
 ### Needle Valve Topics
 
@@ -133,12 +135,34 @@ Labels are one of: `anger` `joy` `love` `surprise` `fear` `sadness`
 
 ### `bush/flame/pulse`
 ```json
-{"valve": "flare", "ms": 350}
+{"valve": "bigjet2", "ms": 350}
 ```
-`valve` is one of: `flare`, `bigjet`, `poof`. `ms` is the duration to open the solenoid valve. Typical ranges:
+Seven solenoids, each addressed individually: `flare1` `flare2` `flare3`
+`bigjet1` `bigjet2` `bigjet3` `poof1`. A bare type name (`bigjet`) is **not**
+a valve — the firmware rejects it rather than guess which of three to fire.
+`bush-sentiment` rotates through each group so wear is spread and the effect
+reads as movement; override with `FLARE_VALVES` / `BIGJET_VALVES` if part of
+the array is out of service. Pulses are capped at 10 s in firmware. Typical:
 - flare: 50–2000 ms
 - bigjet: 100–1000 ms
 - poof: 20–450 ms
+
+### `bush/flame/identify`
+```json
+{"out": 3, "ms": 250}
+```
+Fires a **raw relay channel** (0–6), ignoring the valve map. This is how you
+find out which physical solenoid a channel drives after the loom is built.
+Also exposed in the fire-control web UI's IDENTIFY panel.
+
+### `bush/flame/map`
+```json
+{"flare1": 0, "flare2": 1, "bigjet1": 3, "poof1": 6}
+```
+**Retained.** Name → relay channel. Replaces the map wholesale; rejected as a
+unit if malformed, and all outputs are forced off before it takes effect. The
+broker is the persistence layer, so a rebooted relay board re-learns its
+wiring on reconnect. Produced by `utils/bush-valve-id`.
 
 ### `bush/fire/valve/target`
 ```
