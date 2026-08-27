@@ -7,16 +7,19 @@ mido/rtmidi: MIDI is a byte protocol simple enough to parse inline, and this
 avoids building a C extension on the board. The device is root:audio 0660, so
 the service only needs the audio group.
 
-Notes fire solenoids. Velocity sets the pulse length, so how hard you hit the
-key is how long the valve stays open — that is the whole point of playing the
-fire from a keyboard. Control changes drive the lights.
+Notes hold solenoids open: key down opens the valve, key up closes it, so the
+length of the note is the length of the flame. Control changes drive the
+lights.
 
 Only acts while bush/mode is "midi", so a keyboard left plugged in cannot
 fire the rig when the installation is running its own pipeline.
 
-Safety: every pulse is clamped to MIDI_MAX_MS here, and the firmware clamps
-again at MAX_PULSE_MS. Note-off does not close the valve — the firmware's
-own timer does. A dropped note-off can therefore never hold a solenoid open.
+Safety: a key-down opens the valve for its maximum hold, not indefinitely, and
+the key-up closes it early. If a key-up is ever lost — a dropped packet, a
+yanked cable, the service dying mid-note — the firmware's own timer still
+closes the valve at that maximum. Nothing here can hold a solenoid open
+forever, which is why the open is expressed as a bounded pulse rather than a
+latch.
 """
 import json
 import os
@@ -46,14 +49,14 @@ NOTE_VALVES = [v for v in os.environ.get(
     "MIDI_VALVES",
     "flare1,flare2,flare3,bigjet1,bigjet2,bigjet3,poof1").split(",") if v.strip()]
 
-# Velocity 1..127 maps onto this range. The floor keeps a soft touch from
-# producing a pulse too short to light, the ceiling is the safety clamp.
-MIDI_MIN_MS = int(os.environ.get("MIDI_MIN_MS", "60"))
-MIDI_MAX_MS = int(os.environ.get("MIDI_MAX_MS", "1200"))
+# How long a held key may keep a valve open. The key-up normally closes it
+# well before this; these are the ceilings that apply when a key-up is lost,
+# and the longest a leaned-on key can burn.
+MIDI_HOLD_MS = int(os.environ.get("MIDI_HOLD_MS", "5000"))
 
-# Poof is a short, sharp effect; its own ceiling keeps a hard keypress from
-# turning it into a long burn.
-POOF_MAX_MS = int(os.environ.get("MIDI_POOF_MAX_MS", "450"))
+# The poofer gets a much shorter ceiling: it is a sharp effect, and a leaned-on
+# key should not turn it into a five-second burn.
+POOF_HOLD_MS = int(os.environ.get("MIDI_POOF_HOLD_MS", "1000"))
 
 # Ignore a repeated note-on inside this window — cheap protection against a
 # stuck key or an over-enthusiastic tremolo emptying the propane.
@@ -68,13 +71,9 @@ CC_LAYOUT     = int(os.environ.get("MIDI_CC_LAYOUT", "20"))       # first knob
 NOTE_OFF, NOTE_ON, CONTROL_CHANGE = 0x80, 0x90, 0xB0
 
 
-def scale_velocity(velocity: int, valve: str) -> int:
-    """Velocity 1-127 -> pulse ms, clamped per valve type."""
-    frac = max(0, min(127, velocity)) / 127.0
-    ms = int(MIDI_MIN_MS + frac * (MIDI_MAX_MS - MIDI_MIN_MS))
-    if valve.startswith("poof"):
-        ms = min(ms, POOF_MAX_MS)
-    return max(MIDI_MIN_MS, min(ms, MIDI_MAX_MS))
+def hold_ms(valve: str) -> int:
+    """Maximum time a held key may keep this valve open."""
+    return POOF_HOLD_MS if valve.startswith("poof") else MIDI_HOLD_MS
 
 
 class MidiParser:
@@ -114,11 +113,15 @@ class MidiDriver:
         self.client = client
         self.mode = None
         self._last_fire = {}
+        self._held = set()
 
     # ── mode gate ──────────────────────────────────────────────────────────
     def set_mode(self, mode):
         if mode != self.mode:
             log(f"mode: {self.mode} -> {mode}")
+            if self.mode == "midi" and mode != "midi":
+                # Switching away mid-note must not leave a valve held.
+                self.release_all()
         self.mode = mode
 
     @property
@@ -130,17 +133,23 @@ class MidiDriver:
         kind = status & 0xF0
         if kind == NOTE_ON and d2 > 0:
             self.note_on(d1, d2)
+        elif kind == NOTE_OFF or (kind == NOTE_ON and d2 == 0):
+            # A note-on with velocity 0 is a note-off; many keyboards send it
+            # that way under running status.
+            self.note_off(d1)
         elif kind == CONTROL_CHANGE:
             self.control_change(d1, d2)
-        # NOTE_OFF (and NOTE_ON with velocity 0) deliberately ignored: the
-        # firmware closes the valve on its own timer, so a lost note-off
-        # cannot strand a solenoid open.
 
-    def note_on(self, note, velocity):
+    def _valve_for(self, note):
         idx = note - MIDI_BASE_NOTE
         if idx < 0 or idx >= len(NOTE_VALVES):
+            return None
+        return NOTE_VALVES[idx]
+
+    def note_on(self, note, velocity):
+        valve = self._valve_for(note)
+        if valve is None:
             return
-        valve = NOTE_VALVES[idx]
         now = time.monotonic()
         if (now - self._last_fire.get(valve, 0.0)) * 1000 < RETRIGGER_MS:
             return
@@ -149,9 +158,33 @@ class MidiDriver:
         if not self.armed:
             log(f"note {note} -> {valve} ignored (mode={self.mode})")
             return
-        ms = scale_velocity(velocity, valve)
+        # Open for the maximum hold. The key-up closes it early; this value is
+        # only reached if the key-up is lost, so it doubles as the ceiling on
+        # how long a leaned-on key can burn.
+        ms = hold_ms(valve)
+        self._held.add(valve)
         self.client.publish(TOPIC_FLAME, json.dumps({"valve": valve, "ms": ms}))
-        log(f"note {note} vel {velocity} -> {valve} {ms}ms")
+        log(f"note {note} down -> {valve} open (max {ms}ms)")
+
+    def note_off(self, note):
+        valve = self._valve_for(note)
+        if valve is None or valve not in self._held:
+            return
+        self._held.discard(valve)
+        if not self.armed:
+            return
+        # ms 0 is an explicit close in the relay firmware.
+        self.client.publish(TOPIC_FLAME, json.dumps({"valve": valve, "ms": 0}))
+        log(f"note {note} up -> {valve} closed")
+
+    def release_all(self):
+        """Close everything we are holding — used when disarming."""
+        for valve in sorted(self._held):
+            self.client.publish(TOPIC_FLAME,
+                                json.dumps({"valve": valve, "ms": 0}))
+        if self._held:
+            log(f"released {len(self._held)} held valve(s)")
+        self._held.clear()
 
     def control_change(self, cc, value):
         # Lights are cosmetic, so they follow the knobs in any mode — turning

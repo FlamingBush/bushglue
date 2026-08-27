@@ -41,7 +41,7 @@ placeholder, not a description of the wiring.
 
 | Topic | Direction | Payload | Cadence / Effect |
 |---|---|---|---|
-| `bush/flame/pulse` | sub | `{"valve":"bigjet2","ms":350}` | Fire one named valve for N ms. Valves are individually addressed: `flare1..3`, `bigjet1..3`, `poof1`. A bare type name (`bigjet`) is **not** a valve and is rejected — the firmware never guesses which of three to fire. Pulses are capped at `MAX_PULSE_MS` (10 s) |
+| `bush/flame/pulse` | sub | `{"valve":"bigjet2","ms":350}` | Fire one named valve for N ms. **`ms: 0` closes that valve immediately** — a held MIDI key opens for its maximum and the key-up closes it early. Valves are individually addressed: `flare1..3`, `bigjet1..3`, `poof1`. A bare type name (`bigjet`) is **not** a valve and is rejected — the firmware never guesses which of three to fire. Pulses are capped at `MAX_PULSE_MS` (10 s) |
 | `bush/flame/identify` | sub | `{"out":3,"ms":250}` | Fire a **raw channel**, ignoring the map. Used to discover the wiring after assembly |
 | `bush/flame/map` | sub | `{"flare1":0,"bigjet2":4,...}` | **Retained.** Replaces the name→channel map wholesale. Rejected as a unit if malformed, so a half-applied map can never fire the wrong valve. All outputs are forced off before a remap takes effect |
 | `bush/flame/status` | pub | JSON: `{ticks_ms, outputs[], valves{}, map{}}` | Liveness beacon, **every 5 s** (`STATUS_INTERVAL_MS`); also published immediately on (re)connect. Carries the live map so commissioning tools can read back what the board actually believes. Deploy verification waits on this |
@@ -85,10 +85,21 @@ semitones from `MIDI_BASE_NOTE` (default 48 = C3) map onto the seven valves in
 `MIDI_VALVES` order. Velocity sets the pulse length, so how hard you hit the
 key is how long the valve opens.
 
+Keys are **hold-to-fire**: key down opens the valve, key up closes it, so the
+length of the note is the length of the flame. The open is expressed as a
+bounded pulse rather than a latch — 5 s for the jets, 1 s for the poofer — so
+a lost key-up (dropped packet, yanked cable, service killed mid-note) still
+ends with the firmware closing the valve on its own timer. Leaving `midi` mode
+mid-note releases everything held.
+
 It only fires while `bush/mode` is `midi`, so a keyboard left plugged in
-cannot fire the rig during a normal show. Note-off is deliberately ignored —
-the firmware's own timer closes the valve, so a dropped note-off can never
-strand a solenoid open. Knobs (CC) drive the lights in any mode.
+cannot fire the rig during a normal show. Knobs (CC) drive the lights in any
+mode.
+
+**Wi-Fi power save is disabled at boot.** The CYW43 defaults to
+`PowerManagement.MIN`, which parks the radio between beacons and added 60-100
+ms to every command — plainly audible when playing the solenoids. Measured
+round trip publish->act->report: 160 ms median before, 7 ms after.
 
 ## Poofer fallback
 

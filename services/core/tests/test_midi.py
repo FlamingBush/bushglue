@@ -72,25 +72,56 @@ def test_data_before_any_status_is_discarded(mod):
     assert list(mod.MidiParser().feed(bytes([60, 100]))) == []
 
 
-# ── velocity -> duration ────────────────────────────────────────────────────
+# ── hold ceilings ───────────────────────────────────────────────────────────
 
-def test_velocity_scales_between_the_bounds(mod):
-    lo = mod.scale_velocity(1, "flare1")
-    hi = mod.scale_velocity(127, "flare1")
-    assert lo == mod.MIDI_MIN_MS or lo > 0
-    assert hi == mod.MIDI_MAX_MS
-    assert lo < hi
-
-
-def test_poof_has_a_tighter_ceiling(mod):
-    # A hard keypress must not turn the poofer into a long burn.
-    assert mod.scale_velocity(127, "poof1") <= mod.POOF_MAX_MS
-    assert mod.scale_velocity(127, "poof1") < mod.scale_velocity(127, "bigjet1")
+def test_hold_ceilings(mod):
+    assert mod.hold_ms("bigjet1") == mod.MIDI_HOLD_MS == 5000
+    assert mod.hold_ms("flare2") == 5000
+    # The poofer is a sharp effect; a leaned-on key must not make it a long burn.
+    assert mod.hold_ms("poof1") == mod.POOF_HOLD_MS == 1000
+    assert mod.hold_ms("poof1") < mod.hold_ms("bigjet1")
 
 
-def test_duration_never_exceeds_the_cap(mod):
-    for v in range(0, 128):
-        assert mod.scale_velocity(v, "bigjet1") <= mod.MIDI_MAX_MS
+# ── hold semantics ──────────────────────────────────────────────────────────
+
+def test_key_down_opens_for_the_max_hold(mod):
+    d = armed_driver(mod)
+    d.note_on(mod.MIDI_BASE_NOTE, 100)
+    fired = d.client.fired()
+    assert len(fired) == 1
+    assert fired[0]["ms"] == mod.MIDI_HOLD_MS
+
+
+def test_key_up_closes_with_ms_zero(mod):
+    d = armed_driver(mod)
+    d.note_on(mod.MIDI_BASE_NOTE, 100)
+    d.note_off(mod.MIDI_BASE_NOTE)
+    fired = d.client.fired()
+    assert [f["ms"] for f in fired] == [mod.MIDI_HOLD_MS, 0]
+    assert fired[1]["valve"] == fired[0]["valve"]
+
+
+def test_note_on_velocity_zero_is_a_release(mod):
+    # Running status often expresses note-off that way.
+    d = armed_driver(mod)
+    d.handle(0x90, mod.MIDI_BASE_NOTE, 100)
+    d.handle(0x90, mod.MIDI_BASE_NOTE, 0)
+    assert [f["ms"] for f in d.client.fired()] == [mod.MIDI_HOLD_MS, 0]
+
+
+def test_release_without_a_matching_press_is_ignored(mod):
+    d = armed_driver(mod)
+    d.note_off(mod.MIDI_BASE_NOTE)
+    assert d.client.fired() == []
+
+
+def test_leaving_midi_mode_releases_held_valves(mod):
+    d = armed_driver(mod)
+    d.note_on(mod.MIDI_BASE_NOTE, 100)
+    d.note_on(mod.MIDI_BASE_NOTE + 1, 100)
+    d.set_mode("manual")
+    closes = [f for f in d.client.fired() if f["ms"] == 0]
+    assert len(closes) == 2, "switching away mid-note must not strand a valve"
 
 
 # ── note -> valve ───────────────────────────────────────────────────────────
@@ -110,13 +141,12 @@ def test_notes_outside_the_range_are_ignored(mod):
     assert d.client.fired() == []
 
 
-def test_note_off_does_not_close_the_valve(mod):
-    # The firmware's own timer closes it, so a lost note-off cannot strand a
-    # solenoid open. Note-off must therefore publish nothing at all.
+def test_a_lost_key_up_still_has_a_firmware_backstop(mod):
+    # The open is a bounded pulse, never a latch: if the key-up never arrives
+    # the firmware closes the valve at this ms on its own.
     d = armed_driver(mod)
-    d.handle(0x80, mod.MIDI_BASE_NOTE, 0)
-    d.handle(0x90, mod.MIDI_BASE_NOTE, 0)   # note-on velocity 0 == note-off
-    assert d.client.fired() == []
+    d.note_on(mod.MIDI_BASE_NOTE, 100)
+    assert d.client.fired()[0]["ms"] > 0
 
 
 # ── mode gate ───────────────────────────────────────────────────────────────

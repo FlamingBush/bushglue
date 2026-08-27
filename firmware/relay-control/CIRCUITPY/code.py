@@ -258,6 +258,15 @@ def wifi_connect():
     # hung join can hold the main loop for many minutes, starving the
     # rest of the main loop.
     wifi.radio.connect(secrets["SSID"], secrets["PASSWORD"], timeout=10)
+    # The CYW43 defaults to PowerManagement.MIN, parking the radio between
+    # beacons. That is fine for a sensor and useless here: it added 60-100 ms
+    # to every command, which is plainly audible when playing the solenoids
+    # from a keyboard. This rig is mains-powered; trade the milliamps.
+    try:
+        wifi.radio.power_management = wifi.PowerManagement.NONE
+        print("Wi-Fi power save disabled")
+    except Exception as e:
+        print("Could not disable Wi-Fi power save:", e)
     print("Wi-Fi OK, IP:", wifi.radio.ipv4_address)
     pool = socketpool.SocketPool(wifi.radio)
 
@@ -515,6 +524,24 @@ def process_packets():
                 duration_ms = int(data["ms"])
             except (ValueError, KeyError):
                 print("Bad payload:", payload)
+                pos = pkt_end
+                continue
+
+            if duration_ms == 0:
+                # Explicit release. A held MIDI key opens the valve for its
+                # maximum and the key-up closes it early; the firmware timer
+                # remains the backstop if that release is ever lost.
+                targets = []
+                if poof_fallback and flame_valve.startswith("poof"):
+                    targets = [valve_map[n] for n in valve_map
+                               if n.startswith("bigjet")]
+                elif flame_valve in valve_map:
+                    targets = [valve_map[flame_valve]]
+                for i in targets:
+                    outputs[i].value = False
+                    off_ms[i] = None
+                if targets:
+                    print("%s released" % flame_valve)
                 pos = pkt_end
                 continue
 
