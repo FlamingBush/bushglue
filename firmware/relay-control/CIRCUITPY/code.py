@@ -304,6 +304,37 @@ def tcp_probe(ip):
                 pass
 
 
+# CircuitPython's socketpool can raise EINPROGRESS (119) from connect() even
+# with a timeout set — the connect has *started*, not failed. Treating that as
+# an error made the board give up on any broker slow enough to not complete
+# inside one call, which is every broker a hop or two away. Retry until the
+# stack reports the connection is established (EISCONN) or the deadline
+# passes.
+EINPROGRESS = 119
+EALREADY    = 114
+EISCONN     = 127
+CONNECT_TIMEOUT_S = 8
+
+
+def _connect_socket(s, broker):
+    """connect(), tolerating a non-blocking stack's in-progress errnos."""
+    deadline = supervisor.ticks_ms() + int(CONNECT_TIMEOUT_S * 1000)
+    last = None
+    while ticks_diff(deadline, supervisor.ticks_ms()) < 0x1FFFFFFF:
+        try:
+            s.connect((broker, MQTT_PORT))
+            return
+        except OSError as e:
+            err = e.args[0] if e.args else None
+            if err == EISCONN:
+                return                      # already established: done
+            if err not in (EINPROGRESS, EALREADY):
+                raise
+            last = e
+            time.sleep(0.2)
+    raise last if last else OSError("connect timed out")
+
+
 def mqtt_open(broker=None):
     """Open TCP socket, send CONNECT, wait for CONNACK, then go non-blocking."""
     global sock, rx_buf, connected, last_ping_ms
@@ -321,8 +352,8 @@ def mqtt_open(broker=None):
     print("Connecting to MQTT broker", broker, "…")
     try:
         s = pool.socket(pool.AF_INET, pool.SOCK_STREAM)
-        s.settimeout(5)                        # blocking only during handshake
-        s.connect((broker, MQTT_PORT))
+        s.settimeout(CONNECT_TIMEOUT_S)        # blocking only during handshake
+        _connect_socket(s, broker)
         s.send(mqtt_connect_packet())
         # Wait for CONNACK (4 bytes)
         buf = bytearray(4)
