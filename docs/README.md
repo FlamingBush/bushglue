@@ -181,6 +181,19 @@ handles it before anything else in its receive queue, so a backlog of queued
 pulses cannot be serviced first. Wired to the always-visible ALL STOP button
 in the fire-control web UI.
 
+### `bush/flame/poof-fallback`
+```json
+{"enabled": true}
+```
+**Retained.** For when the poofer is out of service: anything asking for a
+poof fires **all three bigjets together** instead. Handled in the relay
+firmware rather than in any one publisher, so it applies to the web UI, the
+MIDI keyboard, the sentiment fire loop and the CLI at once. The substitute set
+is derived from the live valve map, so a remap is honoured without restating
+the fallback. A bare `1`/`0`/`true`/`false` payload is accepted too. Reported
+back in `bush/flame/status` as `poof_fallback`, and the fire UI marks the poof
+row `→jets` so nobody discovers the substitution by watching the rig.
+
 ### `bush/flame/map`
 ```json
 {"flare1": 0, "flare2": 1, "bigjet1": 3, "poof1": 6}

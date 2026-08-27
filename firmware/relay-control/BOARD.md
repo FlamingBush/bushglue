@@ -84,3 +84,12 @@ It only fires while `bush/mode` is `midi`, so a keyboard left plugged in
 cannot fire the rig during a normal show. Note-off is deliberately ignored —
 the firmware's own timer closes the valve, so a dropped note-off can never
 strand a solenoid open. Knobs (CC) drive the lights in any mode.
+
+## Poofer fallback
+
+`bush/flame/poof-fallback` (retained) substitutes **all three bigjets, fired
+together** for any poof request. It lives in the firmware so every publisher
+inherits it at once — the web UI, `bush-midi`, `bush-sentiment` and
+`bush-firecontrol` — rather than each needing its own copy of the rule. The
+substitute set is read from the live valve map, so re-running `bush-valve-id`
+does not invalidate it. State is echoed in `bush/flame/status`.

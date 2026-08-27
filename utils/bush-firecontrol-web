@@ -34,6 +34,7 @@ import paho.mqtt.client as mqtt
 TOPIC_FLAME         = "bush/flame/pulse"
 TOPIC_IDENTIFY      = "bush/flame/identify"
 TOPIC_STOP          = "bush/flame/stop"
+TOPIC_POOF_FB       = "bush/flame/poof-fallback"
 TOPIC_STATUS        = "bush/flame/status"
 TOPIC_MODE          = "bush/mode"
 TOPIC_PIPELINE_PING = "bush/pipeline/ping"
@@ -105,6 +106,7 @@ def _snapshot():
         "board_age": round(age, 1) if board is not None else None,
         "valves": (board.get("valves") or {}) if fresh else {},
         "map": (board.get("map") or {}) if fresh else {},
+        "poof_fallback": bool(board.get("poof_fallback")) if fresh else False,
         "mode": mode,
         "services": _service_states(),
     }
@@ -146,6 +148,12 @@ def _identify(out, ms):
 
 def _all_stop():
     return _pub(TOPIC_STOP, "")
+
+
+def _set_poof_fallback(on):
+    # Retained: a broken poofer stays broken across a reboot, and the
+    # substitution has to survive with it.
+    return _pub(TOPIC_POOF_FB, json.dumps({"enabled": bool(on)}), retain=True)
 
 
 def _set_mode(mode):
@@ -306,6 +314,10 @@ main{{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch}}
 .flare .d{{background:#7d2d10}}
 .bigjet .d{{background:#12456f}}
 .poof .d{{background:#125a31}}
+.row.sub .vname{{background:#3a2c07;border-color:#5c4a12;color:#ffca55}}
+.row.sub .vname::after{{content:"→jets";font-size:.6rem;margin-left:auto;
+  padding-right:7px;letter-spacing:.02em}}
+.row.sub .d{{background:#12456f}}
 .d:active,.d.hit{{filter:brightness(2.1)}}
 .d[disabled]{{opacity:.3}}
 .card{{background:var(--panel);border:1px solid var(--line);border-radius:8px;
@@ -408,6 +420,12 @@ function allStop(){{
     .catch(()=> say('ALL STOP FAILED','err'));
 }}
 
+function setPoofFb(on){{
+  post('/poof-fallback', {{enabled:on}})
+    .then(d=> say(d.ok ? ('poofer fallback '+(on?'ON — poof fires all bigjets':'off'))
+                       : 'failed', d.ok?(on?'warn':''):'err'));
+}}
+
 function setMode(m){{
   post('/mode', {{mode:m}})
     .then(d=> say(d.ok ? ('mode: '+m) : 'mode change failed', d.ok?'':'err'));
@@ -468,6 +486,18 @@ function paint(d){{
       }}
     }}
   }}
+  const pf = document.getElementById('pf');
+  if(pf && document.activeElement !== pf){{
+    pf.checked = !!d.poof_fallback;
+    document.getElementById('pfrow').classList.toggle('up', !!d.poof_fallback);
+    document.getElementById('pfst').textContent = d.poof_fallback ? 'ON' : 'off';
+  }}
+  /* The fire page must say so too — tapping POOF will fire the jets, and
+     that is not something to discover by watching the rig. */
+  VALVES.filter(v=>v.startsWith('poof')).forEach(v=>{{
+    const row = document.getElementById('row-'+v);
+    if(row) row.classList.toggle('sub', !!d.poof_fallback);
+  }});
   if(d.map){{
     for(const name in d.map){{
       const el = document.getElementById('idmap-'+d.map[name]);
@@ -512,6 +542,20 @@ SETUP_BODY = """\
         <button data-m="midi" onclick="setMode('midi')">MIDI</button>
       </div>
       <div class="note" id="modenote"></div>
+    </div>
+    <div class="card">
+      <h2>FALLBACKS</h2>
+      <label class="svc" id="pfrow">
+        <input type="checkbox" id="pf" onchange="setPoofFb(this.checked)">
+        <span>Poofer &rarr; all bigjets</span><em id="pfst">·</em>
+      </label>
+      <div class="note">
+        For when the poofer is out of service. Anything that asks for a poof
+        fires <b>all three bigjets together</b> instead — the web UI, the MIDI
+        keyboard, the sentiment fire loop and the CLI, because the substitution
+        happens in the relay firmware rather than in any one of them. Derived
+        from the live valve map, so a remap is honoured automatically.
+      </div>
     </div>
     <div class="card">
       <h2>SERVICES</h2>
@@ -619,6 +663,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/stop":
                 self._body()
                 ok = _all_stop()
+            elif self.path == "/poof-fallback":
+                ok = _set_poof_fallback(self._body()["enabled"])
             elif self.path == "/mode":
                 ok = _set_mode(self._body()["mode"])
             elif self.path == "/service":

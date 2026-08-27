@@ -78,11 +78,19 @@ valve_map = dict(DEFAULT_VALVE_MAP)
 # hold a solenoid open indefinitely — this is gas, not an LED.
 MAX_PULSE_MS = 10_000
 
+# Poofer fallback. When the poofer is broken, anything that asks for a poof
+# fires every bigjet together instead. Lives here rather than in any one
+# publisher so it applies to all of them at once — the web UI, the MIDI
+# keyboard, the sentiment fire loop and the CLI. Retained on
+# bush/flame/poof-fallback.
+poof_fallback = False
+
 TOPIC_FLAME        = b"bush/flame/pulse"
 TOPIC_FLAME_STATUS = b"bush/flame/status"
 TOPIC_FLAME_IDENT  = b"bush/flame/identify"
 TOPIC_FLAME_MAP    = b"bush/flame/map"
 TOPIC_FLAME_STOP   = b"bush/flame/stop"
+TOPIC_POOF_FB      = b"bush/flame/poof-fallback"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -397,7 +405,7 @@ def decode_remaining(buf, pos):
 
 def process_packets():
     """Parse and dispatch all complete MQTT packets sitting in rx_buf."""
-    global rx_buf, pipeline_verified, valve_map
+    global rx_buf, pipeline_verified, valve_map, poof_fallback
     pos = 0
     while pos < len(rx_buf):
         if pos + 2 > len(rx_buf):
@@ -434,6 +442,18 @@ def process_packets():
                 # backlog of queued pulses cannot be serviced first.
                 force_pins_off()
                 print("ALL STOP")
+                pos = pkt_end
+                continue
+
+            if topic == TOPIC_POOF_FB:
+                # Accept {"enabled": true} or a bare 1/0/true/false.
+                raw = payload.decode().strip().lower()
+                try:
+                    val = bool(json.loads(raw).get("enabled"))
+                except (ValueError, AttributeError):
+                    val = raw in ("1", "true", "on", "yes")
+                poof_fallback = val
+                print("poof fallback:", "ON (poof -> all bigjets)" if val else "off")
                 pos = pkt_end
                 continue
 
@@ -495,13 +515,25 @@ def process_packets():
                 if duration_ms > MAX_PULSE_MS:
                     print("Pulse %dms exceeds cap, clamping" % duration_ms)
                     duration_ms = MAX_PULSE_MS
-                idx = valve_map.get(flame_valve)
-                if idx is None:
-                    # Every valve is individually addressed; a bare type name
-                    # like "bigjet" is not a valve and must not guess.
-                    print("Unknown valve:", flame_valve)
+                if poof_fallback and flame_valve.startswith("poof"):
+                    # Substitute every bigjet, fired together. Derived from
+                    # the live map, so a remap is honoured without restating
+                    # the fallback.
+                    subs = [n for n in valve_map if n.startswith("bigjet")]
+                    if subs:
+                        for n in sorted(subs):
+                            fire_output(valve_map[n], duration_ms,
+                                        flame_valve + "->" + n)
+                    else:
+                        print("poof fallback on but no bigjet mapped")
                 else:
-                    fire_output(idx, duration_ms, flame_valve)
+                    idx = valve_map.get(flame_valve)
+                    if idx is None:
+                        # Every valve is individually addressed; a bare type
+                        # name like "bigjet" is not a valve and must not guess.
+                        print("Unknown valve:", flame_valve)
+                    else:
+                        fire_output(idx, duration_ms, flame_valve)
 
         elif pkt_type == 0xD0:  # PINGRESP — nothing to do
             pass
@@ -558,7 +590,8 @@ def subscribe_all():
     # a rebooted board re-learns its wiring without anyone republishing.
     sock.send(mqtt_subscribe_packet(TOPIC_FLAME_MAP, packet_id=3))
     sock.send(mqtt_subscribe_packet(TOPIC_FLAME_STOP, packet_id=4))
-    print("Subscribed (flame, identify, map, stop).")
+    sock.send(mqtt_subscribe_packet(TOPIC_POOF_FB, packet_id=5))
+    print("Subscribed (flame, identify, map, stop, poof-fallback).")
 
 
 _last_reported = None      # tuple of output states at the last publish
@@ -589,7 +622,8 @@ def publish_flame_status(force=False):
     for _n in valve_map:
         named[_n] = outputs[valve_map[_n]].value
     payload = json.dumps({"ticks_ms": now, "outputs": [o.value for o in outputs],
-                          "valves": named, "map": valve_map})
+                          "valves": named, "map": valve_map,
+                          "poof_fallback": poof_fallback})
     try:
         sock.send(mqtt_publish_packet(TOPIC_FLAME_STATUS, payload))
         globals()["_last_reported"] = tuple(o.value for o in outputs)
