@@ -88,12 +88,25 @@ MAX_PULSE_MS = 10_000
 # bush/flame/poof-fallback.
 poof_fallback = False
 
+# Latching emergency stop. ALL STOP does not just drop the valves, it disarms
+# the board: every further pulse and identify is refused until someone
+# deliberately re-arms from the setup page. Enforced here rather than in the
+# UI, because a stop that only a web page honours is not a stop — the MIDI
+# keyboard, the sentiment fire loop and the CLI all publish straight to the
+# broker.
+#
+# Starts DISARMED. A board that boots into a rig of unknown state should not
+# be able to fire until someone says so, and the retained bush/flame/armed
+# message re-arms it within a beacon if that is genuinely the wanted state.
+disarmed = True
+
 TOPIC_FLAME        = b"bush/flame/pulse"
 TOPIC_FLAME_STATUS = b"bush/flame/status"
 TOPIC_FLAME_IDENT  = b"bush/flame/identify"
 TOPIC_FLAME_MAP    = b"bush/flame/map"
 TOPIC_FLAME_STOP   = b"bush/flame/stop"
 TOPIC_POOF_FB      = b"bush/flame/poof-fallback"
+TOPIC_ARMED        = b"bush/flame/armed"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -417,7 +430,7 @@ def decode_remaining(buf, pos):
 
 def process_packets():
     """Parse and dispatch all complete MQTT packets sitting in rx_buf."""
-    global rx_buf, pipeline_verified, valve_map, poof_fallback
+    global rx_buf, pipeline_verified, valve_map, poof_fallback, disarmed
     pos = 0
     while pos < len(rx_buf):
         if pos + 2 > len(rx_buf):
@@ -453,7 +466,8 @@ def process_packets():
                 # never fail to parse. Checked before anything else so a
                 # backlog of queued pulses cannot be serviced first.
                 force_pins_off()
-                print("ALL STOP")
+                disarmed = True
+                print("ALL STOP — DISARMED until re-armed")
                 pos = pkt_end
                 continue
 
@@ -493,6 +507,23 @@ def process_packets():
                 pos = pkt_end
                 continue
 
+            if topic == TOPIC_ARMED:
+                # Retained. {"armed": true} re-arms; anything else disarms and
+                # drops the valves immediately.
+                try:
+                    want = bool(json.loads(payload.decode()).get("armed"))
+                except (ValueError, AttributeError):
+                    want = payload.decode().strip().lower() in ("1", "true", "on")
+                if want:
+                    disarmed = False
+                    print("ARMED")
+                else:
+                    disarmed = True
+                    force_pins_off()
+                    print("DISARMED")
+                pos = pkt_end
+                continue
+
             if topic == TOPIC_FLAME_IDENT:
                 # {"out": 3, "ms": 400} — fires a RAW output index, ignoring
                 # the map. This is how you find out which physical solenoid a
@@ -505,7 +536,9 @@ def process_packets():
                     print("Bad identify payload:", payload)
                     pos = pkt_end
                     continue
-                if 0 < duration_ms <= MAX_PULSE_MS:
+                if disarmed:
+                    print("identify refused: DISARMED")
+                elif 0 < duration_ms <= MAX_PULSE_MS:
                     fire_output(out_idx, duration_ms, "identify")
                 pos = pkt_end
                 continue
@@ -538,6 +571,13 @@ def process_packets():
                     off_ms[i] = None
                 if targets:
                     print("%s released" % flame_valve)
+                pos = pkt_end
+                continue
+
+            if duration_ms > 0 and disarmed:
+                # Closes (ms 0) are always honoured — refusing them could
+                # strand a valve. Only opening is refused.
+                print("pulse refused: DISARMED")
                 pos = pkt_end
                 continue
 
@@ -621,7 +661,8 @@ def subscribe_all():
     sock.send(mqtt_subscribe_packet(TOPIC_FLAME_MAP, packet_id=3))
     sock.send(mqtt_subscribe_packet(TOPIC_FLAME_STOP, packet_id=4))
     sock.send(mqtt_subscribe_packet(TOPIC_POOF_FB, packet_id=5))
-    print("Subscribed (flame, identify, map, stop, poof-fallback).")
+    sock.send(mqtt_subscribe_packet(TOPIC_ARMED, packet_id=6))
+    print("Subscribed (flame, identify, map, stop, poof-fallback, armed).")
 
 
 _last_reported = None      # tuple of output states at the last publish
@@ -653,7 +694,8 @@ def publish_flame_status(force=False):
         named[_n] = outputs[valve_map[_n]].value
     payload = json.dumps({"ticks_ms": now, "outputs": [o.value for o in outputs],
                           "valves": named, "map": valve_map,
-                          "poof_fallback": poof_fallback})
+                          "poof_fallback": poof_fallback,
+                          "armed": not disarmed})
     try:
         sock.send(mqtt_publish_packet(TOPIC_FLAME_STATUS, payload))
         globals()["_last_reported"] = tuple(o.value for o in outputs)

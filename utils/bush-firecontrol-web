@@ -54,6 +54,7 @@ TOPIC_FLAME         = "bush/flame/pulse"
 TOPIC_IDENTIFY      = "bush/flame/identify"
 TOPIC_STOP          = "bush/flame/stop"
 TOPIC_POOF_FB       = "bush/flame/poof-fallback"
+TOPIC_ARMED         = "bush/flame/armed"
 TOPIC_STATUS        = "bush/flame/status"
 TOPIC_MODE          = "bush/mode"
 TOPIC_PIPELINE_PING = "bush/pipeline/ping"
@@ -165,6 +166,9 @@ def _snapshot():
         "valves": (board.get("valves") or {}) if fresh else {},
         "map": (board.get("map") or {}) if fresh else {},
         "poof_fallback": bool(board.get("poof_fallback")) if fresh else False,
+        # Unknown board state reads as NOT armed. Anything else would show a
+        # green light for a rig we cannot hear from.
+        "armed": bool(board.get("armed")) if fresh else False,
         "mode": mode,
         "services": _service_states(),
     }
@@ -205,7 +209,17 @@ def _identify(out, ms):
 
 
 def _all_stop():
-    return _pub(TOPIC_STOP, "")
+    """Drop everything now, and latch it disarmed."""
+    # Immediate action first — the retained disarm is for persistence, not for
+    # speed, and must never be what stands between a person and the gas going
+    # off.
+    ok = _pub(TOPIC_STOP, "")
+    _pub(TOPIC_ARMED, json.dumps({"armed": False}), retain=True)
+    return ok
+
+
+def _set_armed(on):
+    return _pub(TOPIC_ARMED, json.dumps({"armed": bool(on)}), retain=True)
 
 
 def _set_poof_fallback(on):
@@ -411,6 +425,12 @@ h1{{font-size:.9rem;font-weight:700;letter-spacing:.02em;white-space:nowrap}}
 #stop:active{{background:#ff2444}}
 #stop.hit{{background:#fff;color:var(--stop)}}
 nav{{display:flex;flex:0 0 auto;background:var(--panel);border-bottom:1px solid var(--line)}}
+#disarmed{{display:none;flex:0 0 auto;background:#3d1016;color:#ff9aa7;
+  border-bottom:1px solid #7a1f2b;text-align:center;padding:10px 12px;
+  font-size:.78rem;font-weight:700;letter-spacing:.04em}}
+body.disarmed #disarmed{{display:block}}
+body.disarmed .d{{opacity:.25}}
+body.disarmed .vname{{opacity:.4}}
 nav a{{flex:1;text-align:center;text-decoration:none;color:var(--dim);padding:11px 0;
   font-size:.78rem;font-weight:700;letter-spacing:.06em;border-bottom:2px solid transparent}}
 nav a.on{{color:var(--text);border-bottom-color:var(--text)}}
@@ -480,6 +500,7 @@ footer.err{{color:#ff7a8a}}
   </div>
 </header>
 <button id="stop" onpointerdown="allStop()">■ ALL STOP</button>
+<div id="disarmed">STOPPED — re-arm on the setup page</div>
 {nav}
 <main>
   <section class="page on">
@@ -542,6 +563,12 @@ function setPoofFb(on){{
                        : 'failed', d.ok?(on?'warn':''):'err'));
 }}
 
+function setArmed(on){{
+  post('/arm', {{armed:on}})
+    .then(d=> say(d.ok ? (on ? 'ARMED — fire enabled' : 'disarmed')
+                       : 'failed', d.ok ? (on?'warn':'') : 'err'));
+}}
+
 function setMode(m){{
   post('/mode', {{mode:m}})
     .then(d=> say(d.ok ? ('mode: '+m) : 'mode change failed', d.ok?'':'err'));
@@ -557,6 +584,7 @@ function toggleSvc(unit, on){{
 }}
 
 function paint(d){{
+  const armed = !!d.armed;
   const pb = document.getElementById('p-broker');
   pb.textContent = d.connected ? 'broker' : 'NO BROKER';
   pb.className = 'pill ' + (d.connected ? 'ok' : 'bad');
@@ -566,8 +594,8 @@ function paint(d){{
   bd.className = 'pill ' + (d.board ? 'ok' : 'bad');
 
   const pm = document.getElementById('p-mode');
-  pm.textContent = d.mode || '—';
-  pm.className = 'pill' + (d.mode === 'manual' ? '' : ' ok');
+  pm.textContent = armed ? (d.mode || '—') : 'STOPPED';
+  pm.className = 'pill' + (armed ? (d.mode === 'manual' ? '' : ' ok') : ' bad');
 
   /* lamps reflect the BOARD's own report, never what we asked for */
   VALVES.forEach(v=>{{
@@ -577,7 +605,18 @@ function paint(d){{
     if(lamp) lamp.classList.toggle('on', on);
     if(row)  row.classList.toggle('lit', on);
   }});
-  document.querySelectorAll('.d').forEach(b=> b.disabled = !d.connected);
+  /* Disarmed is a hard state, not a hint: the buttons stop working and the
+     page says why. The board refuses the pulses regardless. */
+  document.body.classList.toggle('disarmed', !armed);
+  document.querySelectorAll('.d').forEach(b=> b.disabled = !d.connected || !armed);
+
+  const acb = document.getElementById('armcb');
+  if(acb && document.activeElement !== acb){{
+    acb.checked = armed;
+    document.getElementById('armrow').classList.toggle('up', armed);
+    document.getElementById('armrow').classList.toggle('down', !armed);
+    document.getElementById('armst').textContent = armed ? 'ARMED' : 'STOPPED';
+  }}
 
   document.querySelectorAll('.modes button').forEach(b=>
     b.classList.toggle('on', b.dataset.m === d.mode));
@@ -650,6 +689,20 @@ document.addEventListener('visibilitychange', ()=>{{
 """
 
 SETUP_BODY = """\
+    <div class="card">
+      <h2>ARM</h2>
+      <label class="svc" id="armrow">
+        <input type="checkbox" id="armcb" onchange="setArmed(this.checked)">
+        <span>Fire enabled</span><em id="armst">·</em>
+      </label>
+      <div class="note">
+        ALL STOP latches. It drops every valve and <b>disarms the relay
+        board</b> — further pulses are refused at the board, not merely hidden
+        in this page, so the MIDI keyboard and the verse pipeline are stopped
+        too. Re-arming is deliberate and happens only here. The board also
+        boots disarmed.
+      </div>
+    </div>
     <div class="card">
       <h2>MODE</h2>
       <div class="modes">
@@ -784,7 +837,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # /fire and /stop stay open: the fire page is the public interaction, and
     # putting an emergency stop behind a login is worse than having no login.
-    GATED = {"/service", "/mode", "/identify", "/poof-fallback"}
+    GATED = {"/service", "/mode", "/identify", "/poof-fallback", "/arm"}
 
     def do_POST(self):
         try:
@@ -809,6 +862,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/stop":
                 self._body()
                 ok = _all_stop()
+            elif self.path == "/arm":
+                ok = _set_armed(self._body().get("armed", True))
             elif self.path == "/poof-fallback":
                 ok = _set_poof_fallback(self._body()["enabled"])
             elif self.path == "/mode":

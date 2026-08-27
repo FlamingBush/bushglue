@@ -72,6 +72,7 @@ The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s timeout.
 | `bush/flame/pulse` | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control |
 | `bush/flame/identify` | bush-valve-id, bush-firecontrol-web | relay-control |
 | `bush/flame/stop` | bush-firecontrol-web | relay-control |
+| `bush/flame/armed` | bush-firecontrol-web | relay-control |
 | `bush/flame/poof-fallback` | bush-firecontrol-web | relay-control |
 | `bush/flame/map` | bush-valve-id | relay-control |
 | `bush/mode` | bush-firecontrol-web | bush-sentiment, bush-midi |

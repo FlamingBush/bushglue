@@ -181,6 +181,23 @@ handles it before anything else in its receive queue, so a backlog of queued
 pulses cannot be serviced first. Wired to the always-visible ALL STOP button
 in the fire-control web UI.
 
+### `bush/flame/armed`
+```json
+{"armed": false}
+```
+**Retained.** ALL STOP latches: it drops every valve *and* disarms the relay
+board, which then refuses every further pulse and identify until someone
+re-arms from the setup page. Enforced in the firmware, not the UI — a stop
+that only a web page honours is not a stop, because the MIDI keyboard, the
+sentiment fire loop and the CLI all publish straight to the broker.
+
+Closes (`ms: 0`) are still honoured while disarmed; refusing them could strand
+a valve open. Only opening is refused.
+
+The board boots **disarmed** and stays that way unless a retained
+`{"armed": true}` says otherwise, so a board that comes up into a rig of
+unknown state cannot fire until someone says so.
+
 ### `bush/flame/poof-fallback`
 ```json
 {"enabled": true}
