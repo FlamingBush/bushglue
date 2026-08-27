@@ -22,15 +22,27 @@ Design notes, because this drives real fire:
     service state is gathered on a background thread and served from cache.
 
 The fire page at / is what a member of the public is handed, so it links
-nowhere. /setup is still served and still unauthenticated — every endpoint it
-drives (/service, /mode, /identify, /poof-fallback) answers any POST from
-anyone on the installation network, linked or not. Not advertising the URL
-keeps a curious visitor out of the commissioning screen; it is not access
-control, and should not be mistaken for it.
+nowhere. /setup and the endpoints behind it (/service, /mode, /identify,
+/poof-fallback) sit behind a PIN — SETUP_PIN, default "BURN", which folds onto
+2876 on a phone keypad so either keyboard works.
+
+What that PIN is worth: it keeps a curious visitor out of the commissioning
+screen. It is not real security. The page is plain HTTP, so the PIN and the
+session cookie both cross the network in clear and anyone who can watch the
+Wi-Fi has them. If the installation network is genuinely public, bind the
+setup routes to an interface the public cannot reach rather than relying on
+this.
+
+/fire and /stop are deliberately left open. The fire page is the public
+interaction, and putting an emergency stop behind a login is worse than having
+no login at all.
 """
 import argparse
+import hmac
 import json
 import queue
+import secrets as _secrets
+import os
 import subprocess
 import threading
 import time
@@ -65,6 +77,45 @@ IDENTIFY_MS = 250
 
 # The board beacons every 5 s; treat it as gone after three missed beacons.
 BOARD_STALE_S = 16
+
+# ── setup PIN ──────────────────────────────────────────────────────────────
+# Letters are folded onto phone-keypad digits, so "BURN" and "2876" are the
+# same PIN and either keyboard works.
+#
+# This keeps a curious visitor out of the commissioning screen. It is NOT
+# meaningful security: the page is plain HTTP, so the PIN and the session
+# cookie both cross the network in clear, and anyone who can watch the Wi-Fi
+# or shoulder-surf the entry has it. ALL STOP and the fire page are
+# deliberately left open — an emergency control behind a login is worse than
+# no login.
+SETUP_PIN = os.environ.get("SETUP_PIN", "BURN")
+
+_KEYPAD = {}
+for _digit, _letters in (("2", "ABC"), ("3", "DEF"), ("4", "GHI"), ("5", "JKL"),
+                         ("6", "MNO"), ("7", "PQRS"), ("8", "TUV"), ("9", "WXYZ")):
+    for _c in _letters:
+        _KEYPAD[_c] = _digit
+
+
+def _normalise_pin(raw):
+    out = []
+    for ch in str(raw).upper():
+        if ch.isdigit():
+            out.append(ch)
+        elif ch in _KEYPAD:
+            out.append(_KEYPAD[ch])
+    return "".join(out)
+
+
+PIN_DIGITS = _normalise_pin(SETUP_PIN)
+# One session token per process; a restart signs everyone out, which is the
+# right default for a rig that gets power-cycled between builds.
+_SESSION = _secrets.token_urlsafe(18)
+COOKIE = "bushfc"
+
+# Four digits is 10k guesses. Back off hard so that is not a minute's work.
+_auth_fails = {"n": 0, "until": 0.0}
+_auth_lock = threading.Lock()
 
 MODES = ["manual", "interactive", "midi"]
 DEFAULT_MODE = "interactive"
@@ -224,6 +275,67 @@ def _service_loop():
         if _refresh_services():
             _broadcast()
         time.sleep(3.0)
+
+
+# ── auth ───────────────────────────────────────────────────────────────────
+def _check_pin(raw):
+    """Constant-time PIN check with lockout. Returns (ok, retry_after_s)."""
+    now = time.time()
+    with _auth_lock:
+        if now < _auth_fails["until"]:
+            return False, int(_auth_fails["until"] - now) + 1
+    ok = hmac.compare_digest(_normalise_pin(raw), PIN_DIGITS)
+    with _auth_lock:
+        if ok:
+            _auth_fails["n"] = 0
+            _auth_fails["until"] = 0.0
+        else:
+            _auth_fails["n"] += 1
+            # 3 free tries, then escalating: 2s, 4s, 8s ... capped at a minute.
+            if _auth_fails["n"] > 3:
+                delay = min(2 ** (_auth_fails["n"] - 3), 60)
+                _auth_fails["until"] = now + delay
+    return ok, 0
+
+
+PIN_PAGE = """\
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b0b0d"><title>Setup</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:#0b0b0d;color:#e8e8ee;font:500 16px system-ui,sans-serif;
+ min-height:100dvh;display:flex;flex-direction:column;align-items:center;
+ justify-content:center;gap:14px;padding:24px}
+h1{font-size:.85rem;letter-spacing:.1em;color:#7a7a88;font-weight:700}
+input{width:100%;max-width:280px;background:#15151a;border:1px solid #2a2a33;
+ border-radius:9px;color:#e8e8ee;font-size:1.6rem;font-weight:700;padding:15px;
+ text-align:center;letter-spacing:.4em}
+button{width:100%;max-width:280px;background:#e8e8ee;color:#000;border:none;
+ border-radius:9px;padding:15px;font-size:.9rem;font-weight:800;letter-spacing:.1em}
+.err{color:#ff7a8a;font-size:.78rem;min-height:1.2em;text-align:center}
+a{color:#7a7a88;font-size:.75rem;text-decoration:none;margin-top:8px}
+</style></head><body>
+<h1>SETUP — ENTER PIN</h1>
+<input id="pin" inputmode="text" autocomplete="off" autocapitalize="characters"
+       placeholder="····" autofocus>
+<button onclick="go()">UNLOCK</button>
+<div class="err" id="err"></div>
+<a href="/">&larr; back to fire</a>
+<script>
+const i=document.getElementById('pin');
+i.addEventListener('keydown',e=>{if(e.key==='Enter')go();});
+function go(){
+  fetch('/auth',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({pin:i.value})}).then(r=>r.json()).then(d=>{
+    if(d.ok){location.href='/setup';}
+    else{document.getElementById('err').textContent =
+      d.retry ? ('too many tries — wait '+d.retry+'s') : 'wrong PIN';
+      i.value=''; i.focus();}
+  }).catch(()=>document.getElementById('err').textContent='error');
+}
+</script></body></html>
+"""
 
 
 # ── markup ─────────────────────────────────────────────────────────────────
@@ -606,20 +718,33 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, code, ctype, body):
+    def _send(self, code, ctype, body, cookie=None):
         b = body if isinstance(body, bytes) else body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", "no-store")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(b)
+
+    def _authed(self):
+        raw = self.headers.get("Cookie", "")
+        for part in raw.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == COOKIE:
+                return hmac.compare_digest(v, _SESSION)
+        return False
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", FIRE_HTML)
         elif self.path in ("/setup", "/setup/"):
-            self._send(200, "text/html; charset=utf-8", SETUP_HTML)
+            if self._authed():
+                self._send(200, "text/html; charset=utf-8", SETUP_HTML)
+            else:
+                self._send(200, "text/html; charset=utf-8", PIN_PAGE)
         elif self.path == "/status":
             self._send(200, "application/json", json.dumps(_snapshot()))
         elif self.path == "/events":
@@ -657,8 +782,24 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(n) or b"{}")
 
+    # /fire and /stop stay open: the fire page is the public interaction, and
+    # putting an emergency stop behind a login is worse than having no login.
+    GATED = {"/service", "/mode", "/identify", "/poof-fallback"}
+
     def do_POST(self):
         try:
+            if self.path == "/auth":
+                pin = self._body().get("pin", "")
+                ok, retry = _check_pin(pin)
+                cookie = (f"{COOKIE}={_SESSION}; Path=/; Max-Age=43200; "
+                          f"HttpOnly; SameSite=Strict") if ok else None
+                self._send(200, "application/json",
+                           json.dumps({"ok": ok, "retry": retry}), cookie=cookie)
+                return
+            if self.path in self.GATED and not self._authed():
+                self._send(403, "application/json",
+                           json.dumps({"ok": False, "err": "locked"}))
+                return
             if self.path == "/fire":
                 d = self._body()
                 ok = _fire(d["valve"], int(d["ms"]))
