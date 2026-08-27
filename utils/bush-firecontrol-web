@@ -7,6 +7,10 @@ Seven solenoids, each individually addressed: flare1-3, bigjet1-3, poof1.
 Each column has a selector for which valve of that type to fire, so the
 duration buttons keep the same positions they always had.
 
+The SERVICES panel starts and stops pipeline units. Only an allowlist of unit
+names is accepted — this endpoint is reachable by anyone on the installation
+network and systemctl takes arbitrary arguments.
+
 The IDENTIFY panel fires a RAW relay channel, bypassing the name->channel
 map entirely. That is how you find out which physical valve a channel drives
 after the loom is assembled; see utils/bush-valve-id for the guided version
@@ -14,6 +18,7 @@ that also publishes the resulting map.
 """
 import argparse
 import json
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -42,6 +47,25 @@ POOF_DURATIONS   = [20, 30, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450]
 # Must match OUTPUT_PINS in firmware/relay-control/CIRCUITPY/code.py
 NUM_OUTPUTS = 7
 IDENTIFY_MS = 250
+
+# ── service control ────────────────────────────────────────────────────────
+# Only these units may be toggled from the web UI. An allowlist rather than a
+# free-form unit name, because this endpoint is reachable by anyone on the
+# installation network and systemctl takes arbitrary arguments.
+# (label, unit) in the order they should appear.
+SERVICES = [
+    ("STT",        "bush-stt"),
+    ("PTT button", "bush-ptt"),
+    ("MIDI",       "bush-midi"),
+    ("Verse",      "bush-t2v"),
+    ("TTS",        "bush-tts"),
+    ("Sentiment",  "bush-sentiment"),
+    ("Valves",     "bush-variable-valves"),
+    ("Lights",     "mqtt-pixelblaze-bridge"),
+    ("Audio agent","bush-audio-agent"),
+    ("ChromaDB",   "chromadb"),
+]
+SERVICE_UNITS = {u for _, u in SERVICES}
 
 _state = {"connected": False, "last": None, "board": None, "board_ts": 0.0,
           "mode": DEFAULT_MODE}
@@ -77,6 +101,28 @@ def _set_mode(mode):
     return False
 
 
+def _unit_active(unit):
+    r = subprocess.run(["systemctl", "is-active", unit],
+                       capture_output=True, text=True)
+    return r.stdout.strip() == "active"
+
+
+def _service_states():
+    return {u: _unit_active(u) for _, u in SERVICES}
+
+
+def _set_service(unit, on):
+    """Start or stop one allowlisted unit. Returns (ok, message)."""
+    if unit not in SERVICE_UNITS:
+        return False, "unknown unit"
+    action = "start" if on else "stop"
+    r = subprocess.run(["sudo", "-n", "systemctl", action, unit],
+                       capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout).strip()[:200]
+    return True, action
+
+
 def _fmt(ms):
     return f"{ms/1000:.1g}s" if ms >= 1000 else f"{ms}ms"
 
@@ -102,6 +148,15 @@ def _selector(kind, n):
         for i in range(1, n + 1)
     )
     return f'<div class="selrow" id="sel-{kind}">{opts}</div>'
+
+
+def _service_rows():
+    return "\n".join(
+        f'<label class="svc"><input type="checkbox" id="svc-{u}" '
+        f'onchange="toggleSvc(\'{u}\', this.checked)"><span>{label}</span>'
+        f'<em id="st-{u}">·</em></label>'
+        for label, u in SERVICES
+    )
 
 
 def _ident_buttons():
@@ -155,7 +210,21 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
 .bigjet .btn{{background:#1a4a80}}
 .flare  .btn{{background:#80280a}}
 .poof   .btn{{background:#1a6030}}
-#idwrap{{flex-shrink:0;background:#151515;border-top:1px solid #333}}
+#svcwrap,#idwrap{{flex-shrink:0;background:#151515;border-top:1px solid #333}}
+#svchdr{{padding:6px 12px;font-size:.8rem;color:#888;cursor:pointer;
+        display:flex;justify-content:space-between}}
+#svcpanel{{display:none;padding:0 6px 6px 6px}}
+#svcpanel.open{{display:block}}
+#svcgrid{{display:grid;grid-template-columns:repeat(2,1fr);gap:4px}}
+.svc{{display:flex;align-items:center;gap:7px;background:#1c1c1c;
+     border:1px solid #333;border-radius:6px;padding:8px 9px;font-size:.8rem}}
+.svc input{{width:17px;height:17px;accent-color:#4a4}}
+.svc span{{flex:1;color:#ccc}}
+.svc em{{font-style:normal;font-size:.7rem;color:#666}}
+.svc.up{{border-color:#2a5}}
+.svc.up em{{color:#4d4}}
+.svc.down em{{color:#a44}}
+.svc.busy{{opacity:.5}}
 #idhdr{{padding:6px 12px;font-size:.8rem;color:#888;cursor:pointer;
        display:flex;justify-content:space-between}}
 #idpanel{{display:none;padding:0 6px 6px 6px}}
@@ -195,8 +264,16 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
     {poof}
   </div>
 </div>
+<div id="svcwrap">
+  <div id="svchdr" onclick="togglePanel('svcpanel','svchdr','SERVICES')">
+    <span>▸ SERVICES</span><span id="svcstate"></span>
+  </div>
+  <div id="svcpanel">
+    <div id="svcgrid">{services}</div>
+  </div>
+</div>
 <div id="idwrap">
-  <div id="idhdr" onclick="toggleId()">
+  <div id="idhdr" onclick="togglePanel('idpanel','idhdr','IDENTIFY — fire a raw relay channel')">
     <span>▸ IDENTIFY — fire a raw relay channel</span><span id="idstate"></span>
   </div>
   <div id="idpanel">
@@ -235,11 +312,23 @@ function ident(ch){{
       d.ok?('identify: channel '+ch):'not connected';
   }}).catch(()=>document.getElementById('log').textContent='error');
 }}
-function toggleId(){{
-  const p=document.getElementById('idpanel');
+function togglePanel(panel,hdr,label){{
+  const p=document.getElementById(panel);
   p.classList.toggle('open');
-  document.querySelector('#idhdr span').textContent=
-    (p.classList.contains('open')?'▾':'▸')+' IDENTIFY — fire a raw relay channel';
+  document.querySelector('#'+hdr+' span').textContent=
+    (p.classList.contains('open')?'▾':'▸')+' '+label;
+  if(panel==='svcpanel'&&p.classList.contains('open')) poll();
+}}
+function toggleSvc(unit,on){{
+  const row=document.getElementById('svc-'+unit).closest('.svc');
+  row.classList.add('busy');
+  fetch('/service',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{unit,on}})}})
+  .then(r=>r.json()).then(d=>{{
+    document.getElementById('log').textContent=
+      d.ok?(unit+' '+d.msg):(unit+' failed: '+(d.err||d.msg||''));
+  }}).catch(()=>document.getElementById('log').textContent='error')
+  .finally(()=>{{row.classList.remove('busy'); setTimeout(poll,800);}});
 }}
 function setMode(m){{
   fetch('/mode',{{method:'POST',headers:{{'Content-Type':'application/json'}},
@@ -262,6 +351,19 @@ function poll(){{
     document.getElementById('idstate').textContent=
       d.board?('board ok'+(d.mapped?'':' · no map')):'board silent';
     paintMode(d.mode);
+    if(d.services){{
+      let up=0, n=0;
+      for(const u in d.services){{
+        const on=d.services[u]; n++; if(on) up++;
+        const cb=document.getElementById('svc-'+u);
+        if(cb){{ cb.checked=on;
+          const row=cb.closest('.svc');
+          row.classList.toggle('up',on); row.classList.toggle('down',!on);
+          document.getElementById('st-'+u).textContent=on?'up':'down';
+        }}
+      }}
+      document.getElementById('svcstate').textContent=up+'/'+n+' up';
+    }}
   }}).catch(()=>{{}});
   setTimeout(poll,3000);
 }}
@@ -276,6 +378,7 @@ poll();
     bigjet_sel=_selector("bigjet", 3),
     flare_sel=_selector("flare", 3),
     ident=_ident_buttons(),
+    services=_service_rows(),
     ident_ms=IDENTIFY_MS,
 )
 
@@ -304,6 +407,7 @@ class Handler(BaseHTTPRequestHandler):
                     "board": fresh,
                     "mapped": bool(fresh and board.get("map")),
                     "mode": _state["mode"],
+                    "services": _service_states(),
                 }))
         else:
             self._send(404, "text/plain", "not found")
@@ -323,6 +427,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/mode":
                 data = self._post_json()
                 ok = _set_mode(data["mode"])
+            elif self.path == "/service":
+                data = self._post_json()
+                ok, msg = _set_service(data["unit"], bool(data["on"]))
+                self._send(200, "application/json",
+                           json.dumps({"ok": ok, "msg" if ok else "err": msg}))
+                return
             else:
                 self._send(404, "text/plain", "not found")
                 return
