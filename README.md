@@ -82,6 +82,21 @@ The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s timeout.
 
 See [docs/README.md](docs/README.md) for audio topics, message payloads, timing constants, and fire patterns.
 
+## Broker
+
+Retained MQTT messages are the rig's persistent configuration — the run mode,
+the relay channel map, the poofer fallback, the light layout. Install the
+broker config before anything else:
+
+```bash
+sudo cp mosquitto/bush.conf /etc/mosquitto/conf.d/ && sudo systemctl restart mosquitto
+```
+
+Two things it fixes that are silent failures otherwise: mosquitto 2.0 binds
+loopback-only without an explicit listener, so no networked node can reach it;
+and the default `autosave_interval` of 1800 s means an unclean power loss
+discards up to half an hour of retained state.
+
 ## Setup
 
 ```bash
