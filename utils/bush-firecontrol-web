@@ -337,7 +337,7 @@ def main():
     ap = argparse.ArgumentParser(description="Fire control web UI")
     ap.add_argument("--broker", default="localhost")
     ap.add_argument("--port",   type=int, default=1883)
-    ap.add_argument("--web-port", type=int, default=8080)
+    ap.add_argument("--web-port", type=int, default=80)
     args = ap.parse_args()
 
     _mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)

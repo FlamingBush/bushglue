@@ -192,3 +192,49 @@ def test_non_speech_markers_are_detected(text):
 def test_real_speech_is_not_flagged(text):
     from bush_stt import is_non_speech
     assert not is_non_speech(text)
+
+
+# ── long-hold fallback ──────────────────────────────────────────────────────
+# Someone who holds the button for seconds has committed to asking something.
+# Meeting that with silence gives the visitor no feedback and they walk away
+# thinking the bush is broken, so an unusable transcript from a long hold gets
+# a canned phrase instead of being dropped.
+
+def _reload_stt(monkeypatch, **env):
+    import importlib, sys
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    if "bush_stt" in sys.modules:
+        del sys.modules["bush_stt"]
+    return importlib.import_module("bush_stt")
+
+
+def test_fallback_threshold_defaults_to_a_few_seconds(monkeypatch):
+    monkeypatch.delenv("PTT_FALLBACK_MS", raising=False)
+    m = _reload_stt(monkeypatch)
+    # Long enough that a fumbled tap does not trigger it, short enough that a
+    # deliberate hold does.
+    assert 1500 <= m.PTT_FALLBACK_MS <= 4000
+
+
+def test_fallback_phrases_are_available_and_rotate(monkeypatch):
+    m = _reload_stt(monkeypatch)
+    seen = {m._next_fallback() for _ in range(len(m.FALLBACK_PHRASES))}
+    assert len(seen) == len(m.FALLBACK_PHRASES), "phrases should not repeat"
+    assert all(p.strip() for p in seen)
+
+
+def test_fallback_phrases_are_not_themselves_non_speech(monkeypatch):
+    # A canned phrase that tripped the non-speech filter would be dropped
+    # again downstream.
+    m = _reload_stt(monkeypatch)
+    assert not any(m.is_non_speech(p) for p in m.FALLBACK_PHRASES)
+
+
+def test_endpoint_gate_is_ptt_only(monkeypatch):
+    # On the VAD path a long stretch of unrecognisable audio is traffic noise,
+    # not a request, so the fallback must not apply there.
+    m = _reload_stt(monkeypatch, STT_ENDPOINT="vad")
+    assert m.STT_ENDPOINT == "vad"
+    m = _reload_stt(monkeypatch, STT_ENDPOINT="ptt")
+    assert m.STT_ENDPOINT == "ptt"

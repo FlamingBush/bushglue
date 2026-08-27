@@ -51,6 +51,18 @@ STT_ENGINE_NAME = os.environ.get("STT_ENGINE", "vosk").lower()
 #   "vad" — Silero decides, from the audio (default)
 #   "ptt" — a physical button decides, via bush/pipeline/stt/ptt
 STT_ENDPOINT = os.environ.get("STT_ENDPOINT", "vad").lower()
+
+# A deliberate long hold that the engine could not make sense of still gets an
+# answer. Someone who holds the button for seconds has committed to asking
+# something — mumbling, wind, a heavy accent or a shouted question the model
+# misses should not be met with silence, because the visitor gets no feedback
+# and walks away thinking the bush is broken. Below this they were fumbling
+# with the button, and silence is the right reply.
+#
+# PTT only: a hold is an explicit request. On the VAD path a long stretch of
+# unrecognisable audio is a passing truck, and answering it would have the
+# bush preaching to traffic.
+PTT_FALLBACK_MS = int(os.environ.get("PTT_FALLBACK_MS", "2500"))
 # Drop transcripts whose mean word-level confidence falls below this floor.
 # Default 0.6 matches the threshold used in the prior STT-accuracy work
 # (middog/bushglue commit ff29f2c, Apr 2026).
@@ -612,25 +624,41 @@ def main():
                     result = engine.transcribe(utt)
                     text = (result.get("text") or "").strip()
                     conf = float(result.get("confidence", 0.0))
+
+                    unusable = None
                     if not text:
-                        log("Engine returned empty text; not publishing")
-                        continue
-                    if is_non_speech(text):
-                        log(f"Non-speech marker {text!r}; not publishing")
-                        continue
-                    if conf < STT_MIN_CONFIDENCE:
-                        log(f"Dropping low-confidence transcript "
-                            f"({conf:.2f} < {STT_MIN_CONFIDENCE:.2f}): {text!r}")
-                        continue
-                    log(f"Final: {text!r} (conf={conf:.2f})")
-                    mqttc.publish(
-                        TOPIC_TRANSCRIPT,
-                        json.dumps({
-                            "text": text,
-                            "confidence": conf,
-                            "ts": time.time(),
-                        }),
-                    )
+                        unusable = "empty text"
+                    elif is_non_speech(text):
+                        unusable = f"non-speech marker {text!r}"
+                    elif conf < STT_MIN_CONFIDENCE:
+                        unusable = (f"low confidence {conf:.2f} < "
+                                    f"{STT_MIN_CONFIDENCE:.2f}: {text!r}")
+
+                    if unusable:
+                        long_hold = (STT_ENDPOINT == "ptt"
+                                     and ms >= PTT_FALLBACK_MS)
+                        if not long_hold:
+                            log(f"{unusable}; not publishing")
+                            continue
+                        text = _next_fallback()
+                        conf = 0.0
+                        log(f"{unusable}; {ms}ms hold -> answering anyway "
+                            f"with {text!r}")
+                        fallback = True
+                    else:
+                        log(f"Final: {text!r} (conf={conf:.2f})")
+                        fallback = False
+
+                    payload = {
+                        "text": text,
+                        "confidence": conf,
+                        "ts": time.time(),
+                    }
+                    if fallback:
+                        # Downstream (monitor, discord) can tell a real
+                        # transcript from a stand-in.
+                        payload["fallback"] = True
+                    mqttc.publish(TOPIC_TRANSCRIPT, json.dumps(payload))
                 except Exception as e:
                     log(f"engine.transcribe error: {e}")
 

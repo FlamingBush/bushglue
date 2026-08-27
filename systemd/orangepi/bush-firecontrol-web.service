@@ -6,7 +6,10 @@ Wants=network-online.target mosquitto.service
 [Service]
 Type=simple
 User=orangepi
-ExecStart=/home/orangepi/bushglue/.venv/bin/python /home/orangepi/bushglue/utils/bush-firecontrol-web --broker localhost
+# Port 80 is privileged; this grants just the bind capability
+# rather than running the whole UI as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ExecStart=/home/orangepi/bushglue/.venv/bin/python /home/orangepi/bushglue/utils/bush-firecontrol-web --broker localhost --web-port 80
 Restart=always
 RestartSec=5
 StandardOutput=journal
