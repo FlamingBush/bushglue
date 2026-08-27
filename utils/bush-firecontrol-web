@@ -20,6 +20,13 @@ Design notes, because this drives real fire:
     tracks reality within a beacon instead of up to a poll interval late.
   * Nothing on the fire path touches a subprocess or waits on a slow lock;
     service state is gathered on a background thread and served from cache.
+
+The fire page at / is what a member of the public is handed, so it links
+nowhere. /setup is still served and still unauthenticated — every endpoint it
+drives (/service, /mode, /identify, /poof-fallback) answers any POST from
+anyone on the installation network, linked or not. Not advertising the URL
+keeps a curious visitor out of the commissioning screen; it is not access
+control, and should not be mistaken for it.
 """
 import argparse
 import json
@@ -361,10 +368,7 @@ footer.err{{color:#ff7a8a}}
   </div>
 </header>
 <button id="stop" onpointerdown="allStop()">■ ALL STOP</button>
-<nav>
-  <a class="{fire_on}" href="/">FIRE</a>
-  <a class="{setup_on}" href="/setup">SETUP</a>
-</nav>
+{nav}
 <main>
   <section class="page on">
 {body}
@@ -573,17 +577,18 @@ SETUP_BODY = """\
 """ % (_service_rows(), _ident_buttons())
 
 
-def _page(body, active):
-    """Render one document from the shared shell.
+# The fire page is public-facing, so it links nowhere: no route to the
+# commissioning controls for someone handed the phone. /setup is still served,
+# just unadvertised — see the note in the module docstring about what that is
+# and is not worth.
+SETUP_NAV = '<nav><a href="/">&larr; FIRE</a><a class="on" href="/setup">SETUP</a></nav>'
 
-    Two documents rather than two tabs: the fire page then carries none of the
-    commissioning markup, and SETUP is a URL you can bookmark or hand to
-    someone without them landing on the fire buttons first.
-    """
+
+def _page(body, active):
+    """Render one document from the shared shell."""
     return SHELL.format(
         body=body,
-        fire_on="on" if active == "fire" else "",
-        setup_on="on" if active == "setup" else "",
+        nav=SETUP_NAV if active == "setup" else "",
         ident_ms=IDENTIFY_MS,
         valves_json=json.dumps([v for v, _ in VALVES]),
     )
