@@ -1,168 +1,251 @@
 #!/usr/bin/env python3
 """
-bush-firecontrol-web: touch-friendly web UI for phone-based flame control.
-Serves on port 8080. Publishes to MQTT on button tap.
+bush-firecontrol-web: phone-first flame control for the installation.
 
-Seven solenoids, each individually addressed: flare1-3, bigjet1-3, poof1.
-Each column has a selector for which valve of that type to fire, so the
-duration buttons keep the same positions they always had.
+Serves on port 80. Every control is a thin wrapper over an MQTT publish.
 
-The SERVICES panel starts and stops pipeline units. Only an allowlist of unit
-names is accepted — this endpoint is reachable by anyone on the installation
-network and systemctl takes arbitrary arguments.
+Design notes, because this drives real fire:
 
-The IDENTIFY panel fires a RAW relay channel, bypassing the name->channel
-map entirely. That is how you find out which physical valve a channel drives
-after the loom is assembled; see utils/bush-valve-id for the guided version
-that also publishes the resulting map.
+  * Valves are addressed directly. There is no "which of the three" selector
+    to forget you left set — every button names the valve it fires. A hidden
+    mode is how you light the wrong jet.
+  * The valve lamps show what the RELAY BOARD reports, from its own 5 s
+    beacon — not what we asked for. If a command is lost the lamp stays dark
+    and you can see that it did not happen.
+  * The board going quiet is shown as loudly as losing the broker. Silence
+    from the hardware must never look like everything is fine.
+  * ALL STOP is always on screen, never behind a tab, and publishes to a topic
+    the firmware handles before anything else in its queue.
+  * State is pushed over Server-Sent Events rather than polled, so a lamp
+    tracks reality within a beacon instead of up to a poll interval late.
+  * Nothing on the fire path touches a subprocess or waits on a slow lock;
+    service state is gathered on a background thread and served from cache.
 """
 import argparse
 import json
+import queue
 import subprocess
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import paho.mqtt.client as mqtt
 
+# ── topics ─────────────────────────────────────────────────────────────────
 TOPIC_FLAME         = "bush/flame/pulse"
 TOPIC_IDENTIFY      = "bush/flame/identify"
-TOPIC_MAP           = "bush/flame/map"
+TOPIC_STOP          = "bush/flame/stop"
 TOPIC_STATUS        = "bush/flame/status"
+TOPIC_MODE          = "bush/mode"
 TOPIC_PIPELINE_PING = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG = "bush/pipeline/pong"
-TOPIC_MODE          = "bush/mode"
 
-# Run modes. Retained, so the rig comes back in whatever mode it was left in.
-#   interactive — the pipeline runs itself: speak, get a verse, get fire
-#   manual      — only these fire-control UIs may fire; the pipeline and the
-#                 keyboard stay quiet so you can work on the rig safely
-#   midi        — the MIDI keyboard plays the solenoids
+# ── rig layout ─────────────────────────────────────────────────────────────
+# (valve, group) in display order. Must match the firmware's valve names.
+VALVES = [
+    ("flare1", "flare"), ("flare2", "flare"), ("flare3", "flare"),
+    ("bigjet1", "bigjet"), ("bigjet2", "bigjet"), ("bigjet3", "bigjet"),
+    ("poof1", "poof"),
+]
+# Durations offered per group. Short first — the common case is a quick bark.
+DURATIONS = {
+    "flare":  [100, 300, 800, 1500, 3000],
+    "bigjet": [100, 300, 800, 1500, 3000],
+    "poof":   [30, 75, 150, 300, 450],
+}
+NUM_OUTPUTS = 7          # must match OUTPUT_PINS in the relay firmware
+IDENTIFY_MS = 250
+
+# The board beacons every 5 s; treat it as gone after three missed beacons.
+BOARD_STALE_S = 16
+
 MODES = ["manual", "interactive", "midi"]
 DEFAULT_MODE = "interactive"
 
-BIGJET_DURATIONS = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000, 8000]
-FLARE_DURATIONS  = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000, 8000]
-POOF_DURATIONS   = [20, 30, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450]
-
-# Must match OUTPUT_PINS in firmware/relay-control/CIRCUITPY/code.py
-NUM_OUTPUTS = 7
-IDENTIFY_MS = 250
-
-# ── service control ────────────────────────────────────────────────────────
-# Only these units may be toggled from the web UI. An allowlist rather than a
-# free-form unit name, because this endpoint is reachable by anyone on the
-# installation network and systemctl takes arbitrary arguments.
-# (label, unit) in the order they should appear.
+# Only these units may be toggled. An allowlist rather than a free-form unit
+# name, because this endpoint answers anyone on the installation network and
+# systemctl takes arbitrary arguments.
 SERVICES = [
-    ("STT",        "bush-stt"),
-    ("PTT button", "bush-ptt"),
-    ("MIDI",       "bush-midi"),
-    ("Verse",      "bush-t2v"),
-    ("TTS",        "bush-tts"),
-    ("Sentiment",  "bush-sentiment"),
-    ("Valves",     "bush-variable-valves"),
-    ("Lights",     "mqtt-pixelblaze-bridge"),
-    ("Audio agent","bush-audio-agent"),
-    ("ChromaDB",   "chromadb"),
+    ("STT",         "bush-stt"),
+    ("PTT button",  "bush-ptt"),
+    ("MIDI",        "bush-midi"),
+    ("Verse",       "bush-t2v"),
+    ("TTS",         "bush-tts"),
+    ("Sentiment",   "bush-sentiment"),
+    ("Valves",      "bush-variable-valves"),
+    ("Lights",      "mqtt-pixelblaze-bridge"),
+    ("Audio agent", "bush-audio-agent"),
+    ("ChromaDB",    "chromadb"),
 ]
 SERVICE_UNITS = {u for _, u in SERVICES}
 
-_state = {"connected": False, "last": None, "board": None, "board_ts": 0.0,
-          "mode": DEFAULT_MODE}
+# ── shared state ───────────────────────────────────────────────────────────
+_state = {"connected": False, "board": None, "board_ts": 0.0, "mode": DEFAULT_MODE}
 _state_lock = threading.Lock()
 _mqttc = None
 
+_svc_cache = {u: False for _, u in SERVICES}
+_svc_lock = threading.Lock()
 
-def _fire(valve, ms):
+# Every SSE listener gets its own bounded queue; a slow phone is dropped
+# rather than allowed to back the publisher up.
+_subs = []
+_subs_lock = threading.Lock()
+
+
+def _snapshot():
+    with _state_lock:
+        board = _state["board"]
+        age = time.time() - _state["board_ts"]
+        fresh = board is not None and age < BOARD_STALE_S
+        mode = _state["mode"]
+        connected = _state["connected"]
+    return {
+        "connected": connected,
+        "board": fresh,
+        "board_age": round(age, 1) if board is not None else None,
+        "valves": (board.get("valves") or {}) if fresh else {},
+        "map": (board.get("map") or {}) if fresh else {},
+        "mode": mode,
+        "services": _service_states(),
+    }
+
+
+def _broadcast():
+    payload = json.dumps(_snapshot())
+    with _subs_lock:
+        dead = []
+        for q in _subs:
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _subs.remove(q)
+
+
+# ── publishing ─────────────────────────────────────────────────────────────
+def _pub(topic, payload, retain=False):
     if _mqttc and _state["connected"]:
-        _mqttc.publish(TOPIC_FLAME, json.dumps({"valve": valve, "ms": ms}), qos=0)
-        with _state_lock:
-            _state["last"] = {"valve": valve, "ms": ms, "t": time.time()}
+        _mqttc.publish(topic, payload, qos=0, retain=retain)
         return True
     return False
+
+
+def _fire(valve, ms):
+    if valve not in {v for v, _ in VALVES}:
+        return False
+    return _pub(TOPIC_FLAME, json.dumps({"valve": valve, "ms": int(ms)}))
 
 
 def _identify(out, ms):
-    if _mqttc and _state["connected"]:
-        _mqttc.publish(TOPIC_IDENTIFY, json.dumps({"out": int(out), "ms": int(ms)}), qos=0)
-        return True
-    return False
+    out = int(out)
+    if not 0 <= out < NUM_OUTPUTS:
+        return False
+    return _pub(TOPIC_IDENTIFY, json.dumps({"out": out, "ms": int(ms)}))
+
+
+def _all_stop():
+    return _pub(TOPIC_STOP, "")
 
 
 def _set_mode(mode):
     if mode not in MODES:
         return False
-    if _mqttc and _state["connected"]:
-        # Retained: the mode is rig state, not a transient command.
-        _mqttc.publish(TOPIC_MODE, json.dumps({"mode": mode}), qos=0, retain=True)
+    if _pub(TOPIC_MODE, json.dumps({"mode": mode}), retain=True):
         with _state_lock:
             _state["mode"] = mode
+        _broadcast()
         return True
     return False
 
 
-def _unit_active(unit):
-    r = subprocess.run(["systemctl", "is-active", unit],
-                       capture_output=True, text=True)
-    return r.stdout.strip() == "active"
+# ── services ───────────────────────────────────────────────────────────────
+def _probe_services():
+    """One systemctl call for every unit: ~9 ms instead of ~53 ms."""
+    units = [u for _, u in SERVICES]
+    try:
+        r = subprocess.run(["systemctl", "is-active", *units],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    lines = r.stdout.strip().split("\n")
+    if len(lines) != len(units):
+        return None
+    return {u: line.strip() == "active" for u, line in zip(units, lines)}
 
 
 def _service_states():
-    return {u: _unit_active(u) for _, u in SERVICES}
+    with _svc_lock:
+        return dict(_svc_cache)
+
+
+def _refresh_services():
+    got = _probe_services()
+    if got is not None:
+        with _svc_lock:
+            _svc_cache.update(got)
+        return True
+    return False
 
 
 def _set_service(unit, on):
-    """Start or stop one allowlisted unit. Returns (ok, message)."""
     if unit not in SERVICE_UNITS:
         return False, "unknown unit"
     action = "start" if on else "stop"
-    r = subprocess.run(["sudo", "-n", "systemctl", action, unit],
-                       capture_output=True, text=True, timeout=30)
+    try:
+        r = subprocess.run(["sudo", "-n", "systemctl", action, unit],
+                           capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return False, str(e)[:200]
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()[:200]
+    _refresh_services()
+    _broadcast()
     return True, action
 
 
+def _service_loop():
+    while True:
+        if _refresh_services():
+            _broadcast()
+        time.sleep(3.0)
+
+
+# ── markup ─────────────────────────────────────────────────────────────────
 def _fmt(ms):
-    return f"{ms/1000:.1g}s" if ms >= 1000 else f"{ms}ms"
+    return f"{ms / 1000:g}s" if ms >= 1000 else f"{ms}"
 
 
-def _buttons(durations, css_class):
-    # The valve is chosen at tap time from the column's selector, so the
-    # button only carries the duration.
-    return "\n".join(
-        f'<button class="btn {css_class}" '
-        f'ontouchstart="fire(\'{css_class}\',{ms})" '
-        f'onclick="fire(\'{css_class}\',{ms})">'
-        f'{_fmt(ms)}</button>'
-        for ms in durations
-    )
-
-
-def _selector(kind, n):
-    if n < 2:
-        return ""
-    opts = "\n".join(
-        f'<button class="sel{" on" if i == 1 else ""}" data-kind="{kind}" '
-        f'data-n="{i}" onclick="pick(\'{kind}\',{i})">{i}</button>'
-        for i in range(1, n + 1)
-    )
-    return f'<div class="selrow" id="sel-{kind}">{opts}</div>'
-
-
-def _service_rows():
-    return "\n".join(
-        f'<label class="svc"><input type="checkbox" id="svc-{u}" '
-        f'onchange="toggleSvc(\'{u}\', this.checked)"><span>{label}</span>'
-        f'<em id="st-{u}">·</em></label>'
-        for label, u in SERVICES
-    )
+def _valve_rows():
+    out = []
+    for valve, group in VALVES:
+        btns = "\n".join(
+            f'<button class="d" onpointerdown="fire(\'{valve}\',{ms},event)">'
+            f'{_fmt(ms)}</button>'
+            for ms in DURATIONS[group]
+        )
+        out.append(
+            f'<div class="row {group}" id="row-{valve}">'
+            f'<div class="vname"><i class="lamp" id="lamp-{valve}"></i>{valve}</div>'
+            f'<div class="dbtns">{btns}</div></div>'
+        )
+    return "\n".join(out)
 
 
 def _ident_buttons():
     return "\n".join(
-        f'<button class="idbtn" onclick="ident({i})">ch{i}</button>'
+        f'<button class="idbtn" onpointerdown="ident({i})">'
+        f'ch{i}<em id="idmap-{i}">·</em></button>'
         for i in range(NUM_OUTPUTS)
+    )
+
+
+def _service_rows():
+    return "\n".join(
+        f'<label class="svc" id="svcrow-{u}">'
+        f'<input type="checkbox" id="svc-{u}" onchange="toggleSvc(\'{u}\',this.checked)">'
+        f'<span>{label}</span><em id="st-{u}">·</em></label>'
+        for label, u in SERVICES
     )
 
 
@@ -170,228 +253,303 @@ HTML = """\
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Fire Control</title>
+<meta name="theme-color" content="#0b0b0d">
+<title>Bush Fire Control</title>
 <style>
-*{{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}}
-body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
-     height:100dvh;display:flex;flex-direction:column;overflow:hidden}}
-#bar{{display:flex;justify-content:space-between;align-items:center;
-     padding:6px 12px;background:#1a1a1a;border-bottom:1px solid #333;
-     font-size:.85rem;flex-shrink:0}}
-#bar h1{{font-size:1rem}}
-#conn{{font-size:.8rem}}
-#conn.ok{{color:#4f4}}
-#conn.err{{color:#f44;animation:blink 1s step-start infinite}}
-@keyframes blink{{50%{{opacity:0}}}}
-#modebar{{display:flex;gap:4px;padding:6px;background:#151515;
-         border-bottom:1px solid #333;flex-shrink:0}}
-.mode{{flex:1;border:1px solid #444;background:#222;color:#999;
-      border-radius:6px;padding:9px 0;font-size:.8rem;font-weight:700;
-      letter-spacing:.04em}}
-.mode.on[data-m="manual"]{{background:#555;color:#fff;border-color:#888}}
-.mode.on[data-m="interactive"]{{background:#046;color:#8df;border-color:#08a}}
-.mode.on[data-m="midi"]{{background:#405;color:#e9f;border-color:#82b}}
-#grid{{display:flex;flex:1;gap:6px;padding:6px;min-height:0}}
-.col{{flex:1;display:flex;flex-direction:column;gap:5px}}
-.col-hdr{{text-align:center;font-size:.85rem;font-weight:700;
-         padding:5px 2px;border-radius:6px;flex-shrink:0}}
-.selrow{{display:flex;gap:4px;flex-shrink:0}}
-.sel{{flex:1;border:1px solid #444;background:#222;color:#888;
-     border-radius:6px;padding:6px 0;font-size:.95rem;font-weight:700}}
-.sel.on{{background:#fff;color:#000;border-color:#fff}}
-.bigjet .col-hdr{{background:#0d2d4a;color:#6cf}}
-.flare  .col-hdr{{background:#3a0d00;color:#fa6}}
-.poof   .col-hdr{{background:#0a3a1a;color:#6f6}}
-.btn{{flex:1;border:none;border-radius:8px;font-size:1.1rem;font-weight:700;
-     color:#fff;cursor:pointer;min-height:0;transition:filter .1s}}
-.btn:active{{filter:brightness(2)}}
-.bigjet .btn{{background:#1a4a80}}
-.flare  .btn{{background:#80280a}}
-.poof   .btn{{background:#1a6030}}
-#svcwrap,#idwrap{{flex-shrink:0;background:#151515;border-top:1px solid #333}}
-#svchdr{{padding:6px 12px;font-size:.8rem;color:#888;cursor:pointer;
-        display:flex;justify-content:space-between}}
-#svcpanel{{display:none;padding:0 6px 6px 6px}}
-#svcpanel.open{{display:block}}
-#svcgrid{{display:grid;grid-template-columns:repeat(2,1fr);gap:4px}}
-.svc{{display:flex;align-items:center;gap:7px;background:#1c1c1c;
-     border:1px solid #333;border-radius:6px;padding:8px 9px;font-size:.8rem}}
-.svc input{{width:17px;height:17px;accent-color:#4a4}}
-.svc span{{flex:1;color:#ccc}}
-.svc em{{font-style:normal;font-size:.7rem;color:#666}}
-.svc.up{{border-color:#2a5}}
-.svc.up em{{color:#4d4}}
-.svc.down em{{color:#a44}}
-.svc.busy{{opacity:.5}}
-#idhdr{{padding:6px 12px;font-size:.8rem;color:#888;cursor:pointer;
-       display:flex;justify-content:space-between}}
-#idpanel{{display:none;padding:0 6px 6px 6px}}
-#idpanel.open{{display:block}}
-#idrow{{display:flex;gap:4px;flex-wrap:wrap}}
-.idbtn{{flex:1 1 13%;background:#3a2a00;color:#fc6;border:1px solid #553;
-       border-radius:6px;padding:10px 0;font-size:.9rem;font-weight:700}}
-.idbtn:active{{filter:brightness(2)}}
-#idnote{{font-size:.7rem;color:#777;padding:6px 2px 0 2px;line-height:1.35}}
-#log{{text-align:center;font-size:.75rem;padding:5px;
-     background:#1a1a1a;color:#888;flex-shrink:0}}
+*{{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;
+  -webkit-user-select:none;user-select:none;touch-action:manipulation}}
+:root{{--bg:#0b0b0d;--panel:#15151a;--line:#2a2a33;--dim:#7a7a88;--text:#e8e8ee;
+  --flare:#e2521a;--bigjet:#1f7fd4;--poof:#25a35a;--stop:#c8102e;--ok:#35c46a}}
+html,body{{height:100%}}
+body{{background:var(--bg);color:var(--text);
+  font:500 16px/1.3 system-ui,-apple-system,Segoe UI,sans-serif;
+  display:flex;flex-direction:column;overflow:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}}
+header{{display:flex;align-items:center;gap:8px;padding:8px 10px;
+  background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}}
+h1{{font-size:.9rem;font-weight:700;letter-spacing:.02em;white-space:nowrap}}
+.pills{{display:flex;gap:6px;margin-left:auto;font-size:.68rem;font-weight:700}}
+.pill{{padding:4px 7px;border-radius:5px;background:#26262e;color:var(--dim);
+  border:1px solid transparent;white-space:nowrap}}
+.pill.ok{{background:#123a22;color:#66dd94;border-color:#1d6b3d}}
+.pill.bad{{background:#3d1016;color:#ff7a8a;border-color:#7a1f2b;
+  animation:pulse 1.1s ease-in-out infinite}}
+@keyframes pulse{{50%{{opacity:.45}}}}
+#stop{{flex:0 0 auto;width:100%;border:none;background:var(--stop);color:#fff;
+  font-size:1.05rem;font-weight:800;letter-spacing:.16em;padding:15px 0;
+  border-bottom:2px solid #7d0a1d}}
+#stop:active{{background:#ff2444}}
+#stop.hit{{background:#fff;color:var(--stop)}}
+nav{{display:flex;flex:0 0 auto;background:var(--panel);border-bottom:1px solid var(--line)}}
+nav button{{flex:1;background:none;border:none;color:var(--dim);padding:11px 0;
+  font-size:.78rem;font-weight:700;letter-spacing:.06em;border-bottom:2px solid transparent}}
+nav button.on{{color:var(--text);border-bottom-color:var(--text)}}
+main{{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch}}
+.page{{display:none;padding:8px}}
+.page.on{{display:block}}
+.row{{display:flex;align-items:stretch;gap:6px;margin-bottom:6px}}
+.vname{{flex:0 0 88px;display:flex;align-items:center;gap:7px;font-size:.8rem;
+  font-weight:700;padding-left:8px;border-radius:7px;background:var(--panel);
+  border:1px solid var(--line)}}
+.lamp{{width:11px;height:11px;border-radius:50%;background:#33333d;
+  border:1px solid #44444f;flex:0 0 auto}}
+.row.lit .lamp{{box-shadow:0 0 9px 2px currentColor}}
+.flare .lamp.on{{background:var(--flare);color:var(--flare);border-color:var(--flare)}}
+.bigjet .lamp.on{{background:var(--bigjet);color:var(--bigjet);border-color:var(--bigjet)}}
+.poof .lamp.on{{background:var(--poof);color:var(--poof);border-color:var(--poof)}}
+.dbtns{{flex:1;display:flex;gap:5px}}
+.d{{flex:1;border:none;border-radius:7px;color:#fff;font-size:1rem;font-weight:700;
+  padding:16px 0;min-height:54px}}
+.flare .d{{background:#7d2d10}}
+.bigjet .d{{background:#12456f}}
+.poof .d{{background:#125a31}}
+.d:active,.d.hit{{filter:brightness(2.1)}}
+.d[disabled]{{opacity:.3}}
+.card{{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:9px;margin-bottom:8px}}
+.card h2{{font-size:.7rem;font-weight:700;letter-spacing:.08em;color:var(--dim);
+  margin-bottom:8px}}
+.modes{{display:flex;gap:5px}}
+.modes button{{flex:1;border:1px solid var(--line);background:#22222a;color:var(--dim);
+  border-radius:7px;padding:13px 0;font-size:.75rem;font-weight:700;letter-spacing:.04em}}
+.modes button.on{{background:var(--text);color:#000;border-color:var(--text)}}
+.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:5px}}
+.svc{{display:flex;align-items:center;gap:8px;background:#1c1c23;
+  border:1px solid var(--line);border-radius:7px;padding:11px 9px;font-size:.78rem}}
+.svc input{{width:19px;height:19px;accent-color:var(--ok);flex:0 0 auto}}
+.svc span{{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.svc em{{font-style:normal;font-size:.65rem;color:var(--dim)}}
+.svc.up{{border-color:#245c3a}}
+.svc.up em{{color:var(--ok)}}
+.svc.down em{{color:#c9566a}}
+.svc.busy{{opacity:.45}}
+.idrow{{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}}
+.idbtn{{background:#3a2c07;color:#ffca55;border:1px solid #5c4a12;border-radius:7px;
+  padding:13px 0;font-size:.8rem;font-weight:700;display:flex;flex-direction:column;gap:2px}}
+.idbtn:active{{filter:brightness(1.9)}}
+.idbtn em{{font-style:normal;font-size:.6rem;color:#a08a4a;font-weight:600}}
+.note{{font-size:.68rem;color:var(--dim);line-height:1.45;margin-top:8px}}
+footer{{flex:0 0 auto;text-align:center;font-size:.7rem;padding:7px;
+  background:var(--panel);border-top:1px solid var(--line);color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+footer.warn{{color:#ffca55}}
+footer.err{{color:#ff7a8a}}
 </style>
 </head>
 <body>
-<div id="bar">
-  <h1>🔥 Fire Control</h1>
-  <span id="conn" class="err">● disconnected</span>
-</div>
-<div id="modebar">
-  <button class="mode" data-m="manual"      onclick="setMode('manual')">MANUAL</button>
-  <button class="mode" data-m="interactive" onclick="setMode('interactive')">INTERACTIVE</button>
-  <button class="mode" data-m="midi"        onclick="setMode('midi')">MIDI</button>
-</div>
-<div id="grid">
-  <div class="col bigjet">
-    <div class="col-hdr">BIGJET</div>
-    {bigjet_sel}
-    {bigjet}
+<header>
+  <h1>BUSH FIRE</h1>
+  <div class="pills">
+    <span class="pill" id="p-broker">broker</span>
+    <span class="pill" id="p-board">board</span>
+    <span class="pill" id="p-mode">—</span>
   </div>
-  <div class="col flare">
-    <div class="col-hdr">FLARE</div>
-    {flare_sel}
-    {flare}
-  </div>
-  <div class="col poof">
-    <div class="col-hdr">POOF</div>
-    {poof}
-  </div>
-</div>
-<div id="svcwrap">
-  <div id="svchdr" onclick="togglePanel('svcpanel','svchdr','SERVICES')">
-    <span>▸ SERVICES</span><span id="svcstate"></span>
-  </div>
-  <div id="svcpanel">
-    <div id="svcgrid">{services}</div>
-  </div>
-</div>
-<div id="idwrap">
-  <div id="idhdr" onclick="togglePanel('idpanel','idhdr','IDENTIFY — fire a raw relay channel')">
-    <span>▸ IDENTIFY — fire a raw relay channel</span><span id="idstate"></span>
-  </div>
-  <div id="idpanel">
-    <div id="idrow">{ident}</div>
-    <div id="idnote">
-      Fires the channel directly, ignoring the valve map. Use with the gas OFF
-      and listen for the click to learn which valve is on which channel, then
-      run <b>bush-valve-id</b> to record and publish the map.
+</header>
+<button id="stop" onpointerdown="allStop()">■ ALL STOP</button>
+<nav>
+  <button class="on" data-p="fire" onclick="tab('fire')">FIRE</button>
+  <button data-p="setup" onclick="tab('setup')">SETUP</button>
+</nav>
+<main>
+  <section class="page on" id="page-fire">
+{rows}
+  </section>
+  <section class="page" id="page-setup">
+    <div class="card">
+      <h2>MODE</h2>
+      <div class="modes">
+        <button data-m="manual" onclick="setMode('manual')">MANUAL</button>
+        <button data-m="interactive" onclick="setMode('interactive')">INTERACTIVE</button>
+        <button data-m="midi" onclick="setMode('midi')">MIDI</button>
+      </div>
+      <div class="note" id="modenote"></div>
     </div>
-  </div>
-</div>
-<div id="log">tap a button to fire</div>
+    <div class="card">
+      <h2>SERVICES</h2>
+      <div class="grid2">{services}</div>
+    </div>
+    <div class="card">
+      <h2>IDENTIFY — RAW RELAY CHANNELS</h2>
+      <div class="idrow">{ident}</div>
+      <div class="note">
+        Fires the channel directly, ignoring the valve map. Commission with the
+        gas <b>OFF</b>: listen for the click, note which solenoid each channel
+        drives, then run <b>bush-valve-id</b> to record and publish the map.
+      </div>
+    </div>
+  </section>
+</main>
+<footer id="log">ready</footer>
 <script>
-const pickN={{bigjet:1,flare:1}};
-function pick(kind,n){{
-  pickN[kind]=n;
-  document.querySelectorAll('.sel[data-kind="'+kind+'"]').forEach(b=>{{
-    b.classList.toggle('on', parseInt(b.dataset.n)===n);
-  }});
+const VALVES = {valves_json};
+let es = null, esFails = 0, pollTimer = null;
+
+function tab(name){{
+  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on', p.id==='page-'+name));
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on', b.dataset.p===name));
 }}
-function valveFor(kind){{ return kind==='poof' ? 'poof1' : kind+pickN[kind]; }}
-function fire(kind,ms){{
-  const valve=valveFor(kind);
-  fetch('/fire',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{valve,ms}})}})
-  .then(r=>r.json()).then(d=>{{
-    document.getElementById('log').textContent=
-      d.ok?('fired: '+valve+' '+fmtMs(ms)):'not connected';
-  }}).catch(()=>document.getElementById('log').textContent='error');
+
+let logTimer = null;
+function say(msg, cls){{
+  const el = document.getElementById('log');
+  el.textContent = msg;
+  el.className = cls || '';
+  clearTimeout(logTimer);
+  logTimer = setTimeout(()=>{{ el.textContent='ready'; el.className=''; }}, 4000);
 }}
+
+function flash(el){{
+  if(!el) return;
+  el.classList.add('hit');
+  setTimeout(()=>el.classList.remove('hit'), 120);
+}}
+
+function post(path, body){{
+  return fetch(path, {{method:'POST', headers:{{'Content-Type':'application/json'}},
+                       body:JSON.stringify(body), keepalive:true}}).then(r=>r.json());
+}}
+
+function fmt(ms){{ return ms>=1000 ? (ms/1000)+'s' : ms+'ms'; }}
+
+function fire(valve, ms, ev){{
+  if(ev){{ ev.preventDefault(); flash(ev.currentTarget); }}
+  post('/fire', {{valve, ms}})
+    .then(d=> say(d.ok ? (valve+'  '+fmt(ms)) : 'NOT SENT — broker down', d.ok?'':'err'))
+    .catch(()=> say('NOT SENT — request failed','err'));
+}}
+
 function ident(ch){{
-  fetch('/identify',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{out:ch,ms:{ident_ms}}})}})
-  .then(r=>r.json()).then(d=>{{
-    document.getElementById('log').textContent=
-      d.ok?('identify: channel '+ch):'not connected';
-  }}).catch(()=>document.getElementById('log').textContent='error');
+  post('/identify', {{out:ch, ms:{ident_ms}}})
+    .then(d=> say(d.ok ? ('identify channel '+ch) : 'NOT SENT', d.ok?'':'err'))
+    .catch(()=> say('NOT SENT','err'));
 }}
-function togglePanel(panel,hdr,label){{
-  const p=document.getElementById(panel);
-  p.classList.toggle('open');
-  document.querySelector('#'+hdr+' span').textContent=
-    (p.classList.contains('open')?'▾':'▸')+' '+label;
-  if(panel==='svcpanel'&&p.classList.contains('open')) poll();
+
+function allStop(){{
+  const b = document.getElementById('stop');
+  b.classList.add('hit');
+  setTimeout(()=>b.classList.remove('hit'), 220);
+  if(navigator.vibrate) navigator.vibrate(60);
+  post('/stop', {{}})
+    .then(d=> say(d.ok ? 'ALL STOP SENT' : 'ALL STOP FAILED — broker down', d.ok?'warn':'err'))
+    .catch(()=> say('ALL STOP FAILED','err'));
 }}
-function toggleSvc(unit,on){{
-  const row=document.getElementById('svc-'+unit).closest('.svc');
-  row.classList.add('busy');
-  fetch('/service',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{unit,on}})}})
-  .then(r=>r.json()).then(d=>{{
-    document.getElementById('log').textContent=
-      d.ok?(unit+' '+d.msg):(unit+' failed: '+(d.err||d.msg||''));
-  }}).catch(()=>document.getElementById('log').textContent='error')
-  .finally(()=>{{row.classList.remove('busy'); setTimeout(poll,800);}});
-}}
+
 function setMode(m){{
-  fetch('/mode',{{method:'POST',headers:{{'Content-Type':'application/json'}},
-    body:JSON.stringify({{mode:m}})}})
-  .then(r=>r.json()).then(d=>{{
-    document.getElementById('log').textContent=d.ok?('mode: '+m):'not connected';
-    if(d.ok) paintMode(m);
-  }}).catch(()=>document.getElementById('log').textContent='error');
+  post('/mode', {{mode:m}})
+    .then(d=> say(d.ok ? ('mode: '+m) : 'mode change failed', d.ok?'':'err'));
 }}
-function paintMode(m){{
-  document.querySelectorAll('.mode').forEach(b=>
-    b.classList.toggle('on', b.dataset.m===m));
+
+function toggleSvc(unit, on){{
+  const row = document.getElementById('svcrow-'+unit);
+  row.classList.add('busy');
+  post('/service', {{unit, on}})
+    .then(d=> say(d.ok ? (unit+' '+d.msg) : (unit+': '+(d.err||'failed')), d.ok?'':'err'))
+    .catch(()=> say(unit+' failed','err'))
+    .finally(()=> row.classList.remove('busy'));
 }}
-function fmtMs(ms){{return ms>=1000?(ms/1000).toFixed(ms%1000?1:0)+'s':ms+'ms'}}
-function poll(){{
-  fetch('/status').then(r=>r.json()).then(d=>{{
-    const el=document.getElementById('conn');
-    el.className=d.connected?'ok':'err';
-    el.textContent=d.connected?'● connected':'● disconnected';
-    document.getElementById('idstate').textContent=
-      d.board?('board ok'+(d.mapped?'':' · no map')):'board silent';
-    paintMode(d.mode);
-    if(d.services){{
-      let up=0, n=0;
-      for(const u in d.services){{
-        const on=d.services[u]; n++; if(on) up++;
-        const cb=document.getElementById('svc-'+u);
-        if(cb){{ cb.checked=on;
-          const row=cb.closest('.svc');
-          row.classList.toggle('up',on); row.classList.toggle('down',!on);
-          document.getElementById('st-'+u).textContent=on?'up':'down';
-        }}
+
+function paint(d){{
+  const pb = document.getElementById('p-broker');
+  pb.textContent = d.connected ? 'broker' : 'NO BROKER';
+  pb.className = 'pill ' + (d.connected ? 'ok' : 'bad');
+
+  const bd = document.getElementById('p-board');
+  bd.textContent = d.board ? 'board' : 'NO BOARD';
+  bd.className = 'pill ' + (d.board ? 'ok' : 'bad');
+
+  const pm = document.getElementById('p-mode');
+  pm.textContent = d.mode || '—';
+  pm.className = 'pill' + (d.mode === 'manual' ? '' : ' ok');
+
+  /* lamps reflect the BOARD's own report, never what we asked for */
+  VALVES.forEach(v=>{{
+    const lamp = document.getElementById('lamp-'+v);
+    const row  = document.getElementById('row-'+v);
+    const on   = !!(d.valves && d.valves[v]);
+    if(lamp) lamp.classList.toggle('on', on);
+    if(row)  row.classList.toggle('lit', on);
+  }});
+  document.querySelectorAll('.d').forEach(b=> b.disabled = !d.connected);
+
+  document.querySelectorAll('.modes button').forEach(b=>
+    b.classList.toggle('on', b.dataset.m === d.mode));
+  document.getElementById('modenote').textContent =
+    d.mode==='manual'      ? 'Only this UI fires. The pipeline classifies but never opens a valve.' :
+    d.mode==='interactive' ? 'The verse pipeline drives the fire. Push-to-talk is live.' :
+    d.mode==='midi'        ? 'The MIDI keyboard plays the solenoids. Pipeline fire is off.' : '';
+
+  if(d.services){{
+    for(const u in d.services){{
+      const on = d.services[u];
+      const cb = document.getElementById('svc-'+u);
+      if(cb && document.activeElement !== cb){{
+        cb.checked = on;
+        const row = document.getElementById('svcrow-'+u);
+        row.classList.toggle('up', on);
+        row.classList.toggle('down', !on);
+        document.getElementById('st-'+u).textContent = on ? 'up' : 'down';
       }}
-      document.getElementById('svcstate').textContent=up+'/'+n+' up';
     }}
-  }}).catch(()=>{{}});
-  setTimeout(poll,3000);
+  }}
+  if(d.map){{
+    for(const name in d.map){{
+      const el = document.getElementById('idmap-'+d.map[name]);
+      if(el) el.textContent = name;
+    }}
+  }}
 }}
-poll();
+
+function startPoll(){{
+  if(pollTimer) return;
+  const tick = ()=> fetch('/status').then(r=>r.json()).then(paint).catch(()=>{{}});
+  tick();
+  pollTimer = setInterval(tick, 2000);
+}}
+
+function connect(){{
+  try{{ es = new EventSource('/events'); }}catch(e){{ return startPoll(); }}
+  es.onmessage = e => {{ esFails = 0; try{{ paint(JSON.parse(e.data)); }}catch(_){{}} }};
+  es.onerror = () => {{
+    es.close();
+    if(++esFails >= 3) return startPoll();
+    setTimeout(connect, 1500);
+  }};
+}}
+connect();
+
+/* a phone that slept has a dead stream; rebuild it on wake */
+document.addEventListener('visibilitychange', ()=>{{
+  if(!document.hidden && es && es.readyState === 2){{ esFails = 0; connect(); }}
+}});
 </script>
 </body>
 </html>
 """.format(
-    bigjet=_buttons(BIGJET_DURATIONS, "bigjet"),
-    flare=_buttons(FLARE_DURATIONS,  "flare"),
-    poof=_buttons(POOF_DURATIONS,    "poof"),
-    bigjet_sel=_selector("bigjet", 3),
-    flare_sel=_selector("flare", 3),
-    ident=_ident_buttons(),
+    rows=_valve_rows(),
     services=_service_rows(),
+    ident=_ident_buttons(),
     ident_ms=IDENTIFY_MS,
+    valves_json=json.dumps([v for v, _ in VALVES]),
 )
 
 
 class Handler(BaseHTTPRequestHandler):
+    # keep-alive: a fresh TCP connection per tap is most of the perceived lag
+    # over Wi-Fi. Safe because every response below sets Content-Length.
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt, *args):
-        pass  # suppress access logs
+        pass
 
     def _send(self, code, ctype, body):
         b = body if isinstance(body, bytes) else body.encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", len(b))
+        self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(b)
 
@@ -399,37 +557,58 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", HTML)
         elif self.path == "/status":
-            with _state_lock:
-                board = _state["board"]
-                fresh = board is not None and (time.time() - _state["board_ts"]) < 15
-                self._send(200, "application/json", json.dumps({
-                    "connected": _state["connected"],
-                    "board": fresh,
-                    "mapped": bool(fresh and board.get("map")),
-                    "mode": _state["mode"],
-                    "services": _service_states(),
-                }))
+            self._send(200, "application/json", json.dumps(_snapshot()))
+        elif self.path == "/events":
+            self._events()
         else:
             self._send(404, "text/plain", "not found")
 
-    def _post_json(self):
-        length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length))
+    def _events(self):
+        q = queue.Queue(maxsize=8)
+        with _subs_lock:
+            _subs.append(q)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps(_snapshot())}\n\n".encode())
+            self.wfile.flush()
+            while True:
+                try:
+                    chunk = f"data: {q.get(timeout=10)}\n\n".encode()
+                except queue.Empty:
+                    chunk = b": ka\n\n"     # keep-alive so phones hold the stream
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except Exception:
+            pass                             # client went away; normal
+        finally:
+            with _subs_lock:
+                if q in _subs:
+                    _subs.remove(q)
+
+    def _body(self):
+        n = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(n) or b"{}")
 
     def do_POST(self):
         try:
             if self.path == "/fire":
-                data = self._post_json()
-                ok = _fire(data["valve"], int(data["ms"]))
+                d = self._body()
+                ok = _fire(d["valve"], int(d["ms"]))
             elif self.path == "/identify":
-                data = self._post_json()
-                ok = _identify(data["out"], int(data["ms"]))
+                d = self._body()
+                ok = _identify(d["out"], int(d.get("ms", IDENTIFY_MS)))
+            elif self.path == "/stop":
+                self._body()
+                ok = _all_stop()
             elif self.path == "/mode":
-                data = self._post_json()
-                ok = _set_mode(data["mode"])
+                ok = _set_mode(self._body()["mode"])
             elif self.path == "/service":
-                data = self._post_json()
-                ok, msg = _set_service(data["unit"], bool(data["on"]))
+                d = self._body()
+                ok, msg = _set_service(d["unit"], bool(d["on"]))
                 self._send(200, "application/json",
                            json.dumps({"ok": ok, "msg" if ok else "err": msg}))
                 return
@@ -438,7 +617,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, "application/json", json.dumps({"ok": ok}))
         except Exception as e:
-            self._send(400, "application/json", json.dumps({"ok": False, "err": str(e)}))
+            self._send(400, "application/json",
+                       json.dumps({"ok": False, "err": str(e)[:200]}))
 
 
 def main():
@@ -446,7 +626,7 @@ def main():
 
     ap = argparse.ArgumentParser(description="Fire control web UI")
     ap.add_argument("--broker", default="localhost")
-    ap.add_argument("--port",   type=int, default=1883)
+    ap.add_argument("--port", type=int, default=1883)
     ap.add_argument("--web-port", type=int, default=80)
     args = ap.parse_args()
 
@@ -455,18 +635,20 @@ def main():
     def on_connect(c, u, f, rc, p=None):
         with _state_lock:
             _state["connected"] = (str(rc) == "Success" or rc == 0)
-        c.subscribe(TOPIC_PIPELINE_PING)
-        c.subscribe(TOPIC_STATUS)
-        c.subscribe(TOPIC_MODE)
+        for t in (TOPIC_PIPELINE_PING, TOPIC_STATUS, TOPIC_MODE):
+            c.subscribe(t)
+        _broadcast()
 
     def on_disconnect(c, u, f, rc, p=None, *a):
         with _state_lock:
             _state["connected"] = False
+        _broadcast()
 
     def on_message(c, u, msg):
         if msg.topic == TOPIC_PIPELINE_PING:
             c.publish(TOPIC_PIPELINE_PONG, "")
-        elif msg.topic == TOPIC_MODE:
+            return
+        if msg.topic == TOPIC_MODE:
             try:
                 m = json.loads(msg.payload).get("mode")
             except ValueError:
@@ -474,17 +656,20 @@ def main():
             if m in MODES:
                 with _state_lock:
                     _state["mode"] = m
+                _broadcast()
         elif msg.topic == TOPIC_STATUS:
             try:
-                with _state_lock:
-                    _state["board"] = json.loads(msg.payload)
-                    _state["board_ts"] = time.time()
+                board = json.loads(msg.payload)
             except ValueError:
-                pass
+                return
+            with _state_lock:
+                _state["board"] = board
+                _state["board_ts"] = time.time()
+            _broadcast()
 
-    _mqttc.on_connect    = on_connect
+    _mqttc.on_connect = on_connect
     _mqttc.on_disconnect = on_disconnect
-    _mqttc.on_message    = on_message
+    _mqttc.on_message = on_message
 
     def _mqtt_thread():
         try:
@@ -493,10 +678,25 @@ def main():
             print(f"[firecontrol-web] MQTT connect failed: {e}")
         _mqttc.loop_forever()
 
-    threading.Thread(target=_mqtt_thread, daemon=True).start()
+    # The board's beacon drives the lamps; when it stops, the UI has to notice
+    # on its own rather than showing a stale lit valve for ever.
+    def _staleness_loop():
+        was = None
+        while True:
+            fresh = _snapshot()["board"]
+            if fresh != was:
+                was = fresh
+                _broadcast()
+            time.sleep(2.0)
 
-    server = HTTPServer(("0.0.0.0", args.web_port), Handler)
-    print(f"[firecontrol-web] http://0.0.0.0:{args.web_port}/  broker={args.broker}:{args.port}")
+    threading.Thread(target=_mqtt_thread, daemon=True).start()
+    threading.Thread(target=_service_loop, daemon=True).start()
+    threading.Thread(target=_staleness_loop, daemon=True).start()
+
+    server = ThreadingHTTPServer(("0.0.0.0", args.web_port), Handler)
+    server.daemon_threads = True
+    print(f"[firecontrol-web] http://0.0.0.0:{args.web_port}/  "
+          f"broker={args.broker}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

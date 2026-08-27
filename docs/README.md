@@ -171,6 +171,16 @@ Also exposed in the fire-control web UI's IDENTIFY panel.
 them: `bush-sentiment` still classifies and publishes (the lights and monitor
 want it) but never touches the gas. Set from the fire-control web UI.
 
+### `bush/flame/stop`
+```
+(empty payload)
+```
+Emergency stop. Drops every solenoid and clears every pending off-time,
+whatever the payload says — this must never fail to parse. The firmware
+handles it before anything else in its receive queue, so a backlog of queued
+pulses cannot be serviced first. Wired to the always-visible ALL STOP button
+in the fire-control web UI.
+
 ### `bush/flame/map`
 ```json
 {"flare1": 0, "flare2": 1, "bigjet1": 3, "poof1": 6}

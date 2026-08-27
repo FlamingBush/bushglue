@@ -82,6 +82,7 @@ TOPIC_FLAME        = b"bush/flame/pulse"
 TOPIC_FLAME_STATUS = b"bush/flame/status"
 TOPIC_FLAME_IDENT  = b"bush/flame/identify"
 TOPIC_FLAME_MAP    = b"bush/flame/map"
+TOPIC_FLAME_STOP   = b"bush/flame/stop"
 PIPELINE_PING      = b"bush/pipeline/ping"
 PIPELINE_PONG      = b"bush/pipeline/pong"
 
@@ -419,6 +420,16 @@ def process_packets():
                 pos = pkt_end
                 continue
 
+            if topic == TOPIC_FLAME_STOP:
+                # Emergency stop. Drops every solenoid and clears every
+                # pending off-time, whatever the payload says — this must
+                # never fail to parse. Checked before anything else so a
+                # backlog of queued pulses cannot be serviced first.
+                force_pins_off()
+                print("ALL STOP")
+                pos = pkt_end
+                continue
+
             if topic == TOPIC_FLAME_MAP:
                 # Retained: {"flare1": 0, "bigjet2": 4, ...}. Replaces the map
                 # wholesale so a stale name can never linger. Rejected as a
@@ -539,7 +550,8 @@ def subscribe_all():
     # Retained, so the broker replays the current map on every (re)connect —
     # a rebooted board re-learns its wiring without anyone republishing.
     sock.send(mqtt_subscribe_packet(TOPIC_FLAME_MAP, packet_id=3))
-    print("Subscribed (flame, identify, map).")
+    sock.send(mqtt_subscribe_packet(TOPIC_FLAME_STOP, packet_id=4))
+    print("Subscribed (flame, identify, map, stop).")
 
 
 def publish_flame_status(force=False):
