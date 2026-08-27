@@ -468,6 +468,7 @@ def process_packets():
                 force_pins_off()
                 disarmed = True
                 print("ALL STOP — DISARMED until re-armed")
+                publish_flame_status(force=True)
                 pos = pkt_end
                 continue
 
@@ -480,6 +481,7 @@ def process_packets():
                     val = raw in ("1", "true", "on", "yes")
                 poof_fallback = val
                 print("poof fallback:", "ON (poof -> all bigjets)" if val else "off")
+                publish_flame_status(force=True)
                 pos = pkt_end
                 continue
 
@@ -504,6 +506,7 @@ def process_packets():
                     force_pins_off()   # never remap while something is lit
                     valve_map = newmap
                     print("Valve map updated:", valve_map)
+                    publish_flame_status(force=True)
                 pos = pkt_end
                 continue
 
@@ -521,6 +524,7 @@ def process_packets():
                     disarmed = True
                     force_pins_off()
                     print("DISARMED")
+                publish_flame_status(force=True)
                 pos = pkt_end
                 continue
 

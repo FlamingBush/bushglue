@@ -512,6 +512,25 @@ footer.err{{color:#ff7a8a}}
 const VALVES = {valves_json};
 let es = null, esFails = 0, pollTimer = null;
 
+/* A control the operator just touched is held against incoming status frames
+   until the board actually confirms the new value — not for a guessed number
+   of milliseconds. A frame that predates the change would otherwise flip the
+   control back, and it reads as "the button does nothing".
+
+   Waiting for confirmation rather than a timer matters because the board may
+   only report on its 5 s beacon, and any fixed hold shorter than that loses
+   the race. The deadline is a backstop for a board that never confirms at
+   all. activeElement is not enough on its own either: a tapped checkbox does
+   not reliably keep focus on mobile. */
+const pending = {{}};
+function hold(id, want){{ pending[id] = {{want: want, until: Date.now() + 12000}}; }}
+function held(id, actual){{
+  const p = pending[id];
+  if(!p) return false;
+  if(p.want === actual || Date.now() > p.until){{ delete pending[id]; return false; }}
+  return true;
+}}
+
 let logTimer = null;
 function say(msg, cls){{
   const el = document.getElementById('log');
@@ -558,12 +577,14 @@ function allStop(){{
 }}
 
 function setPoofFb(on){{
+  hold('pf', on);
   post('/poof-fallback', {{enabled:on}})
     .then(d=> say(d.ok ? ('poofer fallback '+(on?'ON — poof fires all bigjets':'off'))
                        : 'failed', d.ok?(on?'warn':''):'err'));
 }}
 
 function setArmed(on){{
+  hold('armcb', on);
   post('/arm', {{armed:on}})
     .then(d=> say(d.ok ? (on ? 'ARMED — fire enabled' : 'disarmed')
                        : 'failed', d.ok ? (on?'warn':'') : 'err'));
@@ -577,6 +598,7 @@ function setMode(m){{
 function toggleSvc(unit, on){{
   const row = document.getElementById('svcrow-'+unit);
   row.classList.add('busy');
+  hold('svc-'+unit, on);
   post('/service', {{unit, on}})
     .then(d=> say(d.ok ? (unit+' '+d.msg) : (unit+': '+(d.err||'failed')), d.ok?'':'err'))
     .catch(()=> say(unit+' failed','err'))
@@ -611,7 +633,7 @@ function paint(d){{
   document.querySelectorAll('.d').forEach(b=> b.disabled = !d.connected || !armed);
 
   const acb = document.getElementById('armcb');
-  if(acb && document.activeElement !== acb){{
+  if(acb && !held('armcb', armed)){{
     acb.checked = armed;
     document.getElementById('armrow').classList.toggle('up', armed);
     document.getElementById('armrow').classList.toggle('down', !armed);
@@ -632,7 +654,7 @@ function paint(d){{
     for(const u in d.services){{
       const on = d.services[u];
       const cb = document.getElementById('svc-'+u);
-      if(cb && document.activeElement !== cb){{
+      if(cb && !held('svc-'+u, on)){{
         cb.checked = on;
         const row = document.getElementById('svcrow-'+u);
         row.classList.toggle('up', on);
@@ -642,7 +664,7 @@ function paint(d){{
     }}
   }}
   const pf = document.getElementById('pf');
-  if(pf && document.activeElement !== pf){{
+  if(pf && !held('pf', !!d.poof_fallback)){{
     pf.checked = !!d.poof_fallback;
     document.getElementById('pfrow').classList.toggle('up', !!d.poof_fallback);
     document.getElementById('pfst').textContent = d.poof_fallback ? 'ON' : 'off';
