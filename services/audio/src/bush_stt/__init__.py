@@ -421,6 +421,26 @@ def main():
             except Exception:
                 break
 
+    def _await_first_audio(q, interrupt, timeout=15.0):
+        """Block until the capture stream yields a chunk. False if interrupted.
+
+        The chunk is put back so no audio is lost from the front of the
+        stream — the endpointer's pre-roll wants it.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if interrupt.is_set():
+                return False
+            try:
+                first = q.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            q.queue.appendleft(first)
+            return True
+        log("WARNING: capture produced no audio within "
+            f"{timeout:g}s — announcing ready anyway")
+        return True
+
     def _open_capture(device, sample_rate):
         """Spawn parec or arecord at the given rate. Returns Popen object."""
         if _is_alsa_device(device):
@@ -635,6 +655,15 @@ def main():
                 )
                 reader_thread.start()
 
+                # Announce readiness only once audio is actually flowing.
+                # Spawning parec/arecord is not the same as it delivering
+                # samples — a PulseAudio source can take seconds to start,
+                # and a PTT press in that window opens an utterance over a
+                # dead stream, so the phrase lands in a hole and the engine
+                # returns empty text. Waiting for the first chunk makes
+                # bush/audio/stt/device mean what its consumers assume.
+                if not _await_first_audio(audio_queue, device_change):
+                    continue
                 mqttc.publish(TOPIC_DEVICE_STATUS,
                               json.dumps({"device": current_device, "status": "ok"}),
                               retain=True)

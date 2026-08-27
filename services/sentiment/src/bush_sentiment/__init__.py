@@ -42,7 +42,19 @@ TOPIC_VERSE    = "bush/pipeline/t2v/verse"
 TOPIC_SENTIMENT = "bush/pipeline/sentiment/result"
 TOPIC_FLAME    = "bush/flame/pulse"
 TOPIC_TTS_DONE = "bush/pipeline/tts/done"
+TOPIC_MODE     = "bush/mode"
 MQTT_PORT = 1883
+
+# ── run mode ───────────────────────────────────────────────────────────────
+# "interactive" — the installation runs itself: a verse drives the fire.
+# "manual"      — only the fire-control UIs may fire; the pipeline stays
+#                 silent so someone can work on the rig without it lighting
+#                 up behind them.
+# "midi"        — the keyboard drives the fire; the pipeline stays silent.
+# Unset defaults to interactive, so an installation with no retained mode
+# behaves exactly as it always did.
+FIRE_MODES = ("interactive",)
+_mode = ["interactive"]
 
 # ── valve groups ───────────────────────────────────────────────────────────
 # Every valve is addressed individually — the relay firmware rejects a bare
@@ -152,7 +164,12 @@ def _classify_and_fire(verse_text: str, mqttc: mqtt.Client):
     score = top["score"]
 
     pattern = EMOTION_PATTERNS.get(label)
-    if pattern:
+    if pattern and _mode[0] not in FIRE_MODES:
+        # Still classify and publish the result — the lights and the monitor
+        # want it — but do not touch the gas.
+        print(f"[sentiment] mode={_mode[0]}: classified {label} "
+              f"{score:.2f}, fire suppressed", flush=True)
+    elif pattern:
         print(f"[sentiment] MQTT fire: emotion={label} score={score:.2f} (sustained pattern)", flush=True)
         _start_fire(pattern, score, mqttc)
     else:
@@ -175,10 +192,26 @@ def _start_mqtt_thread():
         print(f"[sentiment] MQTT connected (rc={reason_code})", flush=True)
         client.subscribe(TOPIC_VERSE)
         client.subscribe(TOPIC_TTS_DONE)
-        print(f"[sentiment] Subscribed to {TOPIC_VERSE}, {TOPIC_TTS_DONE}", flush=True)
+        client.subscribe(TOPIC_MODE)
+        print(f"[sentiment] Subscribed to {TOPIC_VERSE}, {TOPIC_TTS_DONE}, "
+              f"{TOPIC_MODE}", flush=True)
 
     def on_message(client, userdata, msg):
         try:
+            if msg.topic == TOPIC_MODE:
+                try:
+                    m = json.loads(msg.payload).get("mode")
+                except ValueError:
+                    m = msg.payload.decode(errors="replace").strip()
+                if m and m != _mode[0]:
+                    print(f"[sentiment] mode: {_mode[0]} -> {m}", flush=True)
+                    _mode[0] = m
+                    if m not in FIRE_MODES:
+                        # Leaving interactive mid-verse must not leave the
+                        # fire loop running.
+                        _stop_fire()
+                return
+
             if msg.topic == TOPIC_TTS_DONE:
                 print("[sentiment] TTS done — stopping fire pattern", flush=True)
                 _stop_fire()

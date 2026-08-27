@@ -48,11 +48,15 @@ SETTLE_S = float(os.environ.get("SETTLE_S", "2.0"))
 # fixed window, so pressing before capture is live puts the phrase in a dead
 # zone: only trailing silence gets buffered and the engine returns empty text.
 #
-# A fixed sleep guessed at this and was flaky at 3 s. bush-stt already
-# publishes {"status": "ok"} on its device topic at the moment it opens the
-# new capture, so wait for that instead and keep only a short settle for the
-# source to ramp.
-SWITCH_S = float(os.environ.get("SWITCH_S", "1.5"))
+# bush-stt publishes {"status": "ok"} once its capture has yielded a first
+# chunk, so wait for that. It is necessary but not sufficient: a PulseAudio
+# monitor hands over silence the instant it is opened, so "first chunk" can
+# arrive before the stream is really carrying the sink. Measured with a
+# parallel parecord, the injected phrase lands 3-4 s after the switch. SWITCH_S
+# is therefore a margin over that startup race, not a proof — which is
+# acceptable because only the test harness switches devices. The production
+# path (physical button, microphone, no device change) has no such race.
+SWITCH_S = float(os.environ.get("SWITCH_S", "3.0"))
 DEVICE_READY_TIMEOUT_S = float(os.environ.get("DEVICE_READY_TIMEOUT_S", "20"))
 TOPIC_STT_DEVICE = "bush/audio/stt/device"
 TOPIC_SET_STT_DEVICE = "bush/audio/stt/set-device"

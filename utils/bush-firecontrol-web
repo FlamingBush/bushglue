@@ -25,6 +25,15 @@ TOPIC_MAP           = "bush/flame/map"
 TOPIC_STATUS        = "bush/flame/status"
 TOPIC_PIPELINE_PING = "bush/pipeline/ping"
 TOPIC_PIPELINE_PONG = "bush/pipeline/pong"
+TOPIC_MODE          = "bush/mode"
+
+# Run modes. Retained, so the rig comes back in whatever mode it was left in.
+#   interactive — the pipeline runs itself: speak, get a verse, get fire
+#   manual      — only these fire-control UIs may fire; the pipeline and the
+#                 keyboard stay quiet so you can work on the rig safely
+#   midi        — the MIDI keyboard plays the solenoids
+MODES = ["manual", "interactive", "midi"]
+DEFAULT_MODE = "interactive"
 
 BIGJET_DURATIONS = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000, 8000]
 FLARE_DURATIONS  = [50, 100, 200, 300, 500, 800, 1000, 1500, 2000, 3000, 5000, 8000]
@@ -34,7 +43,8 @@ POOF_DURATIONS   = [20, 30, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450]
 NUM_OUTPUTS = 7
 IDENTIFY_MS = 250
 
-_state = {"connected": False, "last": None, "board": None, "board_ts": 0.0}
+_state = {"connected": False, "last": None, "board": None, "board_ts": 0.0,
+          "mode": DEFAULT_MODE}
 _state_lock = threading.Lock()
 _mqttc = None
 
@@ -51,6 +61,18 @@ def _fire(valve, ms):
 def _identify(out, ms):
     if _mqttc and _state["connected"]:
         _mqttc.publish(TOPIC_IDENTIFY, json.dumps({"out": int(out), "ms": int(ms)}), qos=0)
+        return True
+    return False
+
+
+def _set_mode(mode):
+    if mode not in MODES:
+        return False
+    if _mqttc and _state["connected"]:
+        # Retained: the mode is rig state, not a transient command.
+        _mqttc.publish(TOPIC_MODE, json.dumps({"mode": mode}), qos=0, retain=True)
+        with _state_lock:
+            _state["mode"] = mode
         return True
     return False
 
@@ -108,6 +130,14 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
 #conn.ok{{color:#4f4}}
 #conn.err{{color:#f44;animation:blink 1s step-start infinite}}
 @keyframes blink{{50%{{opacity:0}}}}
+#modebar{{display:flex;gap:4px;padding:6px;background:#151515;
+         border-bottom:1px solid #333;flex-shrink:0}}
+.mode{{flex:1;border:1px solid #444;background:#222;color:#999;
+      border-radius:6px;padding:9px 0;font-size:.8rem;font-weight:700;
+      letter-spacing:.04em}}
+.mode.on[data-m="manual"]{{background:#555;color:#fff;border-color:#888}}
+.mode.on[data-m="interactive"]{{background:#046;color:#8df;border-color:#08a}}
+.mode.on[data-m="midi"]{{background:#405;color:#e9f;border-color:#82b}}
 #grid{{display:flex;flex:1;gap:6px;padding:6px;min-height:0}}
 .col{{flex:1;display:flex;flex-direction:column;gap:5px}}
 .col-hdr{{text-align:center;font-size:.85rem;font-weight:700;
@@ -143,6 +173,11 @@ body{{background:#111;color:#fff;font-family:system-ui,sans-serif;
 <div id="bar">
   <h1>🔥 Fire Control</h1>
   <span id="conn" class="err">● disconnected</span>
+</div>
+<div id="modebar">
+  <button class="mode" data-m="manual"      onclick="setMode('manual')">MANUAL</button>
+  <button class="mode" data-m="interactive" onclick="setMode('interactive')">INTERACTIVE</button>
+  <button class="mode" data-m="midi"        onclick="setMode('midi')">MIDI</button>
 </div>
 <div id="grid">
   <div class="col bigjet">
@@ -206,6 +241,18 @@ function toggleId(){{
   document.querySelector('#idhdr span').textContent=
     (p.classList.contains('open')?'▾':'▸')+' IDENTIFY — fire a raw relay channel';
 }}
+function setMode(m){{
+  fetch('/mode',{{method:'POST',headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{mode:m}})}})
+  .then(r=>r.json()).then(d=>{{
+    document.getElementById('log').textContent=d.ok?('mode: '+m):'not connected';
+    if(d.ok) paintMode(m);
+  }}).catch(()=>document.getElementById('log').textContent='error');
+}}
+function paintMode(m){{
+  document.querySelectorAll('.mode').forEach(b=>
+    b.classList.toggle('on', b.dataset.m===m));
+}}
 function fmtMs(ms){{return ms>=1000?(ms/1000).toFixed(ms%1000?1:0)+'s':ms+'ms'}}
 function poll(){{
   fetch('/status').then(r=>r.json()).then(d=>{{
@@ -214,6 +261,7 @@ function poll(){{
     el.textContent=d.connected?'● connected':'● disconnected';
     document.getElementById('idstate').textContent=
       d.board?('board ok'+(d.mapped?'':' · no map')):'board silent';
+    paintMode(d.mode);
   }}).catch(()=>{{}});
   setTimeout(poll,3000);
 }}
@@ -255,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                     "connected": _state["connected"],
                     "board": fresh,
                     "mapped": bool(fresh and board.get("map")),
+                    "mode": _state["mode"],
                 }))
         else:
             self._send(404, "text/plain", "not found")
@@ -271,6 +320,9 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/identify":
                 data = self._post_json()
                 ok = _identify(data["out"], int(data["ms"]))
+            elif self.path == "/mode":
+                data = self._post_json()
+                ok = _set_mode(data["mode"])
             else:
                 self._send(404, "text/plain", "not found")
                 return
@@ -295,6 +347,7 @@ def main():
             _state["connected"] = (str(rc) == "Success" or rc == 0)
         c.subscribe(TOPIC_PIPELINE_PING)
         c.subscribe(TOPIC_STATUS)
+        c.subscribe(TOPIC_MODE)
 
     def on_disconnect(c, u, f, rc, p=None, *a):
         with _state_lock:
@@ -303,6 +356,14 @@ def main():
     def on_message(c, u, msg):
         if msg.topic == TOPIC_PIPELINE_PING:
             c.publish(TOPIC_PIPELINE_PONG, "")
+        elif msg.topic == TOPIC_MODE:
+            try:
+                m = json.loads(msg.payload).get("mode")
+            except ValueError:
+                m = msg.payload.decode(errors="replace").strip()
+            if m in MODES:
+                with _state_lock:
+                    _state["mode"] = m
         elif msg.topic == TOPIC_STATUS:
             try:
                 with _state_lock:

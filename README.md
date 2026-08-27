@@ -72,6 +72,7 @@ The fire loop in bush-sentiment is bounded by `tts/done` or a 30 s timeout.
 | `bush/flame/pulse` | bush-sentiment, bush-firecontrol, bush-firecontrol-web | relay-control |
 | `bush/flame/identify` | bush-valve-id, bush-firecontrol-web | relay-control |
 | `bush/flame/map` | bush-valve-id | relay-control |
+| `bush/mode` | bush-firecontrol-web | bush-sentiment, bush-midi |
 | `bush/fire/valve/target` | bush-variable-valves | valve-control |
 | `bush/fire/valve/actual` | valve-control | (monitor) |
 | `bush/fire/valve/status` | valve-control | (monitor) |
@@ -107,6 +108,7 @@ Each service has an entry point in the venv:
 .venv/bin/bush-variable-valves
 .venv/bin/bush-audio-agent
 .venv/bin/bush-ptt
+.venv/bin/bush-midi
 .venv/bin/bush-discord
 .venv/bin/chroma run --path data/chromadb
 ```

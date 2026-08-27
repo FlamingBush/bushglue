@@ -21,6 +21,7 @@ test = [
 [project.scripts]
 bush-audio-agent = "bush_audio_agent:main"
 bush-ptt = "bush_ptt:main"
+bush-midi = "bush_midi:main"
 bush-t2v = "bush_t2v:main"
 bush-tts = "bush_tts:main"
 bush-variable-valves = "bush_variable_valves:main"
@@ -31,7 +32,7 @@ bush-valve-serial = "bush_valve_serial:main"
 bushutil = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bush_audio_agent", "src/bush_ptt", "src/bush_t2v", "src/bush_tts", "src/bush_variable_valves", "src/bush_valve_ble", "src/bush_valve_serial"]
+packages = ["src/bush_audio_agent", "src/bush_ptt", "src/bush_midi", "src/bush_t2v", "src/bush_tts", "src/bush_variable_valves", "src/bush_valve_ble", "src/bush_valve_serial"]
 
 [build-system]
 requires = ["hatchling"]

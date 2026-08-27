@@ -1,0 +1,21 @@
+[Unit]
+Description=MIDI keyboard to solenoids and lights
+After=network-online.target mosquitto.service sound.target
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=orangepi
+# /dev/snd/midi* is root:audio 0660
+SupplementaryGroups=audio
+# Alesis VI25; `amidi -l` lists the alternatives.
+Environment=MIDI_DEVICE=/dev/snd/midiC4D0
+Environment=MIDI_BASE_NOTE=48
+ExecStart=/home/orangepi/bushglue/.venv/bin/bush-midi
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

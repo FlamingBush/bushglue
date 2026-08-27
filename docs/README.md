@@ -155,6 +155,22 @@ Fires a **raw relay channel** (0–6), ignoring the valve map. This is how you
 find out which physical solenoid a channel drives after the loom is built.
 Also exposed in the fire-control web UI's IDENTIFY panel.
 
+### `bush/mode`
+```json
+{"mode": "interactive"}
+```
+**Retained** — the rig comes back in whatever mode it was left in. One of:
+
+| Mode | Fire comes from | Pipeline | MIDI |
+|---|---|---|---|
+| `manual` | the fire-control UIs only | classifies but does not fire | ignored |
+| `interactive` | the verse pipeline (push-to-talk) | fires | ignored |
+| `midi` | the MIDI keyboard | classifies but does not fire | plays the solenoids |
+
+`manual` exists so someone can work on the rig without it lighting up behind
+them: `bush-sentiment` still classifies and publishes (the lights and monitor
+want it) but never touches the gas. Set from the fire-control web UI.
+
 ### `bush/flame/map`
 ```json
 {"flare1": 0, "flare2": 1, "bigjet1": 3, "poof1": 6}

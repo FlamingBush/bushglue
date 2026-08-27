@@ -71,3 +71,16 @@ TODO bundle these
 3. Copy `secrets.example.py` to `secrets.py` and fill in credentials.
 4. Install libraries listed above into `CIRCUITPY/lib/`.
 5. The board auto-starts `code.py` on power-up.
+
+## MIDI keyboard
+
+`bush-midi` reads a raw ALSA rawmidi device (an Alesis VI25 here, `amidi -l`
+lists others) and plays the solenoids from the keys. Seven consecutive
+semitones from `MIDI_BASE_NOTE` (default 48 = C3) map onto the seven valves in
+`MIDI_VALVES` order. Velocity sets the pulse length, so how hard you hit the
+key is how long the valve opens.
+
+It only fires while `bush/mode` is `midi`, so a keyboard left plugged in
+cannot fire the rig during a normal show. Note-off is deliberately ignored —
+the firmware's own timer closes the valve, so a dropped note-off can never
+strand a solenoid open. Knobs (CC) drive the lights in any mode.
