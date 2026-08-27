@@ -43,21 +43,17 @@ except ImportError:
 # Seven solenoids, addressed by INDEX here and by NAME over MQTT. The
 # name->index map is runtime state (see VALVE_MAP), because the loom is built
 # before anyone knows which physical valve landed on which driver channel.
-# Channels 0-5 are the six relay drivers actually wired: GP6, GP7, GP8, GP10,
-# GP11, GP12. GP9 is NOT connected to anything and is deliberately absent —
-# it used to carry the old poof relay, and leaving it in the list cost an hour
-# of "why is there no click on bigjet1", which was simply a valve name pointed
-# at a dead pin.
+# The eight relay drivers actually wired, in header order:
+#   GP4 GP5 GP6 GP7 GP8   GP10 GP11 GP12
+# GP9 is NOT connected and is deliberately absent — it used to carry the old
+# poof relay, and leaving it in this list cost an afternoon of "why is there
+# no click on bigjet1", which was only ever a valve name aimed at a dead pin.
+# Eight channels for seven solenoids, so one is spare.
 #
-# Channels 6 and 7 are the two legacy drivers, kept addressable only so
-# bush/flame/identify can hunt for the seventh solenoid's relay: six relays
-# were added but the rig has seven valves, so one of them is either on an old
-# channel or not wired yet. Once identify says which, prune this list.
-#
-# Channel index == position in this list, NOT the GPIO number.
-OUTPUT_PINS = [board.GP6, board.GP7, board.GP8,
-               board.GP10, board.GP11, board.GP12,
-               board.GP2, board.GP3]
+# Channel index == position in this list, NOT the GPIO number. That indexing
+# is what bush/flame/identify addresses and what bush-valve-id reports.
+OUTPUT_PINS = [board.GP4, board.GP5, board.GP6, board.GP7, board.GP8,
+               board.GP10, board.GP11, board.GP12]
 NUM_OUTPUTS = len(OUTPUT_PINS)
 
 outputs = []

@@ -10,28 +10,27 @@
 
 ## Pin Assignments
 
-| Channel | Pin | Wired |
-|---|---|---|
-| 0 | GP6  | yes — one of the six added drivers |
-| 1 | GP7  | yes |
-| 2 | GP8  | yes |
-| 3 | GP10 | yes |
-| 4 | GP11 | yes |
-| 5 | GP12 | yes |
-| 6 | GP2  | legacy driver, kept addressable to hunt for the 7th relay |
-| 7 | GP3  | legacy driver, same |
+| Channel | Pin |
+|---|---|
+| 0 | GP4 |
+| 1 | GP5 |
+| 2 | GP6 |
+| 3 | GP7 |
+| 4 | GP8 |
+| 5 | GP10 |
+| 6 | GP11 |
+| 7 | GP12 |
+
+Eight relay drivers for seven solenoids, so one channel is spare.
 
 **GP9 is not connected** and is deliberately absent from `OUTPUT_PINS`. It
 used to carry the old poof relay. Leaving it in the list cost an afternoon of
-"why is there no click on bigjet1" — which was only ever a valve name pointed
-at a dead pin.
+"why is there no click on bigjet1" — which was only ever a valve name aimed at
+a dead pin.
 
 **Channel index is the position in `OUTPUT_PINS`, not the GPIO number.**
-`bush/flame/identify` and `bush-valve-id` both address channels by that index.
-
-Six relays are wired but the rig has seven valves, so one valve is either on a
-legacy channel or not wired yet. Channels 6 and 7 exist so `identify` can find
-out; prune them once it has.
+`bush/flame/identify` and `bush-valve-id` both address channels by that index,
+so channel 0 is GP4 and channel 7 is GP12.
 
 The name→channel map is discovered after assembly with `bush-valve-id` and
 published retained on `bush/flame/map`. The firmware's built-in default is a
