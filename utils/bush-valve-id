@@ -33,7 +33,7 @@ TOPIC_STATUS   = "bush/flame/status"
 MQTT_PORT      = 1883
 
 # Must match OUTPUT_PINS in firmware/relay-control/CIRCUITPY/code.py
-NUM_OUTPUTS = 7
+NUM_OUTPUTS = 8
 
 VALVE_NAMES = ["flare1", "flare2", "flare3",
                "bigjet1", "bigjet2", "bigjet3",

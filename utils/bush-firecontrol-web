@@ -72,7 +72,7 @@ DURATIONS = {
     "bigjet": [100, 300, 800, 1500, 3000],
     "poof":   [30, 75, 150, 300, 450],
 }
-NUM_OUTPUTS = 7          # must match OUTPUT_PINS in the relay firmware
+NUM_OUTPUTS = 8          # must match OUTPUT_PINS in the relay firmware
 IDENTIFY_MS = 250
 
 # The board beacons every 5 s; treat it as gone after three missed beacons.

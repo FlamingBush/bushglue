@@ -10,27 +10,32 @@
 
 ## Pin Assignments
 
-| Pin | Channel | Default valve |
+| Channel | Pin | Wired |
 |---|---|---|
-| GP6  | 0 | flare1 |
-| GP7  | 1 | flare2 |
-| GP8  | 2 | flare3 |
-| GP9  | 3 | bigjet1 | *(pre-existing poof channel, reused)* |
-| GP10 | 4 | bigjet2 |
-| GP11 | 5 | bigjet3 |
-| GP12 | 6 | poof1 |
+| 0 | GP6  | yes — one of the six added drivers |
+| 1 | GP7  | yes |
+| 2 | GP8  | yes |
+| 3 | GP10 | yes |
+| 4 | GP11 | yes |
+| 5 | GP12 | yes |
+| 6 | GP2  | legacy driver, kept addressable to hunt for the 7th relay |
+| 7 | GP3  | legacy driver, same |
 
-Six of these are new drivers; GP9 already carried the original poof relay.
-GP2 and GP3 (the old flare/bigjet channels) are no longer used.
+**GP9 is not connected** and is deliberately absent from `OUTPUT_PINS`. It
+used to carry the old poof relay. Leaving it in the list cost an afternoon of
+"why is there no click on bigjet1" — which was only ever a valve name pointed
+at a dead pin.
 
-**Channel index is the position in `OUTPUT_PINS`, not the GPIO number** —
-channel 0 is GP6. `bush/flame/identify` and `bush-valve-id` both address
-channels by that index.
+**Channel index is the position in `OUTPUT_PINS`, not the GPIO number.**
+`bush/flame/identify` and `bush-valve-id` both address channels by that index.
 
-The "default valve" column is only what the firmware assumes when no map has
-been published. The loom is assembled before anyone knows which solenoid
-landed on which channel, so the real mapping is discovered after the fact with
-`bush-valve-id` and published retained on `bush/flame/map`.
+Six relays are wired but the rig has seven valves, so one valve is either on a
+legacy channel or not wired yet. Channels 6 and 7 exist so `identify` can find
+out; prune them once it has.
+
+The name→channel map is discovered after assembly with `bush-valve-id` and
+published retained on `bush/flame/map`. The firmware's built-in default is a
+placeholder, not a description of the wiring.
 
 ## MQTT Topics
 

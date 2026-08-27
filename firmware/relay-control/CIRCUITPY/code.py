@@ -43,14 +43,21 @@ except ImportError:
 # Seven solenoids, addressed by INDEX here and by NAME over MQTT. The
 # name->index map is runtime state (see VALVE_MAP), because the loom is built
 # before anyone knows which physical valve landed on which driver channel.
-# Wired GP6..GP12 in header order: six new drivers plus GP9, which already
-# carried the original poof relay. Channel index == position in this list, so
-# channel 0 is GP6 and channel 6 is GP12 — that indexing is what
-# bush/flame/identify addresses and what bush-valve-id reports.
-# GP2/GP3 (the old flare and bigjet channels) are deliberately NOT outputs any
-# more; everything moved to the contiguous block.
-OUTPUT_PINS = [board.GP6, board.GP7, board.GP8, board.GP9,
-               board.GP10, board.GP11, board.GP12]
+# Channels 0-5 are the six relay drivers actually wired: GP6, GP7, GP8, GP10,
+# GP11, GP12. GP9 is NOT connected to anything and is deliberately absent —
+# it used to carry the old poof relay, and leaving it in the list cost an hour
+# of "why is there no click on bigjet1", which was simply a valve name pointed
+# at a dead pin.
+#
+# Channels 6 and 7 are the two legacy drivers, kept addressable only so
+# bush/flame/identify can hunt for the seventh solenoid's relay: six relays
+# were added but the rig has seven valves, so one of them is either on an old
+# channel or not wired yet. Once identify says which, prune this list.
+#
+# Channel index == position in this list, NOT the GPIO number.
+OUTPUT_PINS = [board.GP6, board.GP7, board.GP8,
+               board.GP10, board.GP11, board.GP12,
+               board.GP2, board.GP3]
 NUM_OUTPUTS = len(OUTPUT_PINS)
 
 outputs = []
@@ -71,7 +78,7 @@ DEFAULT_VALVE_MAP = {
     "flare1": 0, "flare2": 1, "flare3": 2,
     "bigjet1": 3, "bigjet2": 4, "bigjet3": 5,
     "poof1": 6,
-}
+}   # placeholder only — the real map comes from bush-valve-id
 valve_map = dict(DEFAULT_VALVE_MAP)
 
 # Hard ceiling for one pulse. A typo'd or hostile "ms" must not be able to
