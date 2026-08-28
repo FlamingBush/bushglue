@@ -17,7 +17,7 @@ import json
 import signal
 import time
 
-from . import cuesheet, features, safety, wire
+from . import cuesheet, features, wire
 from .features import log
 
 TOPIC_STREAM = "bush/fire/valve/stream"
@@ -33,12 +33,11 @@ STALE_S = 0.5         # drop a flame cue if we're already this far past it
 
 def _summarize(sheet: dict, no_flame: bool) -> None:
     v = sheet["valve"]
-    flame = [] if no_flame else safety.filter_flame(
-        sheet.get("flame", []), float(sheet.get("knobs", {}).get("max_cue_rate", 6.0)))
+    flame = [] if no_flame else sheet.get("flame", [])
     log(f"sheet: {sheet['duration_s']}s, preset={sheet.get('preset')}, {sheet['tempo_bpm']} BPM")
     log(f"valve: {len(v['pos'])} samples @ {v['rate_hz']} Hz "
         f"(range {min(v['pos']):.3f}..{max(v['pos']):.3f})")
-    log(f"flame: {len(flame)} pulses after safety")
+    log(f"flame: {len(flame)} pulses")
     for c in flame[:20]:
         print(f"  {c['t']:7.3f}s  {c['valve']:6}  {c['ms']}ms")
     if len(flame) > 20:
@@ -74,8 +73,7 @@ def _play(sheet: dict, args: argparse.Namespace) -> int:
     samples = wire.quantize(sheet["valve"]["pos"])
     nsamp = len(samples)
     end_s = nsamp / rate
-    flame = [] if args.no_flame else safety.filter_flame(
-        sheet.get("flame", []), float(sheet.get("knobs", {}).get("max_cue_rate", 6.0)))
+    flame = [] if args.no_flame else sheet.get("flame", [])
     lead = args.latency_lead_ms / 1000.0
 
     audio = features.decode_to_mono(args.audio) if args.audio else None

@@ -2,14 +2,13 @@
 
 Continuous channel: weighted band energy -> smoothed contour -> beat strokes ->
 mapped into [pos_min, pos_max], resampled to rate_hz. Discrete channel: onsets/
-beats -> flame pulses per the preset's flame_rules. Both pass through safety.
+beats -> flame pulses per the preset's flame_rules.
 """
 from __future__ import annotations
 
 import numpy as np
 
 from . import features as F
-from . import safety
 
 
 def _smooth(x: np.ndarray, attack: float, release: float) -> np.ndarray:
@@ -118,10 +117,8 @@ def build(feat: dict, onsets: list[tuple[int, float]], beats: list[int],
 
     rate = int(knobs["rate_hz"])
     pos = _resample(pos, F.FPS, rate)
-    pos = safety.clamp_valve(pos, lo, hi)
 
-    flame = safety.filter_flame(_flame(onsets, beats, preset, knobs),
-                                float(knobs["max_cue_rate"]))
+    flame = _flame(onsets, beats, preset, knobs)
 
     return {
         "valve": {"rate_hz": rate, "pos": [round(float(p), 4) for p in pos]},
