@@ -175,11 +175,15 @@ want it) but never touches the gas. Set from the fire-control web UI.
 ```
 (empty payload)
 ```
-Emergency stop. Drops every solenoid and clears every pending off-time,
+Software ALL STOP. Drops every solenoid and clears every pending off-time,
 whatever the payload says — this must never fail to parse. The firmware
 handles it before anything else in its receive queue, so a backlog of queued
 pulses cannot be serviced first. Wired to the always-visible ALL STOP button
 in the fire-control web UI.
+
+This is an operational interlock, not a safety device: it is software, it
+rides MQTT over Wi-Fi, and it cannot shorten a pulse already sent. Emergency
+stop is the physical buttons wired in series with the solenoid coils.
 
 ### `bush/flame/armed`
 ```json
@@ -255,7 +259,7 @@ Retained birth message. Value is `online` or `offline`.
 Empty payload. Triggers homing sequence (drive to open stop, zero).
 
 ### `bush/fire/valve/stop`
-Empty payload. Emergency stop.
+Empty payload. Halts motion immediately (MKS `0xF7`).
 
 ### `bush/fire/valve/calibrate`
 ```
