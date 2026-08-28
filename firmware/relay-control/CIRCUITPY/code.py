@@ -173,6 +173,18 @@ MQTT_USER     = secrets.get("MQTT_USER", None)
 MQTT_PASSWORD = secrets.get("MQTT_PASSWORD", None)
 KEEP_ALIVE    = 15          # seconds
 PING_INTERVAL = 10_000      # ms between PINGREQs
+
+# Dead-peer detection. A Wi-Fi dropout does NOT close the TCP socket: the AP
+# stops forwarding, lwIP keeps buffering, send() keeps succeeding and recv()
+# keeps returning EAGAIN, so `connected` stays True and the board sits there
+# silently dead — beaconing into a socket nobody reads, refusing nothing,
+# reporting nothing. The broker gives up on us after KEEP_ALIVE * 1.5, and
+# until this the board never noticed. PINGRESP was parsed and thrown away.
+#
+# So: any inbound byte proves the link. On a quiet broker the only inbound
+# traffic is the PINGRESP to our own PINGREQ, which is exactly what makes it
+# a probe. Two missed pings is the call.
+RX_TIMEOUT_MS = 25_000
 STATUS_INTERVAL_MS = 5_000  # ms between bush/flame/status beacons
 
 # A purely periodic beacon cannot describe a pulse shorter than its own
@@ -186,6 +198,7 @@ sock          = None
 pool          = None
 rx_buf        = bytearray()  # persistent receive buffer
 last_ping_ms  = 0
+last_rx_ms    = 0            # last time ANY byte arrived from the broker
 last_status_ms = 0
 connected     = False
 
@@ -324,6 +337,21 @@ def wifi_connect_with_recovery():
         radio_resets += 1
 
 
+def wifi_is_up():
+    """Are we actually associated?
+
+    ipv4_address is NOT the answer: after a deauth or an AP that walks away,
+    CircuitPython can keep reporting the last lease, so a check on the address
+    alone reads a dropped station as healthy and the board never re-joins.
+    radio.connected is the association state. Fall back to the address only if
+    a firmware build does not expose it.
+    """
+    try:
+        return bool(wifi.radio.connected)
+    except AttributeError:
+        return bool(wifi.radio.ipv4_address)
+
+
 def compute_scan_base():
     """Derive the /24 network prefix from our own IP (e.g. '192.168.1.')."""
     global scan_base
@@ -385,7 +413,7 @@ def _connect_socket(s, broker):
 
 def mqtt_open(broker=None):
     """Open TCP socket, send CONNECT, wait for CONNACK, then go non-blocking."""
-    global sock, rx_buf, connected, last_ping_ms
+    global sock, rx_buf, connected, last_ping_ms, last_rx_ms
     force_pins_off()
     if broker is None:
         broker = MQTT_BROKER
@@ -413,6 +441,7 @@ def mqtt_open(broker=None):
         sock = s
         connected = True
         last_ping_ms = supervisor.ticks_ms()
+        last_rx_ms = last_ping_ms
         print("MQTT connected.")
     except Exception as e:
         print("mqtt_open failed:", e)
@@ -618,7 +647,9 @@ def process_packets():
                     else:
                         fire_output(idx, duration_ms, flame_valve)
 
-        elif pkt_type == 0xD0:  # PINGRESP — nothing to do
+        elif pkt_type == 0xD0:  # PINGRESP
+            # No payload to act on, but arriving at all is the point: it is
+            # what last_rx_ms is watching for on an otherwise quiet broker.
             pass
         elif pkt_type == 0x90:  # SUBACK — nothing to do
             pass
@@ -632,7 +663,7 @@ def process_packets():
 
 def mqtt_loop():
     """Non-blocking: drain the socket, parse packets, send keep-alive ping."""
-    global rx_buf, connected, last_ping_ms
+    global rx_buf, connected, last_ping_ms, last_rx_ms
     if not connected or sock is None:
         return
 
@@ -642,6 +673,7 @@ def mqtt_loop():
         n = sock.recv_into(tmp, 256)
         if n == 0:
             raise OSError("connection closed by broker")
+        last_rx_ms = supervisor.ticks_ms()
         rx_buf.extend(tmp[:n])
         process_packets()
     except OSError as e:
@@ -662,6 +694,19 @@ def mqtt_loop():
         except OSError as e:
             print("Ping failed:", e)
             connected = False
+            return
+
+    # Nothing back from the broker in RX_TIMEOUT_MS, including the PINGRESPs
+    # we just asked for: the socket is up but the path is gone. Tear it down
+    # so the reconnect ladder runs, rather than beaconing into the void.
+    if ticks_diff(now, last_rx_ms) >= RX_TIMEOUT_MS:
+        print("No broker traffic in %d ms — link is dead, reconnecting" %
+              RX_TIMEOUT_MS)
+        connected = False
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 
 # ── Subscribe helper ─────────────────────────────────────────────────────────
@@ -754,7 +799,8 @@ while True:
             last_reconnect_ms = now
             service_pins()
             try:
-                if not wifi.radio.ipv4_address:
+                if not wifi_is_up():
+                    print("Wi-Fi is down, re-joining before the broker retry")
                     wifi_connect_with_recovery()
                     compute_scan_base()
                 mqtt_open(MQTT_BROKER)
@@ -775,6 +821,14 @@ while True:
 
     # ── SCAN_PROBE: probe one IP per loop pass ───────────────────────────────
     elif conn_state == ST_SCAN_PROBE:
+        # A scan with no Wi-Fi is 254 doomed probes and ~2 minutes of dead
+        # rig. Drop straight back to the retry rung, which re-joins first.
+        if not wifi_is_up():
+            print("Wi-Fi dropped mid-scan, abandoning the scan")
+            conn_state = ST_RETRY_CONFIGURED
+            configured_failures = 0
+            continue
+
         if scan_index > 254:
             print("Subnet scan complete, no verified pipeline broker found.")
             conn_state = ST_RETRY_CONFIGURED
