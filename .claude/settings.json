@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git rev-parse --git-dir >/dev/null 2>&1 || exit 0; GIT_TERMINAL_PROMPT=0 timeout 15 git fetch --quiet 2>/dev/null; c=$(git rev-list --left-right --count HEAD...@{u} 2>/dev/null) || exit 0; a=$(printf \"%s\" \"$c\" | cut -f1); b=$(printf \"%s\" \"$c\" | cut -f2); case \"$b\" in \"\"|0) exit 0;; esac; printf \"{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"SessionStart\\\",\\\"additionalContext\\\":\\\"UPSTREAM HAS NEW CODE: this checkout is %s commit(s) behind origin (and %s ahead). Before doing any work or reasoning about this codebase, run: git log --oneline HEAD..@{u} , tell the user what landed, and ASK whether to merge. Do NOT pull automatically -- a pull can fail on a dirty tree or Git LFS and is the users call.\\\"}}\n\" \"$b\" \"$a\"",
+            "timeout": 25,
+            "statusMessage": "Checking for upstream commits..."
+          }
+        ]
+      }
+    ]
+  }
+}
