@@ -76,6 +76,19 @@ TODO bundle these
 4. Install libraries listed above into `CIRCUITPY/lib/`.
 5. The board auto-starts `code.py` on power-up.
 
+## Updating `code.py`
+
+Once steps 1-4 are done and `secrets.py` exists, later firmware updates go
+through **FLASH RELAY BOARD** on the fire-control setup page. Plug the Pico
+into the machine running `bush-firecontrol-web` and tap it: it copies
+`code.py` from that checkout onto the CIRCUITPY drive and the board reloads
+itself. It will not touch `secrets.py`, and it refuses rather than half-works
+if the drive is absent, read-only, or has no credentials on it.
+
+That covers the routine case. Reach for the manual copy above when there is
+no `secrets.py` yet, when `lib/` needs populating, or when CircuitPython
+itself is being replaced — none of which the button does.
+
 ## MIDI keyboard
 
 `bush-midi` reads a raw ALSA rawmidi device (an Alesis VI25 here, `amidi -l`

@@ -23,7 +23,7 @@ Design notes, because this drives real fire:
 
 The fire page at / is what a member of the public is handed, so it links
 nowhere. /setup and the endpoints behind it (/service, /mode, /identify,
-/poof-fallback) sit behind a PIN — SETUP_PIN, default "BURN", which folds onto
+/poof-fallback, /arm, /flash) sit behind a PIN — SETUP_PIN, default "BURN", which folds onto
 2876 on a phone keypad so either keyboard works.
 
 What that PIN is worth: it keeps a curious visitor out of the commissioning
@@ -38,6 +38,7 @@ interaction, and putting ALL STOP behind a login is worse than having
 no login at all.
 """
 import argparse
+import errno
 import hmac
 import json
 import queue
@@ -291,6 +292,104 @@ def _service_loop():
         time.sleep(3.0)
 
 
+# ── relay board firmware ───────────────────────────────────────────────────
+# Flashing the relay board is a file copy, not a programmer: CircuitPython
+# exposes the Pico as a USB mass-storage volume named CIRCUITPY, and the board
+# reloads code.py itself the moment it changes. So the board has to be plugged
+# into THIS machine — being reachable over MQTT is not enough, and the button
+# says so rather than appearing to do nothing.
+
+REPO_ROOT    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FIRMWARE_DIR = os.path.join(REPO_ROOT, "firmware", "relay-control", "CIRCUITPY")
+
+# Never written to the board:
+#   secrets.py          the board's copy holds its Wi-Fi and broker
+#                       credentials and is deliberately not in the repo.
+#                       Overwriting it would take the board off the network,
+#                       which is the one failure this button must not cause.
+#   secrets.example.py  the template — only useful before secrets.py exists.
+#   __pycache__         CPython bytecode from a host-side syntax check. The
+#                       board cannot use it and CIRCUITPY has little room.
+FLASH_SKIP = {"secrets.py", "secrets.example.py", "__pycache__"}
+
+
+def _find_circuitpy():
+    """Mountpoint of an attached CIRCUITPY volume, or None."""
+    try:
+        with open("/proc/mounts") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        # /proc/mounts escapes spaces as \040; leave any other bytes alone so
+        # a non-ASCII mountpoint is not mangled on the way through.
+        mnt = parts[1].replace("\\040", " ")
+        if os.path.basename(mnt.rstrip("/")).upper() == "CIRCUITPY":
+            return mnt
+    return None
+
+
+def _flash_board():
+    """Copy the relay firmware onto an attached CIRCUITPY drive.
+
+    Returns (ok, message). Every failure is reported as something to go and
+    do, because the operator is standing at the rig holding a phone.
+    """
+    mnt = _find_circuitpy()
+    if mnt is None:
+        return False, "no CIRCUITPY drive — plug the relay Pico into this machine"
+    if not os.path.isdir(FIRMWARE_DIR):
+        return False, "firmware source missing at " + FIRMWARE_DIR
+    if not os.path.exists(os.path.join(mnt, "secrets.py")):
+        # A board with no credentials will boot, fail to join Wi-Fi and sit
+        # there dark. Better to refuse than to hand back a cheerful "flashed".
+        return False, ("board has no secrets.py — give it Wi-Fi and broker "
+                       "credentials before flashing")
+
+    try:
+        names = sorted(n for n in os.listdir(FIRMWARE_DIR)
+                       if n not in FLASH_SKIP
+                       and os.path.isfile(os.path.join(FIRMWARE_DIR, n)))
+    except OSError as e:
+        return False, "cannot read firmware source: %s" % e
+    if not names:
+        return False, "nothing to copy from " + FIRMWARE_DIR
+
+    # Write under a temporary name on the same volume and rename into place.
+    # The board auto-reloads on any write to CIRCUITPY, and a reload that
+    # catches a half-written code.py drops the Pico into safe mode with the
+    # rig dark. The rename swaps a whole file in one step instead.
+    copied = []
+    for n in names:
+        src = os.path.join(FIRMWARE_DIR, n)
+        dst = os.path.join(mnt, n)
+        tmp = os.path.join(mnt, "." + n + ".new")
+        try:
+            with open(src, "rb") as f:
+                data = f.read()
+            with open(tmp, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, dst)
+            copied.append("%s (%d B)" % (n, len(data)))
+        except OSError as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if getattr(e, "errno", None) == errno.EROFS:
+                return False, ("CIRCUITPY is read-only — the board has claimed "
+                               "its own filesystem; power-cycle the Pico and retry")
+            return False, "copying %s failed: %s" % (n, e)
+
+    os.sync()   # CIRCUITPY is removable FAT and the host caches writes
+    return True, "flashed " + ", ".join(copied) + " — board reloads itself"
+
+
 # ── auth ───────────────────────────────────────────────────────────────────
 def _check_pin(raw):
     """Constant-time PIN check with lockout. Returns (ok, retry_after_s)."""
@@ -482,6 +581,10 @@ main{{flex:1 1 auto;overflow-y:auto;-webkit-overflow-scrolling:touch}}
   padding:13px 0;font-size:.8rem;font-weight:700;display:flex;flex-direction:column;gap:2px}}
 .idbtn:active{{filter:brightness(1.9)}}
 .idbtn em{{font-style:normal;font-size:.6rem;color:#a08a4a;font-weight:600}}
+.wide{{width:100%;border:1px solid var(--line);background:#22222a;color:var(--text);
+  border-radius:7px;padding:14px 0;font-size:.78rem;font-weight:700;letter-spacing:.06em}}
+.wide:active{{filter:brightness(1.8)}}
+.wide[disabled]{{opacity:.4}}
 .note{{font-size:.68rem;color:var(--dim);line-height:1.45;margin-top:8px}}
 footer{{flex:0 0 auto;text-align:center;font-size:.7rem;padding:7px;
   background:var(--panel);border-top:1px solid var(--line);color:var(--dim);
@@ -593,6 +696,23 @@ function setArmed(on){{
 function setMode(m){{
   post('/mode', {{mode:m}})
     .then(d=> say(d.ok ? ('mode: '+m) : 'mode change failed', d.ok?'':'err'));
+}}
+
+/* The copy itself is quick, but the button stays disabled for its duration:
+   two overlapping writes to the same CIRCUITPY file is how you get a Pico in
+   safe mode. The outcome text comes from the server, which knows what it
+   actually wrote and what to go and fix. */
+function flashBoard(){{
+  const b = document.getElementById('flashbtn');
+  const was = b.textContent;
+  b.disabled = true;
+  b.textContent = 'FLASHING…';
+  say('copying firmware to CIRCUITPY…');
+  post('/flash', {{}})
+    .then(d=> say(d.ok ? d.msg : ('flash failed — ' + (d.err || 'unknown')),
+                  d.ok ? 'warn' : 'err'))
+    .catch(()=> say('flash failed — request did not complete','err'))
+    .finally(()=>{{ b.disabled = false; b.textContent = was; }});
 }}
 
 function toggleSvc(unit, on){{
@@ -753,6 +873,17 @@ SETUP_BODY = """\
       <div class="grid2">%s</div>
     </div>
     <div class="card">
+      <h2>RELAY FIRMWARE</h2>
+      <button id="flashbtn" class="wide" onclick="flashBoard()">FLASH RELAY BOARD</button>
+      <div class="note">
+        Copies the firmware in this checkout onto the Pico's CIRCUITPY drive,
+        so the board must be <b>plugged into this machine over USB</b> — being
+        live on MQTT is not enough. It reloads itself as soon as the file
+        lands, dropping every output for a second or two, and comes back
+        <b>armed</b>. Its <b>secrets.py</b> is never overwritten.
+      </div>
+    </div>
+    <div class="card">
       <h2>IDENTIFY — RAW RELAY CHANNELS</h2>
       <div class="idrow">%s</div>
       <div class="note">
@@ -859,7 +990,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # /fire and /stop stay open: the fire page is the public interaction, and
     # putting ALL STOP behind a login is worse than having no login.
-    GATED = {"/service", "/mode", "/identify", "/poof-fallback", "/arm"}
+    GATED = {"/service", "/mode", "/identify", "/poof-fallback", "/arm",
+             "/flash"}
 
     def do_POST(self):
         try:
@@ -890,6 +1022,12 @@ class Handler(BaseHTTPRequestHandler):
                 ok = _set_poof_fallback(self._body()["enabled"])
             elif self.path == "/mode":
                 ok = _set_mode(self._body()["mode"])
+            elif self.path == "/flash":
+                self._body()
+                ok, msg = _flash_board()
+                self._send(200, "application/json",
+                           json.dumps({"ok": ok, "msg" if ok else "err": msg}))
+                return
             elif self.path == "/service":
                 d = self._body()
                 ok, msg = _set_service(d["unit"], bool(d["on"]))
