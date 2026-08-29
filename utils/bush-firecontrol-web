@@ -34,7 +34,7 @@ setup routes to an interface the public cannot reach rather than relying on
 this.
 
 /fire and /stop are deliberately left open. The fire page is the public
-interaction, and putting an emergency stop behind a login is worse than having
+interaction, and putting ALL STOP behind a login is worse than having
 no login at all.
 """
 import argparse
@@ -721,8 +721,8 @@ SETUP_BODY = """\
         ALL STOP latches. It drops every valve and <b>disarms the relay
         board</b> — further pulses are refused at the board, not merely hidden
         in this page, so the MIDI keyboard and the verse pipeline are stopped
-        too. Re-arming is deliberate and happens only here. The board also
-        boots disarmed.
+        too. Re-arming is deliberate and happens only here. The board boots
+        <b>armed</b>, so the rig comes up ready to fire on its own.
       </div>
     </div>
     <div class="card">
@@ -858,7 +858,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     # /fire and /stop stay open: the fire page is the public interaction, and
-    # putting an emergency stop behind a login is worse than having no login.
+    # putting ALL STOP behind a login is worse than having no login.
     GATED = {"/service", "/mode", "/identify", "/poof-fallback", "/arm"}
 
     def do_POST(self):

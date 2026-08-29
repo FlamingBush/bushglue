@@ -181,9 +181,10 @@ handles it before anything else in its receive queue, so a backlog of queued
 pulses cannot be serviced first. Wired to the always-visible ALL STOP button
 in the fire-control web UI.
 
-This is an operational interlock, not a safety device: it is software, it
-rides MQTT over Wi-Fi, and it cannot shorten a pulse already sent. Emergency
-stop is the physical buttons wired in series with the solenoid coils.
+This is an operator convenience, not a safety device: it is software, it
+rides MQTT over Wi-Fi, and it cannot shorten a pulse already sent. This board
+is an add-on to a rig that carries its own safety systems; those are what
+stop the gas.
 
 ### `bush/flame/armed`
 ```json
@@ -198,9 +199,12 @@ sentiment fire loop and the CLI all publish straight to the broker.
 Closes (`ms: 0`) are still honoured while disarmed; refusing them could strand
 a valve open. Only opening is refused.
 
-The board boots **disarmed** and stays that way unless a retained
-`{"armed": true}` says otherwise, so a board that comes up into a rig of
-unknown state cannot fire until someone says so.
+The board boots **armed**: power on the rig and it fires, with no second
+device and no web page in the loop. A retained `{"armed": false}` still wins
+once the broker is reached, so a deliberate ALL STOP the broker remembered
+survives a reboot — but a missing retained message boots usable rather than
+inert, which matters because an unclean power loss is exactly what discards
+retained state.
 
 ### `bush/flame/poof-fallback`
 ```json

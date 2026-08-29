@@ -90,22 +90,26 @@ poof_fallback = False
 
 # Latching software arm/disarm interlock.
 #
-# This is NOT an emergency stop. The emergency stops are physical buttons
-# wired in series with the solenoid coils: they remove coil current directly,
-# fail closed on a broken wire, and work whatever the software is doing. They
-# are the only thing that should ever be relied on to stop the gas.
+# This is NOT an emergency stop, and nothing here is a safety device. This
+# board is an add-on to a rig that carries its own safety systems; those are
+# what stop the gas. ALL STOP is an operator convenience — one button that
+# drops everything and keeps it down while you walk over and look at it.
 #
-# What this does instead: ALL STOP does not just drop the valves, it disarms
-# the board: every further pulse and identify is refused until someone
-# deliberately re-arms from the setup page. Enforced here rather than in the
-# UI, because an interlock that only a web page honours is no interlock —
-# the MIDI keyboard, the sentiment fire loop and the CLI all publish
-# straight to the broker.
+# What it does: ALL STOP does not just drop the valves, it disarms the board,
+# and every further pulse and identify is refused until someone re-arms from
+# the setup page. Enforced here rather than in the UI, because an interlock
+# that only a web page honours is no interlock — the MIDI keyboard, the
+# sentiment fire loop and the CLI all publish straight to the broker.
 #
-# Starts DISARMED. A board that boots into a rig of unknown state should not
-# be able to fire until someone says so, and the retained bush/flame/armed
-# message re-arms it within a beacon if that is genuinely the wanted state.
-disarmed = True
+# Starts ARMED. The board is expected to come up ready to fire: power on the
+# rig and it works, with no second device and no web page in the loop. The
+# retained bush/flame/armed message still wins once the broker is reached, so
+# a deliberate ALL STOP that the broker remembered survives the reboot — but
+# an absent or forgotten retained message now boots usable rather than inert.
+# That matters because retained state is the thing most likely to be missing:
+# an unclean power loss can discard it, and a board that defaulted to
+# disarmed would come back dead with no indication of why.
+disarmed = False
 
 TOPIC_FLAME        = b"bush/flame/pulse"
 TOPIC_FLAME_STATUS = b"bush/flame/status"
