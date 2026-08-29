@@ -1,5 +1,6 @@
 """Shared utilities for Bush Glue service scripts."""
 import json
+import os
 import pathlib
 import signal
 import subprocess
@@ -156,10 +157,17 @@ def run_mqtt_service(name: str, topics: list, on_message, *, on_connect=None,
 def get_mqtt_broker() -> str:
     """Return the MQTT broker host.
 
+    BUSH_MQTT_BROKER wins if set: a service running off the rig — the MIDI
+    keyboard on a Windows laptop, say — has to be told where the broker is,
+    since none of the guesses below can find it across the network.
+
     Under WSL2 the broker runs on the Windows host; detect this via
     /proc/version and resolve the gateway IP.  On native Linux return
     localhost.
     """
+    override = os.environ.get("BUSH_MQTT_BROKER", "").strip()
+    if override:
+        return override
     try:
         with open("/proc/version") as f:
             if "microsoft" not in f.read().lower():

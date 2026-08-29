@@ -10,6 +10,10 @@ dependencies = [
     "pyserial>=3.5",
     "rich>=13",
     "python-periphery>=2.4",
+    # MIDI input off the rig (Windows/macOS): there is no ALSA rawmidi device
+    # to read, so bush-midi falls back to rtmidi. Excluded on Linux so the
+    # boards do not have to build the C extension.
+    "python-rtmidi>=1.5; sys_platform != 'linux'",
 ]
 
 [project.optional-dependencies]

@@ -117,8 +117,8 @@ def test_release_without_a_matching_press_is_ignored(mod):
 
 def test_leaving_midi_mode_releases_held_valves(mod):
     d = armed_driver(mod)
-    d.note_on(mod.MIDI_BASE_NOTE, 100)
-    d.note_on(mod.MIDI_BASE_NOTE + 1, 100)
+    d.note_on(mod.VALVE_NOTES[0], 100)
+    d.note_on(mod.VALVE_NOTES[1], 100)
     d.set_mode("manual")
     closes = [f for f in d.client.fired() if f["ms"] == 0]
     assert len(closes) == 2, "switching away mid-note must not strand a valve"
@@ -126,18 +126,26 @@ def test_leaving_midi_mode_releases_held_valves(mod):
 
 # ── note -> valve ───────────────────────────────────────────────────────────
 
-def test_seven_consecutive_notes_map_to_the_seven_valves(mod):
+def test_seven_white_keys_map_to_the_seven_valves(mod):
     d = armed_driver(mod)
-    base = mod.MIDI_BASE_NOTE
-    for i in range(7):
-        d.note_on(base + i, 100)
+    for note in mod.VALVE_NOTES:
+        d.note_on(note, 100)
     assert [f["valve"] for f in d.client.fired()] == mod.NOTE_VALVES
 
 
-def test_notes_outside_the_range_are_ignored(mod):
+def test_black_keys_do_nothing(mod):
+    # Naturals only, so the seven valve keys can be found by feel.
     d = armed_driver(mod)
-    d.note_on(mod.MIDI_BASE_NOTE - 1, 100)
-    d.note_on(mod.MIDI_BASE_NOTE + 7, 100)
+    for note in range(mod.VALVE_NOTES[0], mod.VALVE_NOTES[-1] + 1):
+        if note not in mod.VALVE_NOTES:
+            d.note_on(note, 100)
+    assert d.client.fired() == []
+
+
+def test_white_keys_outside_the_range_are_ignored(mod):
+    d = armed_driver(mod)
+    d.note_on(mod.VALVE_NOTES[0] - 2, 100)    # the natural below the range
+    d.note_on(mod.VALVE_NOTES[-1] + 2, 100)   # the natural above it
     assert d.client.fired() == []
 
 
@@ -190,6 +198,47 @@ def test_retrigger_guard_is_per_valve(monkeypatch):
     m = _reload(monkeypatch, MIDI_RETRIGGER_MS="5000")
     d = m.MidiDriver(FakeClient())
     d.set_mode("midi")
-    d.note_on(m.MIDI_BASE_NOTE, 100)
-    d.note_on(m.MIDI_BASE_NOTE + 1, 100)
+    d.note_on(m.VALVE_NOTES[0], 100)
+    d.note_on(m.VALVE_NOTES[1], 100)
     assert len(d.client.fired()) == 2
+
+
+# ── input backend selection ─────────────────────────────────────────────────
+
+def test_backend_is_rawmidi_on_linux_and_rtmidi_elsewhere(monkeypatch):
+    m = _reload(monkeypatch, MIDI_BACKEND="auto")
+    monkeypatch.setattr(m.sys, "platform", "linux")
+    assert m.backend() is m.RawMidiSource
+    monkeypatch.setattr(m.sys, "platform", "win32")
+    assert m.backend() is m.RtMidiSource
+    monkeypatch.setattr(m.sys, "platform", "darwin")
+    assert m.backend() is m.RtMidiSource
+
+
+def test_backend_can_be_forced(monkeypatch):
+    m = _reload(monkeypatch, MIDI_BACKEND="rtmidi")
+    monkeypatch.setattr(m.sys, "platform", "linux")
+    assert m.backend() is m.RtMidiSource
+
+
+def test_port_match_is_a_case_insensitive_substring(mod):
+    ports = ["Microsoft MIDI Mapper", "VI25 0", "nanoKONTROL2"]
+    assert mod._match_port(ports, "vi25") == 1
+    assert mod._match_port(ports, "nanoKONTROL") == 2
+    # Empty match takes whatever is offered first.
+    assert mod._match_port(ports, "") == 0
+    assert mod._match_port(ports, "MPK") is None
+    assert mod._match_port([], "") is None
+
+
+def test_valve_keys_are_the_top_seven_naturals_of_the_25_key_board(mod):
+    # The board spans 48..72; the valve keys are its top seven white keys --
+    # D E F G A B C -- so the left half of the keyboard stays free.
+    assert mod.MIDI_BASE_NOTE == 62
+    assert mod.VALVE_NOTES == [62, 64, 65, 67, 69, 71, 72]
+
+
+def test_a_black_base_note_starts_at_the_next_natural(mod):
+    # An octave button bumped onto an accidental should not need arguing with.
+    assert mod.white_keys_from(61, 3) == [62, 64, 65]
+    assert mod.white_keys_from(62, 3) == [62, 64, 65]

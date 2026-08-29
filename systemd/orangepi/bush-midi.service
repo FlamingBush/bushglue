@@ -10,7 +10,9 @@ User=orangepi
 SupplementaryGroups=audio
 # Alesis VI25; `amidi -l` lists the alternatives.
 Environment=MIDI_DEVICE=/dev/snd/midiC4D0
-Environment=MIDI_BASE_NOTE=48
+# Top seven white keys of the 25-key board (48..72): D E F G A B C, the
+# right-hand end. Black keys do nothing.
+Environment=MIDI_BASE_NOTE=62
 ExecStart=/home/orangepi/bushglue/.venv/bin/bush-midi
 Restart=always
 RestartSec=5

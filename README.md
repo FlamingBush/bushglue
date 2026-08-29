@@ -161,3 +161,5 @@ git add models/rknn/*.rknn && git commit -m 'rknn: add converted artifacts'
 ## Detailed docs
 
 See [docs/README.md](docs/README.md) for audio management topics, message payloads, timing constants, and emotion-to-fire patterns.
+
+See [docs/midi-windows.md](docs/midi-windows.md) for running the MIDI keyboard off a Windows laptop, lid closed and unplugged.
